@@ -1,12 +1,18 @@
 // server.js (ESM)
 import express from "express";
-import cors from "cors";
-
 import { initDb, upsertEvent, getEvents, getStats } from "./db.js";
 
 const app = express();
 
-app.use(cors());
+// jednoduchý CORS middleware bez balíčku
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-API-Key");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  next();
+});
+
 app.use(express.json({ limit: "1mb" }));
 
 const API_KEY = process.env.API_KEY || "JPO_KEY_123456";
