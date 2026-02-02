@@ -15,7 +15,8 @@ import {
   clearEventCoords,
   deleteCachedGeocode,
   getEventsOutsideCz,
-  getEventFirstSeen
+  getEventFirstSeen,
+  updateEventDuration
 } from "./db.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -154,13 +155,19 @@ function parseTimesFromDescription(descRaw = "") {
   };
 }
 
-async function computeDurationMin(id, startIso, endIso) {
+async function computeDurationMin(id, startIso, endIso, createdAtFallback) {
   if (!endIso) return null;
 
   let startMs = startIso ? new Date(startIso).getTime() : NaN;
+
   if (!Number.isFinite(startMs)) {
     const firstSeen = await getEventFirstSeen(id);
     if (firstSeen) startMs = new Date(firstSeen).getTime();
+  }
+
+  if (!Number.isFinite(startMs) && createdAtFallback) {
+    const ca = new Date(createdAtFallback).getTime();
+    if (Number.isFinite(ca)) startMs = ca;
   }
 
   const endMs = new Date(endIso).getTime();
@@ -221,11 +228,6 @@ async function geocodePlace(placeText) {
       const cc = String(cand?.address?.country_code || "").toLowerCase();
       if (cc && cc !== "cz") continue;
 
-      const dn = String(cand.display_name || "").toLowerCase();
-      if (!cc && dn && !(dn.includes("czechia") || dn.includes("cesko") || dn.includes("česko") || dn.includes("czech republic"))) {
-        continue;
-      }
-
       await setCachedGeocode(placeText, lat, lon);
       return { lat, lon, cached: false, qUsed: q };
     }
@@ -245,7 +247,27 @@ function parseFilters(req) {
   return { types, city, status: normStatus };
 }
 
-async function backfillCoords(rows, max = 5) {
+// ✅ PRŮBĚŽNÉ DOPOČÍTÁVÁNÍ DÉLKY (a uložení do DB)
+async function backfillDurations(rows, max = 40) {
+  const candidates = rows
+    .filter(r => r?.is_closed && r?.end_time_iso && (r.duration_min == null))
+    .slice(0, Math.max(0, Math.min(max, 200)));
+
+  let fixed = 0;
+
+  for (const r of candidates) {
+    const dur = await computeDurationMin(r.id, r.start_time_iso, r.end_time_iso, r.created_at);
+    if (Number.isFinite(dur) && dur > 0) {
+      await updateEventDuration(r.id, dur);
+      r.duration_min = dur;
+      fixed++;
+    }
+  }
+
+  return fixed;
+}
+
+async function backfillCoords(rows, max = 8) {
   const need = rows
     .filter(r => ((r.city_text || r.place_text) && (r.lat == null || r.lon == null)))
     .slice(0, Math.max(0, Math.min(max, 20)));
@@ -268,93 +290,22 @@ async function backfillCoords(rows, max = 5) {
   return fixed;
 }
 
-// ---------------- PDF FONT (robust) ----------------
-function readFirstBytes(fontPath, n = 64) {
-  const fd = fs.openSync(fontPath, "r");
-  const buf = Buffer.alloc(n);
-  fs.readSync(fd, buf, 0, n, 0);
-  fs.closeSync(fd);
-  return buf;
-}
-
-function isProbablyText(buf) {
-  let printable = 0;
-  for (const b of buf) {
-    if (b === 9 || b === 10 || b === 13) { printable++; continue; }
-    if (b >= 32 && b <= 126) printable++;
-  }
-  return printable / buf.length > 0.85;
-}
-
-function sniffFontHeader(buf4) {
-  const s = buf4.toString("ascii");
-  const u32 = buf4.readUInt32BE(0);
-
-  if (s === "OTTO") return "OTF";
-  if (s === "ttcf") return "TTC";
-  if (s === "true" || s === "typ1") return "TTF";
-  if (u32 === 0x00010000) return "TTF";
-  return "UNKNOWN";
-}
-
-function validateFontFile(fontPath) {
-  try {
-    if (!fs.existsSync(fontPath)) return { ok: false, reason: "missing" };
-
-    const st = fs.statSync(fontPath);
-    if (!st.isFile()) return { ok: false, reason: "not_file" };
-    if (st.size < 50_000) return { ok: false, reason: `too_small_${st.size}` };
-
-    const buf64 = readFirstBytes(fontPath, 64);
-    if (isProbablyText(buf64)) return { ok: false, reason: "looks_like_text_file" };
-
-    const hdr = sniffFontHeader(buf64.subarray(0, 4));
-    if (hdr === "TTF" || hdr === "OTF") return { ok: true, format: hdr };
-    if (hdr === "TTC") return { ok: false, reason: "ttc_not_supported_use_ttf" };
-
-    return { ok: false, reason: `unknown_header_${hdr}` };
-  } catch (e) {
-    return { ok: false, reason: `exception_${e?.message || e}` };
-  }
-}
-
-function findCzFontPath() {
-  const candidates = [
-    path.join(__dirname, "assets", "DejaVuSans.ttf"),
-    path.join(__dirname, "assets", "NotoSans-Regular.ttf"),
-    path.join(__dirname, "assets", "Roboto-Regular.ttf"),
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    "/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed.ttf",
-    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-    "/usr/share/fonts/truetype/freefont/FreeSans.ttf"
-  ];
-
-  for (const p of candidates) {
-    const ext = path.extname(p).toLowerCase();
-    if (ext !== ".ttf" && ext !== ".otf") continue;
-
-    const v = validateFontFile(p);
-    if (v.ok) return { path: p, format: v.format, reason: "ok" };
-
-    if (p.includes(path.join("assets", "DejaVuSans.ttf")) && v.reason) {
-      return { path: p, format: null, reason: v.reason, invalid: true };
-    }
-  }
-  return { path: null, format: null, reason: "not_found" };
+// ---------------- PDF FONT (robust minimal) ----------------
+function findFontPath() {
+  const p = path.join(__dirname, "assets", "DejaVuSans.ttf");
+  if (fs.existsSync(p)) return p;
+  return null;
 }
 
 function tryApplyPdfFont(doc) {
-  const r = findCzFontPath();
-  if (!r.path) return { ok: false, fontPath: null, reason: r.reason };
-  if (r.invalid) return { ok: false, fontPath: r.path, reason: r.reason };
-
+  const p = findFontPath();
+  if (!p) return { ok: false, fontPath: null, reason: "not_found" };
   try {
-    doc.registerFont("CZ", r.path);
+    doc.registerFont("CZ", p);
     doc.font("CZ");
-    return { ok: true, fontPath: r.path, reason: "ok" };
+    return { ok: true, fontPath: p, reason: "ok" };
   } catch (e) {
-    console.error("PDF: Font load failed:", r.path, e?.message || e);
-    return { ok: false, fontPath: r.path, reason: `load_failed_${e?.message || "unknown"}` };
+    return { ok: false, fontPath: p, reason: `load_failed_${e?.message || "unknown"}` };
   }
 }
 
@@ -393,7 +344,7 @@ app.post("/api/ingest", requireKey, async (req, res) => {
       const durationMin =
         Number.isFinite(it.durationMin)
           ? it.durationMin
-          : await computeDurationMin(it.id, times.startIso, times.endIso);
+          : await computeDurationMin(it.id, it.startTimeIso || times.startIso, it.endTimeIso || times.endIso, null);
 
       const placeText = it.placeText || null;
       const cityFromDesc = extractCityFromDescription(desc);
@@ -449,13 +400,17 @@ app.post("/api/ingest", requireKey, async (req, res) => {
   }
 });
 
-// events (filters)
+// events (filters) + backfill coords + backfill duration
 app.get("/api/events", async (req, res) => {
   const limit = Math.min(Number(req.query.limit || 400), 2000);
   const filters = parseFilters(req);
+
   const rows = await getEventsFiltered(filters, limit);
-  const fixed = await backfillCoords(rows, 8);
-  res.json({ ok: true, filters, backfilled_coords: fixed, items: rows });
+
+  const fixedCoords = await backfillCoords(rows, 8);
+  const fixedDur = await backfillDurations(rows, 80);
+
+  res.json({ ok: true, filters, backfilled_coords: fixedCoords, backfilled_durations: fixedDur, items: rows });
 });
 
 // stats (filters)
@@ -465,11 +420,13 @@ app.get("/api/stats", async (req, res) => {
   res.json({ ok: true, filters, ...stats });
 });
 
-// export CSV
+// export CSV (nejdřív backfill duration, aby export měl vše)
 app.get("/api/export.csv", async (req, res) => {
   const filters = parseFilters(req);
   const limit = Math.min(Number(req.query.limit || 2000), 5000);
   const rows = await getEventsFiltered(filters, limit);
+
+  await backfillDurations(rows, 500);
 
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader("Content-Disposition", `attachment; filename="jpo_vyjezdy_export.csv"`);
@@ -519,11 +476,13 @@ app.get("/api/export.csv", async (req, res) => {
   res.send([header, ...lines].join("\n"));
 });
 
-// ✅ export PDF (FIX: stránkování dle reálné výšky řádku)
+// export PDF (backfill duration + jednoduché stránkování podle výšky řádku)
 app.get("/api/export.pdf", async (req, res) => {
   const filters = parseFilters(req);
   const limit = Math.min(Number(req.query.limit || 800), 2000);
   const rows = await getEventsFiltered(filters, limit);
+
+  await backfillDurations(rows, 500);
 
   res.setHeader("Content-Type", "application/pdf");
   res.setHeader("Content-Disposition", `attachment; filename="jpo_vyjezdy_export.pdf"`);
@@ -534,38 +493,20 @@ app.get("/api/export.pdf", async (req, res) => {
   const font = tryApplyPdfFont(doc);
 
   const now = new Date();
-  const title = "JPO výjezdy – export";
-  const filt = [
-    filters.types?.length ? `Typ: ${filters.types.join(", ")}` : "Typ: všechny",
-    filters.city ? `Město: "${filters.city}"` : "Město: všechny",
-    filters.status === "open" ? "Stav: aktivní" : filters.status === "closed" ? "Stav: ukončené" : "Stav: všechny"
-  ].join("  •  ");
-
-  doc.fontSize(18).fillColor("#000").text(title);
+  doc.fontSize(18).fillColor("#000").text("JPO výjezdy – export");
   doc.moveDown(0.2);
-  doc.fontSize(10).fillColor("#333").text(`Vygenerováno: ${now.toLocaleString("cs-CZ")}   •   ${filt}`);
+  doc.fontSize(10).fillColor("#333").text(`Vygenerováno: ${now.toLocaleString("cs-CZ")}`);
   doc.moveDown(0.4);
 
   if (!font.ok) {
-    const fp = font.fontPath ? `(${font.fontPath})` : "";
-    doc.fontSize(9).fillColor("#a33").text(
-      `Pozn.: CZ font nelze použít ${fp}. Důvod: ${font.reason}.`
-    );
+    doc.fontSize(9).fillColor("#a33").text(`Pozn.: font nelze použít (${font.reason})`);
     doc.moveDown(0.3);
   }
 
-  // tabulka
   const col = { time: 88, state: 62, type: 78, city: 170, dur: 70, title: 330 };
   const startX = doc.x;
   let y = doc.y;
-
   const tableWidth = col.time + col.state + col.type + col.city + col.dur + col.title;
-
-  function ensureFontAfterPage() {
-    if (font.ok) {
-      try { doc.font("CZ"); } catch { /* ignore */ }
-    }
-  }
 
   function drawHeader() {
     doc.fontSize(10).fillColor("#000");
@@ -575,15 +516,14 @@ app.get("/api/export.pdf", async (req, res) => {
     doc.text("Město", startX + col.time + col.state + col.type, y, { width: col.city });
     doc.text("Délka", startX + col.time + col.state + col.type + col.city, y, { width: col.dur });
     doc.text("Název", startX + col.time + col.state + col.type + col.city + col.dur, y, { width: col.title });
-
     y += 14;
     doc.moveTo(startX, y).lineTo(startX + tableWidth, y).strokeColor("#999").stroke();
     y += 8;
+    if (font.ok) doc.font("CZ");
   }
 
-  function rowHeightFor(docRef, rowObj, fontSize = 9) {
-    docRef.fontSize(fontSize);
-
+  function rowHeightFor(rowObj) {
+    doc.fontSize(9);
     const d = new Date(rowObj.pub_date || rowObj.created_at);
     const timeText = Number.isNaN(d.getTime()) ? String(rowObj.pub_date || rowObj.created_at || "") : d.toLocaleString("cs-CZ");
     const state = rowObj.is_closed ? "UKONČENO" : "AKTIVNÍ";
@@ -591,23 +531,21 @@ app.get("/api/export.pdf", async (req, res) => {
     const city = String(rowObj.city_text || rowObj.place_text || "");
     const dur = Number.isFinite(rowObj.duration_min) ? `${rowObj.duration_min} min` : "—";
     const ttl = String(rowObj.title || "");
-
     const opts = { align: "left", lineBreak: true };
 
-    const hTime = docRef.heightOfString(timeText, { width: col.time, ...opts });
-    const hState = docRef.heightOfString(state, { width: col.state, ...opts });
-    const hType = docRef.heightOfString(typ, { width: col.type, ...opts });
-    const hCity = docRef.heightOfString(city, { width: col.city, ...opts });
-    const hDur = docRef.heightOfString(dur, { width: col.dur, ...opts });
-    const hTitle = docRef.heightOfString(ttl, { width: col.title, ...opts });
-
-    const maxH = Math.max(hTime, hState, hType, hCity, hDur, hTitle);
-    return Math.max(14, Math.ceil(maxH) + 4); // min výška řádku + padding
+    const h = Math.max(
+      doc.heightOfString(timeText, { width: col.time, ...opts }),
+      doc.heightOfString(state, { width: col.state, ...opts }),
+      doc.heightOfString(typ, { width: col.type, ...opts }),
+      doc.heightOfString(city, { width: col.city, ...opts }),
+      doc.heightOfString(dur, { width: col.dur, ...opts }),
+      doc.heightOfString(ttl, { width: col.title, ...opts })
+    );
+    return Math.max(14, Math.ceil(h) + 4);
   }
 
   function drawRow(rowObj) {
     doc.fontSize(9).fillColor("#111");
-
     const d = new Date(rowObj.pub_date || rowObj.created_at);
     const timeText = Number.isNaN(d.getTime()) ? String(rowObj.pub_date || rowObj.created_at || "") : d.toLocaleString("cs-CZ");
     const state = rowObj.is_closed ? "UKONČENO" : "AKTIVNÍ";
@@ -615,7 +553,6 @@ app.get("/api/export.pdf", async (req, res) => {
     const city = String(rowObj.city_text || rowObj.place_text || "");
     const dur = Number.isFinite(rowObj.duration_min) ? `${rowObj.duration_min} min` : "—";
     const ttl = String(rowObj.title || "");
-
     const opts = { align: "left", lineBreak: true };
 
     doc.text(timeText, startX, y, { width: col.time, ...opts });
@@ -626,39 +563,22 @@ app.get("/api/export.pdf", async (req, res) => {
     doc.text(ttl, startX + col.time + col.state + col.type + col.city + col.dur, y, { width: col.title, ...opts });
   }
 
-  drawHeader();
-  ensureFontAfterPage();
+  const bottomLimit = () => doc.page.height - doc.page.margins.bottom - 18;
 
-  const bottomLimit = () => doc.page.height - doc.page.margins.bottom - 18; // rezerva
+  drawHeader();
 
   for (const r of rows) {
-    const h = rowHeightFor(doc, r, 9);
-
-    // když se nevejde, uděláme novou stránku
+    const h = rowHeightFor(r);
     if (y + h > bottomLimit()) {
       doc.addPage({ size: "A4", layout: "landscape", margin: 24 });
-      ensureFontAfterPage();
       y = doc.y;
       drawHeader();
-      ensureFontAfterPage();
     }
-
     drawRow(r);
-
-    // oddělovač řádku (jemně)
     y += h;
-    doc.moveTo(startX, y - 2).lineTo(startX + tableWidth, y - 2).strokeColor("#eee").opacity(0.5).stroke();
-    doc.opacity(1);
   }
 
-  // footer se záznamy vždy na poslední stránce dolů (pokud je místo)
-  if (y + 24 > bottomLimit()) {
-    doc.addPage({ size: "A4", layout: "landscape", margin: 24 });
-    ensureFontAfterPage();
-    y = doc.y;
-  }
   doc.fontSize(9).fillColor("#444").text(`Záznamů: ${rows.length}`, startX, y + 10);
-
   doc.end();
 });
 
