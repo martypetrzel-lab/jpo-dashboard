@@ -1,6 +1,6 @@
 {
   "name": "jpo-dashboard",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "main": "server.js",
@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "express": "^4.19.2",
-    "pg": "^8.11.5"
+    "pg": "^8.11.5",
+    "pdfkit": "^0.15.0"
   }
 }

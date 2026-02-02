@@ -86,6 +86,40 @@ export async function initDb() {
   `);
 }
 
+/**
+ * filters:
+ *  - types: array of strings (event_type)
+ *  - city: string (match place_text ILIKE %city%)
+ *  - status: "all" | "open" | "closed"
+ */
+function buildWhere(filters = {}, startIndex = 1) {
+  const clauses = [];
+  const params = [];
+  let i = startIndex;
+
+  const types = Array.isArray(filters.types) ? filters.types.filter(Boolean) : [];
+  const city = (filters.city || "").trim();
+  const status = (filters.status || "all").toLowerCase();
+
+  if (types.length > 0) {
+    clauses.push(`event_type = ANY($${i})`);
+    params.push(types);
+    i++;
+  }
+
+  if (city) {
+    clauses.push(`place_text ILIKE $${i}`);
+    params.push(`%${city}%`);
+    i++;
+  }
+
+  if (status === "open") clauses.push(`is_closed = FALSE`);
+  if (status === "closed") clauses.push(`is_closed = TRUE`);
+
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  return { where, params, nextIndex: i };
+}
+
 export async function upsertEvent(ev) {
   await pool.query(
     `
@@ -133,53 +167,104 @@ export async function updateEventCoords(id, lat, lon) {
   await pool.query(`UPDATE events SET lat=$2, lon=$3 WHERE id=$1`, [id, lat, lon]);
 }
 
-export async function getEvents(limit = 300) {
-  const res = await pool.query(
-    `SELECT * FROM events ORDER BY created_at DESC LIMIT $1`,
-    [limit]
-  );
+export async function getEventsFiltered(filters = {}, limit = 300) {
+  const lim = Math.max(1, Math.min(Number(limit || 300), 2000));
+
+  const { where, params, nextIndex } = buildWhere(filters, 1);
+  const sql = `SELECT * FROM events ${where} ORDER BY created_at DESC LIMIT $${nextIndex}`;
+  const res = await pool.query(sql, [...params, lim]);
   return res.rows;
 }
 
-export async function getStats() {
-  const byDay = await pool.query(`
+export async function getStatsFiltered(filters = {}) {
+  // stats are computed for last 30 days
+  const baseTime = `created_at >= NOW() - INTERVAL '30 days'`;
+
+  // for byDay/topCities/byType/longest we respect status filter (if user asks open only, it applies)
+  const { where, params } = buildWhere(filters, 1);
+  const where30 = where ? `${where} AND ${baseTime}` : `WHERE ${baseTime}`;
+
+  const byDay = await pool.query(
+    `
     SELECT to_char(created_at::date, 'YYYY-MM-DD') AS day, COUNT(*)::int AS count
     FROM events
-    WHERE created_at >= NOW() - INTERVAL '30 days'
+    ${where30}
     GROUP BY day
     ORDER BY day ASC;
-  `);
+    `,
+    params
+  );
 
-  const topCities = await pool.query(`
+  const byType = await pool.query(
+    `
+    SELECT COALESCE(event_type,'other') AS type, COUNT(*)::int AS count
+    FROM events
+    ${where30}
+    GROUP BY type
+    ORDER BY count DESC;
+    `,
+    params
+  );
+
+  const topCities = await pool.query(
+    `
     SELECT COALESCE(place_text,'(neznamé)') AS city, COUNT(*)::int AS count
     FROM events
+    ${where30}
     GROUP BY city
     ORDER BY count DESC
-    LIMIT 10;
-  `);
+    LIMIT 15;
+    `,
+    params
+  );
 
   const bestCity = topCities.rows[0] || null;
 
-  const longest = await pool.query(`
-    SELECT id, title, link, place_text, status_text, duration_min, start_time_iso, end_time_iso, created_at
+  const longest = await pool.query(
+    `
+    SELECT id, title, link, place_text, status_text, duration_min, start_time_iso, end_time_iso, created_at, is_closed
     FROM events
-    WHERE duration_min IS NOT NULL AND duration_min > 0
+    ${where30}
+      AND duration_min IS NOT NULL AND duration_min > 0
     ORDER BY duration_min DESC
     LIMIT 10;
-  `);
+    `,
+    params
+  );
 
-  const openCount = await pool.query(`
+  // open/closed counts should NOT be destroyed by status filter – ať vidíš poměr.
+  const fNoStatus = { ...filters, status: "all" };
+  const ws = buildWhere(fNoStatus, 1);
+  const where30NoStatus = ws.where ? `${ws.where} AND ${baseTime}` : `WHERE ${baseTime}`;
+
+  const openCount = await pool.query(
+    `
     SELECT COUNT(*)::int AS count
     FROM events
-    WHERE is_closed = FALSE
-  `);
+    ${where30NoStatus}
+      AND is_closed = FALSE;
+    `,
+    ws.params
+  );
+
+  const closedCount = await pool.query(
+    `
+    SELECT COUNT(*)::int AS count
+    FROM events
+    ${where30NoStatus}
+      AND is_closed = TRUE;
+    `,
+    ws.params
+  );
 
   return {
     byDay: byDay.rows,
+    byType: byType.rows,
     bestCity,
     topCities: topCities.rows,
     longest: longest.rows,
-    openCount: openCount.rows[0]?.count ?? 0
+    openCount: openCount.rows[0]?.count ?? 0,
+    closedCount: closedCount.rows[0]?.count ?? 0
   };
 }
 

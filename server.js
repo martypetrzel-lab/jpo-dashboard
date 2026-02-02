@@ -1,9 +1,10 @@
 import express from "express";
+import PDFDocument from "pdfkit";
 import {
   initDb,
   upsertEvent,
-  getEvents,
-  getStats,
+  getEventsFiltered,
+  getStatsFiltered,
   getCachedGeocode,
   setCachedGeocode,
   updateEventCoords,
@@ -15,7 +16,7 @@ app.use(express.json({ limit: "2mb" }));
 app.use(express.static("public"));
 
 const API_KEY = process.env.API_KEY || "";
-const GEOCODE_UA = process.env.GEOCODE_USER_AGENT || "jpo-dashboard/1.0";
+const GEOCODE_UA = process.env.GEOCODE_USER_AGENT || "jpo-dashboard/1.1";
 
 function requireKey(req, res, next) {
   const key = req.header("X-API-Key") || "";
@@ -153,6 +154,48 @@ async function geocodePlace(placeText) {
   return { lat, lon, cached: false };
 }
 
+function parseFilters(req) {
+  const typeQ = String(req.query.type || "").trim();
+  const city = String(req.query.city || "").trim();
+  const status = String(req.query.status || "all").trim().toLowerCase();
+
+  const types = typeQ
+    ? typeQ.split(",").map(s => s.trim()).filter(Boolean)
+    : [];
+
+  const normStatus = ["all", "open", "closed"].includes(status) ? status : "all";
+
+  return {
+    types,
+    city,
+    status: normStatus
+  };
+}
+
+function csvEscape(v) {
+  const s = String(v ?? "");
+  if (/[",\n\r;]/.test(s)) return `"${s.replaceAll('"', '""')}"`;
+  return s;
+}
+
+function formatDateForCsv(v) {
+  if (!v) return "";
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return String(v);
+  return d.toISOString();
+}
+
+function typeLabel(t) {
+  switch (t) {
+    case "fire": return "požár";
+    case "traffic": return "nehoda";
+    case "tech": return "technická";
+    case "rescue": return "záchrana";
+    case "false_alarm": return "planý poplach";
+    default: return "jiné";
+  }
+}
+
 app.post("/api/ingest", requireKey, async (req, res) => {
   try {
     const { source, items } = req.body || {};
@@ -219,14 +262,147 @@ app.post("/api/ingest", requireKey, async (req, res) => {
 });
 
 app.get("/api/events", async (req, res) => {
-  const limit = Math.min(Number(req.query.limit || 300), 1000);
-  const rows = await getEvents(limit);
-  res.json({ ok: true, items: rows });
+  const limit = Math.min(Number(req.query.limit || 400), 2000);
+  const filters = parseFilters(req);
+  const rows = await getEventsFiltered(filters, limit);
+  res.json({ ok: true, filters, items: rows });
 });
 
 app.get("/api/stats", async (req, res) => {
-  const stats = await getStats();
-  res.json({ ok: true, ...stats });
+  const filters = parseFilters(req);
+  const stats = await getStatsFiltered(filters);
+  res.json({ ok: true, filters, ...stats });
+});
+
+// export CSV for municipality/commander
+app.get("/api/export.csv", async (req, res) => {
+  const filters = parseFilters(req);
+  const limit = Math.min(Number(req.query.limit || 2000), 5000);
+  const rows = await getEventsFiltered(filters, limit);
+
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="jpo_vyjezdy_export.csv"`);
+
+  const header = [
+    "time_iso",
+    "state",
+    "type",
+    "title",
+    "place",
+    "status_text",
+    "duration_min",
+    "link"
+  ].join(";");
+
+  const lines = rows.map(r => {
+    const timeIso = formatDateForCsv(r.pub_date || r.created_at);
+    const state = r.is_closed ? "UKONCENO" : "AKTIVNI";
+    const typ = typeLabel(r.event_type || "other");
+    return [
+      csvEscape(timeIso),
+      csvEscape(state),
+      csvEscape(typ),
+      csvEscape(r.title || ""),
+      csvEscape(r.place_text || ""),
+      csvEscape(r.status_text || ""),
+      csvEscape(Number.isFinite(r.duration_min) ? r.duration_min : ""),
+      csvEscape(r.link || "")
+    ].join(";");
+  });
+
+  res.send([header, ...lines].join("\n"));
+});
+
+// export PDF for municipality/commander
+app.get("/api/export.pdf", async (req, res) => {
+  const filters = parseFilters(req);
+  const limit = Math.min(Number(req.query.limit || 800), 2000);
+  const rows = await getEventsFiltered(filters, limit);
+
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `attachment; filename="jpo_vyjezdy_export.pdf"`);
+
+  const doc = new PDFDocument({ size: "A4", layout: "landscape", margin: 24 });
+  doc.pipe(res);
+
+  const now = new Date();
+  const title = "JPO výjezdy – export";
+  const filt = [
+    filters.types?.length ? `Typ: ${filters.types.join(", ")}` : "Typ: všechny",
+    filters.city ? `Město: "${filters.city}"` : "Město: všechny",
+    filters.status === "open" ? "Stav: aktivní" : filters.status === "closed" ? "Stav: ukončené" : "Stav: všechny"
+  ].join("  •  ");
+
+  doc.fontSize(18).text(title, { continued: false });
+  doc.moveDown(0.2);
+  doc.fontSize(10).fillColor("#333").text(`Vygenerováno: ${now.toLocaleString("cs-CZ")}   •   ${filt}`);
+  doc.moveDown(0.8);
+
+  // table layout
+  const col = {
+    time: 88,
+    state: 62,
+    type: 78,
+    place: 130,
+    dur: 70,
+    title: 360
+  };
+
+  const startX = doc.x;
+  let y = doc.y;
+
+  function drawHeader() {
+    doc.fontSize(10).fillColor("#000");
+    doc.text("Čas", startX, y, { width: col.time });
+    doc.text("Stav", startX + col.time, y, { width: col.state });
+    doc.text("Typ", startX + col.time + col.state, y, { width: col.type });
+    doc.text("Místo", startX + col.time + col.state + col.type, y, { width: col.place });
+    doc.text("Délka", startX + col.time + col.state + col.type + col.place, y, { width: col.dur });
+    doc.text("Název", startX + col.time + col.state + col.type + col.place + col.dur, y, { width: col.title });
+    y += 14;
+    doc.moveTo(startX, y).lineTo(startX + col.time + col.state + col.type + col.place + col.dur + col.title, y).strokeColor("#999").stroke();
+    y += 8;
+  }
+
+  drawHeader();
+
+  doc.fontSize(9).fillColor("#111");
+
+  for (const r of rows) {
+    const timeText = (() => {
+      const d = new Date(r.pub_date || r.created_at);
+      return Number.isNaN(d.getTime()) ? String(r.pub_date || r.created_at || "") : d.toLocaleString("cs-CZ");
+    })();
+
+    const state = r.is_closed ? "UKONČENO" : "AKTIVNÍ";
+    const typ = typeLabel(r.event_type || "other");
+    const place = String(r.place_text || "");
+    const dur = Number.isFinite(r.duration_min) ? `${r.duration_min} min` : "—";
+    const ttl = String(r.title || "");
+
+    const rowHeight = 14;
+
+    // page break
+    if (y > doc.page.height - 40) {
+      doc.addPage({ size: "A4", layout: "landscape", margin: 24 });
+      y = doc.y;
+      drawHeader();
+    }
+
+    doc.text(timeText, startX, y, { width: col.time });
+    doc.text(state, startX + col.time, y, { width: col.state });
+    doc.text(typ, startX + col.time + col.state, y, { width: col.type });
+    doc.text(place, startX + col.time + col.state + col.type, y, { width: col.place });
+    doc.text(dur, startX + col.time + col.state + col.type + col.place, y, { width: col.dur });
+    doc.text(ttl, startX + col.time + col.state + col.type + col.place + col.dur, y, { width: col.title });
+
+    y += rowHeight;
+  }
+
+  doc.moveDown(0.6);
+  doc.fontSize(9).fillColor("#444").text(`Záznamů: ${rows.length}`);
+
+  doc.end();
 });
 
 app.get("/health", (req, res) => res.send("OK"));

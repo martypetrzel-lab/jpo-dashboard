@@ -13,6 +13,10 @@ function typeEmoji(t) {
   return (TYPE[t] || TYPE.other).emoji;
 }
 
+function typeLabel(t) {
+  return (TYPE[t] || TYPE.other).label;
+}
+
 function setStatus(text, ok = true) {
   const pill = document.getElementById("statusPill");
   pill.textContent = text;
@@ -44,7 +48,7 @@ function formatDate(d) {
 function formatDuration(min) {
   if (!Number.isFinite(min) || min <= 0) return "—";
   const h = Math.floor(min / 60);
-  const m = min % 60;
+  const m = Math.round(min % 60);
   if (h <= 0) return `${m} min`;
   return `${h} h ${m} min`;
 }
@@ -57,29 +61,64 @@ function escapeHtml(s) {
     .replaceAll('"', "&quot;");
 }
 
+function minutesSince(dtIso) {
+  if (!dtIso) return null;
+  const dt = new Date(dtIso);
+  if (isNaN(dt.getTime())) return null;
+  const ms = Date.now() - dt.getTime();
+  if (!Number.isFinite(ms) || ms < 0) return null;
+  return Math.round(ms / 60000);
+}
+
+function effectiveRunningMinutes(it) {
+  // prefer start_time_iso, else first_seen_at, else created_at
+  const m =
+    minutesSince(it.start_time_iso) ??
+    minutesSince(it.first_seen_at) ??
+    minutesSince(it.created_at);
+  return Number.isFinite(m) ? m : null;
+}
+
+function statePill(isClosed) {
+  return isClosed
+    ? `<span class="statePill closed">UKONČENO</span>`
+    : `<span class="statePill open">AKTIVNÍ</span>`;
+}
+
 function renderTable(items) {
   const tbody = document.getElementById("eventsTbody");
   tbody.innerHTML = "";
+
   for (const it of items) {
     const t = it.event_type || "other";
     const tr = document.createElement("tr");
+    const isClosed = !!it.is_closed;
+
+    const durMin = isClosed
+      ? (Number.isFinite(it.duration_min) ? it.duration_min : null)
+      : effectiveRunningMinutes(it);
+
+    tr.className = isClosed ? "" : "rowActive";
+
     tr.innerHTML = `
-      <td>${formatDate(it.pub_date || it.created_at)}</td>
-      <td><span class="iconPill" title="${escapeHtml((TYPE[t]||TYPE.other).label)}">${typeEmoji(t)}</span></td>
+      <td>${escapeHtml(formatDate(it.pub_date || it.created_at))}</td>
+      <td><span class="iconPill" title="${escapeHtml(typeLabel(t))}">${typeEmoji(t)}</span></td>
+      <td>${statePill(isClosed)}</td>
       <td>${escapeHtml(it.title || "")}</td>
       <td>${escapeHtml(it.place_text || "")}</td>
       <td>${escapeHtml(it.status_text || "")}</td>
-      <td>${formatDuration(it.duration_min)}</td>
+      <td>${escapeHtml(formatDuration(durMin))}</td>
       <td>${it.link ? `<a href="${it.link}" target="_blank" rel="noopener">otevřít</a>` : ""}</td>
     `;
     tbody.appendChild(tr);
   }
 }
 
-function makeMarkerIcon(emoji) {
+function makeMarkerIcon(emoji, isClosed) {
+  const cls = isClosed ? "mIcon" : "mIcon mIconActive";
   return L.divIcon({
     className: "leaflet-div-icon",
-    html: `<div style="transform:translate(-50%,-50%);font-size:22px;">${emoji}</div>`,
+    html: `<div class="${cls}" style="transform:translate(-50%,-50%);font-size:22px;">${emoji}</div>`,
     iconSize: [22, 22],
     iconAnchor: [11, 11]
   });
@@ -93,16 +132,22 @@ function renderMap(items) {
     if (typeof it.lat === "number" && typeof it.lon === "number") {
       const t = it.event_type || "other";
       const emoji = typeEmoji(t);
+      const isClosed = !!it.is_closed;
 
-      const m = L.marker([it.lat, it.lon], { icon: makeMarkerIcon(emoji) });
+      const m = L.marker([it.lat, it.lon], { icon: makeMarkerIcon(emoji, isClosed) });
+
+      const durMin = isClosed
+        ? (Number.isFinite(it.duration_min) ? it.duration_min : null)
+        : effectiveRunningMinutes(it);
 
       const html = `
-        <div style="min-width:240px">
+        <div style="min-width:260px">
           <div style="font-weight:700;margin-bottom:6px">${emoji} ${escapeHtml(it.title || "")}</div>
+          <div><b>Stav:</b> ${isClosed ? "UKONČENO" : "AKTIVNÍ"}</div>
+          <div><b>Typ:</b> ${escapeHtml(typeLabel(t))}</div>
           <div><b>Místo:</b> ${escapeHtml(it.place_text || "")}</div>
-          <div><b>Stav:</b> ${escapeHtml(it.status_text || "")}</div>
           <div><b>Čas:</b> ${escapeHtml(formatDate(it.pub_date || it.created_at))}</div>
-          <div><b>Délka:</b> ${escapeHtml(formatDuration(it.duration_min))}</div>
+          <div><b>Délka:</b> ${escapeHtml(formatDuration(durMin))}${isClosed ? "" : " (běží)"}</div>
           ${it.link ? `<div style="margin-top:8px"><a href="${it.link}" target="_blank" rel="noopener">Detail</a></div>` : ""}
         </div>
       `;
@@ -167,6 +212,29 @@ function renderBestCity(bestCity) {
   l.textContent = bestCity.city;
 }
 
+function renderOpenClosed(openCount, closedCount) {
+  document.getElementById("openCountValue").textContent = `${openCount ?? 0}`;
+  document.getElementById("closedCountValue").textContent = `${closedCount ?? 0}`;
+}
+
+function renderByType(rows) {
+  const wrap = document.getElementById("byTypeList");
+  wrap.innerHTML = "";
+  rows.forEach((r, idx) => {
+    const t = r.type || "other";
+    const div = document.createElement("div");
+    div.className = "row";
+    div.innerHTML = `
+      <div class="left">
+        <div class="meta">#${idx + 1}</div>
+        <div class="name">${typeEmoji(t)} ${escapeHtml(typeLabel(t))}</div>
+      </div>
+      <div class="meta">${r.count}×</div>
+    `;
+    wrap.appendChild(div);
+  });
+}
+
 function renderChart(byDay) {
   const labels = byDay.map(x => x.day);
   const data = byDay.map(x => x.count);
@@ -187,12 +255,37 @@ function renderChart(byDay) {
   });
 }
 
+function getFiltersFromUi() {
+  const type = document.getElementById("filterType").value.trim();
+  const city = document.getElementById("filterCity").value.trim();
+  const status = document.getElementById("filterStatus").value.trim();
+
+  const p = new URLSearchParams();
+  if (type) p.set("type", type);
+  if (city) p.set("city", city);
+  if (status && status !== "all") p.set("status", status);
+  return p;
+}
+
+function updateExportLinks(params) {
+  const qs = params.toString();
+  const csv = document.getElementById("exportCsvBtn");
+  const pdf = document.getElementById("exportPdfBtn");
+  csv.href = "/api/export.csv" + (qs ? `?${qs}` : "");
+  pdf.href = "/api/export.pdf" + (qs ? `?${qs}` : "");
+}
+
 async function loadAll() {
   setStatus("načítám…", true);
 
+  const params = getFiltersFromUi();
+  params.set("limit", "400");
+  updateExportLinks(params);
+
+  const qs = params.toString();
   const [eventsRes, statsRes] = await Promise.all([
-    fetch("/api/events?limit=400"),
-    fetch("/api/stats")
+    fetch("/api/events" + (qs ? `?${qs}` : "")),
+    fetch("/api/stats" + (qs ? `?${qs}` : ""))
   ]);
 
   if (!eventsRes.ok || !statsRes.ok) {
@@ -208,14 +301,26 @@ async function loadAll() {
   renderMap(items);
 
   renderChart(statsJson.byDay || []);
+  renderOpenClosed(statsJson.openCount ?? 0, statsJson.closedCount ?? 0);
+  renderByType(statsJson.byType || []);
+
   renderBestCity(statsJson.bestCity || null);
   renderTopCities(statsJson.topCities || []);
   renderLongest(statsJson.longest || []);
 
-  setStatus(`OK • ${items.length} záznamů`, true);
+  const openNow = items.filter(x => !x.is_closed).length;
+  setStatus(`OK • ${items.length} záznamů • aktivní ${openNow}`, true);
 }
 
 document.getElementById("refreshBtn").addEventListener("click", loadAll);
+
+document.getElementById("applyBtn").addEventListener("click", loadAll);
+document.getElementById("resetBtn").addEventListener("click", () => {
+  document.getElementById("filterType").value = "";
+  document.getElementById("filterCity").value = "";
+  document.getElementById("filterStatus").value = "all";
+  loadAll();
+});
 
 initMap();
 loadAll();

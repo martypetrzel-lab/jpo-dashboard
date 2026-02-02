@@ -11,6 +11,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 14px;
   padding: 14px 16px;
   border-bottom: 1px solid rgba(255,255,255,0.08);
   position: sticky;
@@ -20,10 +21,18 @@ body {
   z-index: 5;
 }
 
+.title { min-width: 340px; }
 .title h1 { margin: 0; font-size: 18px; }
 .sub { opacity: 0.75; font-size: 12px; margin-top: 2px; }
 
-.actions { display: flex; gap: 10px; align-items: center; }
+.actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 button {
   padding: 8px 12px;
   border-radius: 10px;
@@ -33,6 +42,8 @@ button {
   cursor: pointer;
 }
 button:hover { background: #1a2432; }
+button.ghost { background: transparent; }
+button.ghost:hover { background: rgba(255,255,255,0.05); }
 
 .pill {
   padding: 6px 10px;
@@ -41,6 +52,51 @@ button:hover { background: #1a2432; }
   border: 1px solid rgba(255,255,255,0.12);
   background: rgba(255,255,255,0.06);
 }
+
+.filters {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.03);
+  padding: 8px 10px;
+  border-radius: 14px;
+}
+
+.filters label {
+  display: grid;
+  gap: 4px;
+  font-size: 11px;
+  opacity: 0.9;
+}
+
+.filters select,
+.filters input {
+  height: 32px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: #0f1620;
+  color: #e9eef6;
+  padding: 0 10px;
+  min-width: 150px;
+}
+
+.filters input { min-width: 180px; }
+
+.linkBtn {
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: #141b25;
+  color: #e9eef6;
+  text-decoration: none;
+  font-size: 12px;
+}
+.linkBtn:hover { background: #1a2432; }
 
 .grid {
   display: grid;
@@ -72,6 +128,11 @@ button:hover { background: #1a2432; }
   border-radius: 999px;
   border: 1px solid rgba(255,255,255,0.10);
   background: rgba(255,255,255,0.04);
+}
+
+.legendActive {
+  border-color: rgba(80, 200, 140, 0.35);
+  background: rgba(80, 200, 140, 0.12);
 }
 
 .mapCard { grid-row: span 3; }
@@ -110,6 +171,19 @@ a:hover { text-decoration: underline; }
 .bigStatValue { font-size: 28px; font-weight: 700; }
 .bigStatLabel { opacity: 0.75; margin-top: 4px; }
 
+.twoCols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.statBox {
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.03);
+  border-radius: 14px;
+  padding: 12px;
+}
+
 .iconPill {
   display: inline-flex;
   align-items: center;
@@ -121,7 +195,35 @@ a:hover { text-decoration: underline; }
   background: rgba(255,255,255,0.05);
 }
 
+.statePill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  border: 1px solid rgba(255,255,255,0.12);
+}
+
+.statePill.open {
+  border-color: rgba(80, 200, 140, 0.35);
+  background: rgba(80, 200, 140, 0.12);
+}
+
+.statePill.closed {
+  border-color: rgba(180, 180, 180, 0.25);
+  background: rgba(255,255,255,0.06);
+}
+
+tr.rowActive td {
+  background: rgba(80, 200, 140, 0.06);
+}
+
 .leaflet-div-icon {
   background: transparent;
   border: none;
+}
+
+.mIconActive {
+  filter: drop-shadow(0 0 6px rgba(80, 200, 140, 0.45));
 }
