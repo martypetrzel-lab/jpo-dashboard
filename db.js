@@ -1,211 +1,174 @@
 import pg from "pg";
 
-export const pool = new pg.Pool({
+const { Pool } = pg;
+
+export const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL?.includes("railway") ? { rejectUnauthorized: false } : false
+  ssl: process.env.DATABASE_URL?.includes("localhost") ? false : { rejectUnauthorized: false },
 });
 
-async function colExists(table, col) {
-  const res = await pool.query(
-    `
-    SELECT 1
-    FROM information_schema.columns
-    WHERE table_name = $1 AND column_name = $2
-    LIMIT 1
-    `,
-    [table, col]
-  );
-  return res.rowCount > 0;
-}
-
 export async function initDb() {
-  await pool.query(`
+  const sql = `
     CREATE TABLE IF NOT EXISTS events (
       id TEXT PRIMARY KEY,
       title TEXT NOT NULL,
       link TEXT NOT NULL,
       pub_date TEXT,
       place_text TEXT,
+      place_norm TEXT,
       status_text TEXT,
-      event_type TEXT,
-
       description_raw TEXT,
-
+      is_closed BOOLEAN NOT NULL DEFAULT false,
       start_time_iso TEXT,
       end_time_iso TEXT,
       duration_min INTEGER,
-      is_closed BOOLEAN NOT NULL DEFAULT FALSE,
-
-      lat DOUBLE PRECISION,
-      lon DOUBLE PRECISION,
-
       first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      last_seen_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-  `);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS geocode_cache (
-      place_text TEXT PRIMARY KEY,
+      last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       lat DOUBLE PRECISION,
-      lon DOUBLE PRECISION,
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      lon DOUBLE PRECISION
     );
-  `);
 
-  // migrations if you started from older schema
-  const adds = [
-    ["events", "event_type", "TEXT"],
-    ["events", "description_raw", "TEXT"],
-    ["events", "start_time_iso", "TEXT"],
-    ["events", "end_time_iso", "TEXT"],
-    ["events", "duration_min", "INTEGER"],
-    ["events", "is_closed", "BOOLEAN"],
-    ["events", "first_seen_at", "TIMESTAMPTZ"],
-    ["events", "last_seen_at", "TIMESTAMPTZ"]
-  ];
-
-  for (const [t, c, typ] of adds) {
-    // eslint-disable-next-line no-await-in-loop
-    const exists = await colExists(t, c);
-    if (!exists) {
-      // eslint-disable-next-line no-await-in-loop
-      await pool.query(`ALTER TABLE ${t} ADD COLUMN ${c} ${typ};`);
-    }
-  }
-
-  // ensure defaults for new columns if migrated
-  await pool.query(`
-    UPDATE events
-    SET is_closed = COALESCE(is_closed, FALSE),
-        first_seen_at = COALESCE(first_seen_at, created_at, NOW()),
-        last_seen_at = COALESCE(last_seen_at, NOW())
-    WHERE is_closed IS NULL OR first_seen_at IS NULL OR last_seen_at IS NULL;
-  `);
+    CREATE INDEX IF NOT EXISTS idx_events_last_seen_at ON events(last_seen_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_events_is_closed ON events(is_closed);
+    CREATE INDEX IF NOT EXISTS idx_events_place_norm ON events(place_norm);
+  `;
+  await pool.query(sql);
 }
 
-export async function upsertEvent(ev) {
-  await pool.query(
-    `
+export async function upsertEvent(row) {
+  const sql = `
     INSERT INTO events (
-      id, title, link, pub_date, place_text, status_text, event_type,
-      description_raw,
-      start_time_iso, end_time_iso, duration_min, is_closed,
-      first_seen_at, last_seen_at
+      id, title, link, pub_date, place_text, place_norm, status_text, description_raw,
+      is_closed, start_time_iso, end_time_iso, duration_min, lat, lon
+    ) VALUES (
+      $1,$2,$3,$4,$5,$6,$7,$8,
+      $9,$10,$11,$12,$13,$14
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, NOW(), NOW())
     ON CONFLICT (id) DO UPDATE SET
       title = EXCLUDED.title,
       link = EXCLUDED.link,
       pub_date = EXCLUDED.pub_date,
       place_text = EXCLUDED.place_text,
+      place_norm = EXCLUDED.place_norm,
       status_text = EXCLUDED.status_text,
-      event_type = EXCLUDED.event_type,
-      description_raw = COALESCE(EXCLUDED.description_raw, events.description_raw),
-
+      description_raw = EXCLUDED.description_raw,
+      is_closed = EXCLUDED.is_closed,
       start_time_iso = COALESCE(EXCLUDED.start_time_iso, events.start_time_iso),
-      end_time_iso   = COALESCE(EXCLUDED.end_time_iso, events.end_time_iso),
-      duration_min   = COALESCE(EXCLUDED.duration_min, events.duration_min),
-      is_closed      = (events.is_closed OR EXCLUDED.is_closed),
-
+      end_time_iso = COALESCE(EXCLUDED.end_time_iso, events.end_time_iso),
+      duration_min = COALESCE(EXCLUDED.duration_min, events.duration_min),
+      lat = COALESCE(EXCLUDED.lat, events.lat),
+      lon = COALESCE(EXCLUDED.lon, events.lon),
       last_seen_at = NOW()
-    `,
-    [
-      ev.id,
-      ev.title,
-      ev.link,
-      ev.pubDate || null,
-      ev.placeText || null,
-      ev.statusText || null,
-      ev.eventType || null,
-      ev.descriptionRaw || null,
-      ev.startTimeIso || null,
-      ev.endTimeIso || null,
-      Number.isFinite(ev.durationMin) ? Math.round(ev.durationMin) : null,
-      !!ev.isClosed
-    ]
-  );
+    RETURNING *;
+  `;
+  const vals = [
+    row.id,
+    row.title,
+    row.link,
+    row.pubDate || null,
+    row.placeText || null,
+    row.placeNorm || null,
+    row.statusText || null,
+    row.descriptionRaw || null,
+    !!row.isClosed,
+    row.startTimeIso || null,
+    row.endTimeIso || null,
+    row.durationMin ?? null,
+    row.lat ?? null,
+    row.lon ?? null,
+  ];
+  const res = await pool.query(sql, vals);
+  return res.rows[0];
 }
 
-export async function updateEventCoords(id, lat, lon) {
-  await pool.query(`UPDATE events SET lat=$2, lon=$3 WHERE id=$1`, [id, lat, lon]);
-}
-
-export async function getEvents(limit = 300) {
-  const res = await pool.query(
-    `SELECT * FROM events ORDER BY created_at DESC LIMIT $1`,
-    [limit]
-  );
+export async function getEvents(limit = 200, onlyActive = false) {
+  const lim = Math.max(1, Math.min(Number(limit) || 200, 1000));
+  const where = onlyActive ? `WHERE is_closed = false` : ``;
+  const sql = `
+    SELECT *
+    FROM events
+    ${where}
+    ORDER BY last_seen_at DESC
+    LIMIT $1
+  `;
+  const res = await pool.query(sql, [lim]);
   return res.rows;
 }
 
-export async function getStats() {
-  const byDay = await pool.query(`
-    SELECT to_char(created_at::date, 'YYYY-MM-DD') AS day, COUNT(*)::int AS count
-    FROM events
-    WHERE created_at >= NOW() - INTERVAL '30 days'
-    GROUP BY day
-    ORDER BY day ASC;
-  `);
+export async function getStats(days = 30) {
+  const d = Math.max(1, Math.min(Number(days) || 30, 365));
 
-  const topCities = await pool.query(`
-    SELECT COALESCE(place_text,'(neznamé)') AS city, COUNT(*)::int AS count
+  const byDaySql = `
+    SELECT to_char(date_trunc('day', first_seen_at), 'YYYY-MM-DD') AS day,
+           COUNT(*)::int AS cnt
     FROM events
-    GROUP BY city
-    ORDER BY count DESC
-    LIMIT 10;
-  `);
-
-  const bestCity = topCities.rows[0] || null;
-
-  const longest = await pool.query(`
-    SELECT id, title, link, place_text, status_text, duration_min, start_time_iso, end_time_iso, created_at
+    WHERE first_seen_at >= NOW() - ($1::text || ' days')::interval
+    GROUP BY 1
+    ORDER BY 1 ASC
+  `;
+  const topCitiesSql = `
+    SELECT COALESCE(place_norm, place_text, 'nezname') AS city,
+           COUNT(*)::int AS cnt
     FROM events
-    WHERE duration_min IS NOT NULL AND duration_min > 0
+    WHERE first_seen_at >= NOW() - ($1::text || ' days')::interval
+    GROUP BY 1
+    ORDER BY cnt DESC
+    LIMIT 10
+  `;
+  const longestSql = `
+    SELECT id, title, link, place_text, place_norm, duration_min, start_time_iso, end_time_iso, is_closed
+    FROM events
+    WHERE duration_min IS NOT NULL
+      AND first_seen_at >= NOW() - ($1::text || ' days')::interval
     ORDER BY duration_min DESC
-    LIMIT 10;
-  `);
-
-  const openCount = await pool.query(`
-    SELECT COUNT(*)::int AS count
+    LIMIT 10
+  `;
+  const activeSql = `
+    SELECT COUNT(*)::int AS cnt
     FROM events
-    WHERE is_closed = FALSE
-  `);
+    WHERE is_closed = false
+      AND first_seen_at >= NOW() - ($1::text || ' days')::interval
+  `;
+
+  const [byDay, topCities, longest, active] = await Promise.all([
+    pool.query(byDaySql, [d]),
+    pool.query(topCitiesSql, [d]),
+    pool.query(longestSql, [d]),
+    pool.query(activeSql, [d]),
+  ]);
 
   return {
+    days: d,
     byDay: byDay.rows,
-    bestCity,
     topCities: topCities.rows,
     longest: longest.rows,
-    openCount: openCount.rows[0]?.count ?? 0
+    activeCount: active.rows?.[0]?.cnt ?? 0,
   };
 }
 
-export async function getCachedGeocode(placeText) {
-  const res = await pool.query(
-    `SELECT lat, lon FROM geocode_cache WHERE place_text=$1`,
-    [placeText]
-  );
-  return res.rows[0] || null;
-}
-
-export async function setCachedGeocode(placeText, lat, lon) {
-  await pool.query(
-    `
-    INSERT INTO geocode_cache (place_text, lat, lon)
-    VALUES ($1,$2,$3)
-    ON CONFLICT (place_text) DO UPDATE SET
-      lat=EXCLUDED.lat,
-      lon=EXCLUDED.lon,
-      updated_at=NOW()
-    `,
-    [placeText, lat, lon]
-  );
-}
-
-export async function getEventFirstSeen(id) {
-  const res = await pool.query(`SELECT first_seen_at FROM events WHERE id=$1`, [id]);
-  return res.rows[0]?.first_seen_at || null;
+export async function exportCsv(days = 30) {
+  const d = Math.max(1, Math.min(Number(days) || 30, 365));
+  const sql = `
+    SELECT
+      id,
+      title,
+      link,
+      place_text,
+      place_norm,
+      status_text,
+      is_closed,
+      start_time_iso,
+      end_time_iso,
+      duration_min,
+      to_char(first_seen_at, 'YYYY-MM-DD HH24:MI:SS') AS first_seen_at,
+      to_char(last_seen_at, 'YYYY-MM-DD HH24:MI:SS')  AS last_seen_at,
+      lat,
+      lon
+    FROM events
+    WHERE first_seen_at >= NOW() - ($1::text || ' days')::interval
+    ORDER BY first_seen_at DESC
+    LIMIT 5000
+  `;
+  const res = await pool.query(sql, [d]);
+  return res.rows;
 }

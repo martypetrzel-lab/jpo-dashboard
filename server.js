@@ -1,208 +1,216 @@
 import express from "express";
-import {
-  initDb,
-  upsertEvent,
-  getEvents,
-  getStats,
-  getCachedGeocode,
-  setCachedGeocode,
-  updateEventCoords,
-  getEventFirstSeen
-} from "./db.js";
+import { initDb, upsertEvent, getEvents, getStats, exportCsv } from "./db.js";
 
 const app = express();
-app.use(express.json({ limit: "2mb" }));
-app.use(express.static("public"));
+app.use(express.json({ limit: "1mb" }));
 
-const API_KEY = process.env.API_KEY || "";
-const GEOCODE_UA = process.env.GEOCODE_USER_AGENT || "jpo-dashboard/1.0";
+// --- CORS (aby šel web i API v pohodě) ---
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type,X-API-Key");
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  next();
+});
 
 function requireKey(req, res, next) {
-  const key = req.header("X-API-Key") || "";
-  if (!API_KEY) return res.status(500).json({ ok: false, error: "API_KEY not set on server" });
-  if (key !== API_KEY) return res.status(401).json({ ok: false, error: "unauthorized" });
+  const need = process.env.API_KEY || "";
+  if (!need) return res.status(500).json({ ok: false, error: "API_KEY not configured" });
+
+  const got = req.header("X-API-Key") || "";
+  if (got !== need) return res.status(401).json({ ok: false, error: "unauthorized" });
   next();
 }
 
-function classifyType(title = "") {
-  const t = title.toLowerCase();
-  if (t.includes("požár") || t.includes("pozar")) return "fire";
-  if (t.includes("doprav") || t.includes("nehoda") || t.includes("dn")) return "traffic";
-  if (t.includes("technick") || t.includes("čerpad") || t.includes("cerpad") || t.includes("strom")) return "tech";
-  if (t.includes("záchrana") || t.includes("zachrana") || t.includes("transport") || t.includes("resusc")) return "rescue";
-  if (t.includes("planý poplach") || t.includes("plany poplach")) return "false_alarm";
-  return "other";
+// --- helpers: text parsing + normalizace místa ---
+function stripDiacritics(s = "") {
+  return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 }
 
-// parse CZ date like "31. ledna 2026, 15:07"
-function parseCzDateToIso(s) {
-  if (!s) return null;
-  const norm = String(s)
-    .trim()
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/\p{Diacritic}/gu, "");
+function cleanPlaceText(raw = "") {
+  let s = String(raw || "").replace(/\s+/g, " ").trim();
 
-  const months = {
-    ledna: 1,
-    unora: 2,
-    brezna: 3,
-    dubna: 4,
-    kvetna: 5,
-    cervna: 6,
-    cervence: 7,
-    srpna: 8,
-    zari: 9,
-    rijna: 10,
-    listopadu: 11,
-    prosince: 12
-  };
+  // často se v RSS objevuje "okres ..." nebo "část ..." – necháme, ale zkusíme vytáhnout město
+  // odstraň přebytečné prefixy typu "Mladá Boleslav" OK, ale "okres Praha Východ" nechceme jako město
+  s = s.replace(/^okres\s+/i, "");
+  return s.trim();
+}
 
-  const m = norm.match(/(\d{1,2})\.?\s+([a-z]+)\s+(\d{4}),\s*(\d{1,2}):(\d{2})/);
+function normalizeCity(rawPlace = "") {
+  let s = cleanPlaceText(rawPlace);
+  if (!s) return "";
+
+  // když je tam " - " (např. "transport pacienta - Mladá Boleslav"), vezmi poslední část
+  if (s.includes(" - ")) {
+    const parts = s.split(" - ").map(x => x.trim()).filter(Boolean);
+    if (parts.length) s = parts[parts.length - 1];
+  }
+
+  // když je tam čárka, často "Město, část" – vezmi první
+  if (s.includes(",")) s = s.split(",")[0].trim();
+
+  // když je to pořád něco jako "Praha Východ" z RSS, tak to není město
+  // tak aspoň sjednoť běžné názvy
+  s = s.replace(/Praha\s*Vychod/i, "okres Praha Východ");
+
+  return s.trim();
+}
+
+function parseEndTimeFromDescription(desc = "") {
+  const t = String(desc || "");
+
+  // RSS má typicky: "ukončení: 31. ledna 2026, 15:07"
+  // Zkusíme zachytit cokoliv za "ukončení:"
+  const m = t.match(/ukonč(?:ení|eni)\s*:\s*([^<\n\r]+)/i);
   if (!m) return null;
 
-  const day = Number(m[1]);
-  const monName = m[2];
-  const year = Number(m[3]);
-  const hh = Number(m[4]);
-  const mm = Number(m[5]);
-
-  const month = months[monName];
-  if (!month) return null;
-
-  // UTC timestamp for stable math
-  const dt = new Date(Date.UTC(year, month - 1, day, hh, mm, 0));
-  if (Number.isNaN(dt.getTime())) return null;
-  return dt.toISOString();
+  const raw = m[1].trim();
+  // raw necháme jako text (server-side nebudeme složitě parsovat české měsíce),
+  // ale duration počítáme aspoň fallbackem přes first_seen_at.
+  return raw;
 }
 
-function parseTimesFromDescription(descRaw = "") {
-  const norm = String(descRaw)
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&amp;/g, "&");
+function isClosedByDescription(desc = "", statusText = "") {
+  const d = String(desc || "").toLowerCase();
+  const st = String(statusText || "").toLowerCase();
 
-  const lines = norm.split("\n").map(l => l.trim()).filter(Boolean);
-
-  let startText = null;
-  let endText = null;
-  let isClosed = false;
-
-  for (const line of lines) {
-    const n = line
-      .toLowerCase()
-      .normalize("NFD")
-      .replace(/\p{Diacritic}/gu, "");
-
-    if (n.startsWith("vyhlaseni:")) startText = line.split(":").slice(1).join(":").trim();
-    if (n.startsWith("ohlaseni:")) startText = startText || line.split(":").slice(1).join(":").trim();
-    if (n.startsWith("ukonceni:")) {
-      endText = line.split(":").slice(1).join(":").trim();
-      isClosed = true;
-    }
-  }
-
-  const startIso = parseCzDateToIso(startText);
-  const endIso = parseCzDateToIso(endText);
-
-  return { startIso, endIso, isClosed };
+  if (d.includes("stav: ukon") || d.includes("ukončení:") || d.includes("ukonceni:")) return true;
+  if (st.includes("ukon")) return true;
+  return false;
 }
 
-async function computeDurationMin(id, startIso, endIso) {
-  if (!endIso) return null;
+// --- GEOCODING (Nominatim) ---
+// lepší přesnost: countrycodes=cz + viewbox bias (CZ) + bounded=1
+async function geocodeCZ(placeText = "") {
+  const ua = process.env.GEOCODE_USER_AGENT || "jpo-dashboard/1.0";
+  const p = cleanPlaceText(placeText);
+  if (!p || p.length < 2) return null;
 
-  let startMs = startIso ? new Date(startIso).getTime() : NaN;
+  const q = encodeURIComponent(`${p}, Czechia`);
+  const url =
+    `https://nominatim.openstreetmap.org/search` +
+    `?format=json&limit=1` +
+    `&countrycodes=cz` +
+    `&bounded=1` +
+    `&viewbox=12.0,51.2,19.0,48.5` + // zhruba ČR (minLon,maxLat,maxLon,minLat)
+    `&q=${q}`;
 
-  // fallback: use first_seen_at if start missing
-  if (!Number.isFinite(startMs)) {
-    const firstSeen = await getEventFirstSeen(id);
-    if (firstSeen) startMs = new Date(firstSeen).getTime();
-  }
-
-  const endMs = new Date(endIso).getTime();
-  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return null;
-
-  return Math.round((endMs - startMs) / 60000);
-}
-
-async function geocodePlace(placeText) {
-  if (!placeText || placeText.trim().length < 2) return null;
-
-  const cached = await getCachedGeocode(placeText);
-  if (cached && typeof cached.lat === "number" && typeof cached.lon === "number") {
-    return { lat: cached.lat, lon: cached.lon, cached: true };
-  }
-
-  const url = new URL("https://nominatim.openstreetmap.org/search");
-  url.searchParams.set("format", "json");
-  url.searchParams.set("limit", "1");
-  url.searchParams.set("q", placeText);
-
-  const r = await fetch(url.toString(), { headers: { "User-Agent": GEOCODE_UA } });
+  const r = await fetch(url, { headers: { "User-Agent": ua, "Accept": "application/json" } });
   if (!r.ok) return null;
+  const arr = await r.json();
+  if (!Array.isArray(arr) || !arr.length) return null;
 
-  const data = await r.json();
-  if (!Array.isArray(data) || data.length === 0) return null;
-
-  const lat = Number(data[0].lat);
-  const lon = Number(data[0].lon);
+  const it = arr[0];
+  const lat = Number(it.lat);
+  const lon = Number(it.lon);
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
-
-  await setCachedGeocode(placeText, lat, lon);
-  return { lat, lon, cached: false };
+  return { lat, lon };
 }
 
+// --- Static web ---
+app.use(express.static("public"));
+
+// --- API ---
+app.get("/health", (req, res) => res.send("OK"));
+
+app.get("/api/events", async (req, res) => {
+  const limit = Math.min(Number(req.query.limit || 200), 1000);
+  const onlyActive = String(req.query.onlyActive || "") === "1";
+  const rows = await getEvents(limit, onlyActive);
+  res.json({ ok: true, items: rows });
+});
+
+app.get("/api/stats", async (req, res) => {
+  const days = Number(req.query.days || 30);
+  const stats = await getStats(days);
+  res.json({ ok: true, ...stats });
+});
+
+app.get("/api/export.csv", async (req, res) => {
+  const days = Number(req.query.days || 30);
+  const rows = await exportCsv(days);
+
+  // CSV
+  const headers = [
+    "id","title","link","place_text","place_norm","status_text","is_closed",
+    "start_time_iso","end_time_iso","duration_min",
+    "first_seen_at","last_seen_at","lat","lon"
+  ];
+  const escape = (v) => {
+    const s = (v === null || v === undefined) ? "" : String(v);
+    if (s.includes('"') || s.includes(",") || s.includes("\n")) return `"${s.replace(/"/g,'""')}"`;
+    return s;
+  };
+
+  let csv = headers.join(",") + "\n";
+  for (const row of rows) {
+    csv += headers.map(h => escape(row[h])).join(",") + "\n";
+  }
+
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="jpo_export_${days}d.csv"`);
+  res.send(csv);
+});
+
+// ingest: batch
 app.post("/api/ingest", requireKey, async (req, res) => {
   try {
     const { source, items } = req.body || {};
     if (!Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ ok: false, error: "items missing" });
+      return res.status(400).json({ ok: false, error: "items[] required" });
     }
 
     let accepted = 0;
-    let updatedClosed = 0;
     let geocoded = 0;
+    let updatedClosed = 0;
 
     for (const it of items) {
       if (!it?.id || !it?.title || !it?.link) continue;
 
-      const eventType = it.eventType || classifyType(it.title);
-      const desc = it.descriptionRaw || it.descRaw || it.description || "";
+      const placeText = it.placeText || "";
+      const placeNorm = normalizeCity(placeText);
 
-      const times = parseTimesFromDescription(desc);
+      const statusText = it.statusText || "";
+      const desc = it.descriptionRaw || it.description || "";
 
-      // duration: only if end known; start from parsed start or first_seen_at fallback
-      const durationMin =
-        Number.isFinite(it.durationMin) ? it.durationMin : await computeDurationMin(it.id, times.startIso, times.endIso);
+      const closed = isClosedByDescription(desc, statusText) || !!it.isClosed;
 
-      const ev = {
-        id: it.id,
-        title: it.title,
-        link: it.link,
+      // end_time_iso necháme jako text z RSS (ukončení: ...)
+      const endTimeIso = closed ? (it.endTimeIso || parseEndTimeFromDescription(desc)) : null;
+
+      // duration: pokud nemáme start, použijeme first_seen_at (na DB straně) – tady jen držíme null
+      // později můžeme přidat přesnější parsing "vyhlášení" apod.
+      const row = {
+        id: String(it.id),
+        title: String(it.title),
+        link: String(it.link),
         pubDate: it.pubDate || null,
-        placeText: it.placeText || null,
-        statusText: it.statusText || null,
-        eventType,
-        descriptionRaw: desc || null,
-        startTimeIso: it.startTimeIso || times.startIso || null,
-        endTimeIso: it.endTimeIso || times.endIso || null,
-        durationMin,
-        isClosed: !!times.isClosed
+        placeText,
+        placeNorm,
+        statusText,
+        descriptionRaw: desc,
+        isClosed: closed,
+        startTimeIso: it.startTimeIso || null,
+        endTimeIso: endTimeIso || null,
+        durationMin: it.durationMin ?? null,
+        lat: it.lat ?? null,
+        lon: it.lon ?? null,
       };
 
-      await upsertEvent(ev);
-      accepted++;
-
-      if (ev.isClosed) updatedClosed++;
-
-      if (ev.placeText) {
-        const g = await geocodePlace(ev.placeText);
+      // geocoding jen když nemáme lat/lon
+      if ((!row.lat || !row.lon) && placeText) {
+        const g = await geocodeCZ(placeText);
         if (g) {
-          await updateEventCoords(ev.id, g.lat, g.lon);
+          row.lat = g.lat;
+          row.lon = g.lon;
           geocoded++;
         }
       }
+
+      const saved = await upsertEvent(row);
+      accepted++;
+
+      if (closed && saved?.is_closed) updatedClosed++;
     }
 
     res.json({
@@ -210,26 +218,13 @@ app.post("/api/ingest", requireKey, async (req, res) => {
       source: source || "unknown",
       accepted,
       closed_seen_in_batch: updatedClosed,
-      geocoded
+      geocoded,
     });
   } catch (e) {
     console.error(e);
-    res.status(500).json({ ok: false, error: "server error" });
+    res.status(500).json({ ok: false, error: "server_error" });
   }
 });
-
-app.get("/api/events", async (req, res) => {
-  const limit = Math.min(Number(req.query.limit || 300), 1000);
-  const rows = await getEvents(limit);
-  res.json({ ok: true, items: rows });
-});
-
-app.get("/api/stats", async (req, res) => {
-  const stats = await getStats();
-  res.json({ ok: true, ...stats });
-});
-
-app.get("/health", (req, res) => res.send("OK"));
 
 const port = process.env.PORT || 3000;
 await initDb();

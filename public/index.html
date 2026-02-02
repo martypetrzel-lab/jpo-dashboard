@@ -3,33 +3,48 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>JPO Dashboard</title>
+  <title>JPO výjezdy – dashboard</title>
 
   <link rel="stylesheet" href="styles.css" />
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 </head>
 <body>
   <header class="topbar">
     <div class="title">
-      <h1>JPO výjezdy – dashboard</h1>
+      <div class="h1">JPO výjezdy – dashboard</div>
       <div class="sub">Mapa • ikony událostí • statistiky • žebříčky (data posílá ESP32)</div>
     </div>
+
     <div class="actions">
-      <button id="refreshBtn">Obnovit</button>
-      <span id="statusPill" class="pill">…</span>
+      <label class="chip">
+        <input id="onlyActive" type="checkbox" />
+        Jen aktivní
+      </label>
+
+      <select id="days" class="select">
+        <option value="7">7 dní</option>
+        <option value="30" selected>30 dní</option>
+        <option value="90">90 dní</option>
+      </select>
+
+      <button id="btnExport" class="btn ghost">Export CSV</button>
+      <button id="btnReload" class="btn">Obnovit</button>
+      <div id="status" class="status">—</div>
     </div>
   </header>
 
   <main class="grid">
     <section class="card mapCard">
       <div class="cardHeader">
-        <h2>Mapa výjezdů</h2>
-        <div class="hint">
-          <span class="legendItem">🔥 požár</span>
-          <span class="legendItem">🚗 nehoda</span>
-          <span class="legendItem">🛠️ technická</span>
-          <span class="legendItem">🧍 záchrana</span>
-          <span class="legendItem">❓ jiné</span>
+        <div class="cardTitle">Mapa výjezdů</div>
+        <div class="legend">
+          <span class="pill">🔥 požár</span>
+          <span class="pill">🚗 nehoda</span>
+          <span class="pill">🛠️ technická</span>
+          <span class="pill">🧍 záchrana</span>
+          <span class="pill">❓ jiné</span>
+          <span class="pill activePill">● aktivní</span>
+          <span class="pill closedPill">● ukončeno</span>
         </div>
       </div>
       <div id="map"></div>
@@ -37,65 +52,65 @@
 
     <section class="card">
       <div class="cardHeader">
-        <h2>Statistika (30 dní)</h2>
-        <div class="hint">Počet výjezdů po dnech</div>
+        <div class="cardTitle">Statistika (<span id="daysLabel">30</span> dní)</div>
+        <div class="cardHint">Počet výjezdů po dnech</div>
       </div>
-      <canvas id="chartByDay" height="140"></canvas>
+      <div class="chartBox">
+        <canvas id="chartDays"></canvas>
+      </div>
     </section>
 
     <section class="card">
       <div class="cardHeader">
-        <h2>Nejvíc výjezdů ve městě</h2>
-        <div class="hint">Top město (počtem)</div>
+        <div class="cardTitle">Nejvíc výjezdů ve městě</div>
+        <div class="cardHint">Top město (počtem)</div>
       </div>
       <div class="bigStat">
-        <div class="bigStatValue" id="bestCityValue">—</div>
-        <div class="bigStatLabel" id="bestCityLabel">—</div>
+        <div id="topCityCount" class="big">—</div>
+        <div id="topCityName" class="label">—</div>
       </div>
     </section>
 
     <section class="card">
       <div class="cardHeader">
-        <h2>Žebříček měst</h2>
-        <div class="hint">Top 10</div>
+        <div class="cardTitle">Žebříček měst</div>
+        <div class="cardHint">Top 10</div>
       </div>
-      <div class="list" id="topCities"></div>
+      <ol id="topCities" class="list"></ol>
     </section>
 
     <section class="card">
       <div class="cardHeader">
-        <h2>Nejdelší zásahy</h2>
-        <div class="hint">Jen tam, kde RSS obsahuje vyhlášení + ukončení</div>
+        <div class="cardTitle">Nejdelší zásahy</div>
+        <div class="cardHint">Top 10 podle duration_min</div>
       </div>
-      <div class="list" id="longestList"></div>
+      <ol id="longest" class="list"></ol>
     </section>
 
-    <section class="card tableCard">
+    <section class="card full">
       <div class="cardHeader">
-        <h2>Poslední výjezdy</h2>
-        <div class="hint">Zobrazuje i bez souřadnic</div>
+        <div class="cardTitle">Poslední události</div>
+        <div class="cardHint">Klikni pro otevření detailu</div>
       </div>
       <div class="tableWrap">
-        <table>
+        <table class="table">
           <thead>
             <tr>
-              <th>Čas</th>
+              <th>Stav</th>
               <th>Typ</th>
               <th>Název</th>
               <th>Místo</th>
-              <th>Stav</th>
               <th>Délka</th>
-              <th>Odkaz</th>
             </tr>
           </thead>
-          <tbody id="eventsTbody"></tbody>
+          <tbody id="tbody"></tbody>
         </table>
       </div>
     </section>
   </main>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
