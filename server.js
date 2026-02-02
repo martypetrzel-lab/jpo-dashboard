@@ -6,11 +6,12 @@ import {
   getStats,
   getCachedGeocode,
   setCachedGeocode,
-  updateEventCoords
+  updateEventCoords,
+  getEventFirstSeen
 } from "./db.js";
 
 const app = express();
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: "2mb" }));
 app.use(express.static("public"));
 
 const API_KEY = process.env.API_KEY || "";
@@ -23,7 +24,6 @@ function requireKey(req, res, next) {
   next();
 }
 
-// --- Type classification (icons handled on frontend) ---
 function classifyType(title = "") {
   const t = title.toLowerCase();
   if (t.includes("požár") || t.includes("pozar")) return "fire";
@@ -34,13 +34,11 @@ function classifyType(title = "") {
   return "other";
 }
 
-// --- Czech date parser for strings like: "31. ledna 2026, 15:07" ---
+// parse CZ date like "31. ledna 2026, 15:07"
 function parseCzDateToIso(s) {
   if (!s) return null;
-  let x = String(s).trim();
-
-  // normalize diacritics-insensitive compare
-  const norm = x
+  const norm = String(s)
+    .trim()
     .toLowerCase()
     .normalize("NFD")
     .replace(/\p{Diacritic}/gu, "");
@@ -60,7 +58,6 @@ function parseCzDateToIso(s) {
     prosince: 12
   };
 
-  // pattern: "31. ledna 2026, 15:07"
   const m = norm.match(/(\d{1,2})\.?\s+([a-z]+)\s+(\d{4}),\s*(\d{1,2}):(\d{2})/);
   if (!m) return null;
 
@@ -73,34 +70,24 @@ function parseCzDateToIso(s) {
   const month = months[monName];
   if (!month) return null;
 
-  // Create Date in UTC for consistency; duration differences stay correct
+  // UTC timestamp for stable math
   const dt = new Date(Date.UTC(year, month - 1, day, hh, mm, 0));
   if (Number.isNaN(dt.getTime())) return null;
   return dt.toISOString();
 }
 
-function extractBetween(text, startToken) {
-  const idx = text.toLowerCase().indexOf(startToken);
-  if (idx < 0) return "";
-  return text.slice(idx + startToken.length).trim();
-}
-
 function parseTimesFromDescription(descRaw = "") {
-  // desc often: "stav: ukončená<br>ukončení: 31. ledna 2026, 15:07<br>Mladá Boleslav"
-  const desc = String(descRaw);
-
-  // get "vyhlášení:" / "ukončení:" if present (works even with diacritics removed)
-  const norm = desc
+  const norm = String(descRaw)
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&amp;/g, "&");
 
-  // Try to find lines
   const lines = norm.split("\n").map(l => l.trim()).filter(Boolean);
 
   let startText = null;
   let endText = null;
+  let isClosed = false;
 
   for (const line of lines) {
     const n = line
@@ -109,24 +96,34 @@ function parseTimesFromDescription(descRaw = "") {
       .replace(/\p{Diacritic}/gu, "");
 
     if (n.startsWith("vyhlaseni:")) startText = line.split(":").slice(1).join(":").trim();
-    if (n.startsWith("ukonceni:")) endText = line.split(":").slice(1).join(":").trim();
-    // Some feeds use "ohlášení"/"ohlašeni"
     if (n.startsWith("ohlaseni:")) startText = startText || line.split(":").slice(1).join(":").trim();
+    if (n.startsWith("ukonceni:")) {
+      endText = line.split(":").slice(1).join(":").trim();
+      isClosed = true;
+    }
   }
 
   const startIso = parseCzDateToIso(startText);
   const endIso = parseCzDateToIso(endText);
 
-  let durationMin = null;
-  if (startIso && endIso) {
-    const a = new Date(startIso).getTime();
-    const b = new Date(endIso).getTime();
-    if (Number.isFinite(a) && Number.isFinite(b) && b > a) {
-      durationMin = Math.round((b - a) / 60000);
-    }
+  return { startIso, endIso, isClosed };
+}
+
+async function computeDurationMin(id, startIso, endIso) {
+  if (!endIso) return null;
+
+  let startMs = startIso ? new Date(startIso).getTime() : NaN;
+
+  // fallback: use first_seen_at if start missing
+  if (!Number.isFinite(startMs)) {
+    const firstSeen = await getEventFirstSeen(id);
+    if (firstSeen) startMs = new Date(firstSeen).getTime();
   }
 
-  return { startIso, endIso, durationMin };
+  const endMs = new Date(endIso).getTime();
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return null;
+
+  return Math.round((endMs - startMs) / 60000);
 }
 
 async function geocodePlace(placeText) {
@@ -142,11 +139,9 @@ async function geocodePlace(placeText) {
   url.searchParams.set("limit", "1");
   url.searchParams.set("q", placeText);
 
-  const r = await fetch(url.toString(), {
-    headers: { "User-Agent": GEOCODE_UA }
-  });
-
+  const r = await fetch(url.toString(), { headers: { "User-Agent": GEOCODE_UA } });
   if (!r.ok) return null;
+
   const data = await r.json();
   if (!Array.isArray(data) || data.length === 0) return null;
 
@@ -158,7 +153,6 @@ async function geocodePlace(placeText) {
   return { lat, lon, cached: false };
 }
 
-// ESP ingest
 app.post("/api/ingest", requireKey, async (req, res) => {
   try {
     const { source, items } = req.body || {};
@@ -167,13 +161,20 @@ app.post("/api/ingest", requireKey, async (req, res) => {
     }
 
     let accepted = 0;
+    let updatedClosed = 0;
     let geocoded = 0;
 
     for (const it of items) {
       if (!it?.id || !it?.title || !it?.link) continue;
 
       const eventType = it.eventType || classifyType(it.title);
-      const times = parseTimesFromDescription(it.descriptionRaw || it.descRaw || it.description || "");
+      const desc = it.descriptionRaw || it.descRaw || it.description || "";
+
+      const times = parseTimesFromDescription(desc);
+
+      // duration: only if end known; start from parsed start or first_seen_at fallback
+      const durationMin =
+        Number.isFinite(it.durationMin) ? it.durationMin : await computeDurationMin(it.id, times.startIso, times.endIso);
 
       const ev = {
         id: it.id,
@@ -183,13 +184,17 @@ app.post("/api/ingest", requireKey, async (req, res) => {
         placeText: it.placeText || null,
         statusText: it.statusText || null,
         eventType,
+        descriptionRaw: desc || null,
         startTimeIso: it.startTimeIso || times.startIso || null,
         endTimeIso: it.endTimeIso || times.endIso || null,
-        durationMin: Number.isFinite(it.durationMin) ? it.durationMin : times.durationMin
+        durationMin,
+        isClosed: !!times.isClosed
       };
 
       await upsertEvent(ev);
       accepted++;
+
+      if (ev.isClosed) updatedClosed++;
 
       if (ev.placeText) {
         const g = await geocodePlace(ev.placeText);
@@ -200,16 +205,21 @@ app.post("/api/ingest", requireKey, async (req, res) => {
       }
     }
 
-    res.json({ ok: true, source: source || "unknown", accepted, geocoded });
+    res.json({
+      ok: true,
+      source: source || "unknown",
+      accepted,
+      closed_seen_in_batch: updatedClosed,
+      geocoded
+    });
   } catch (e) {
     console.error(e);
     res.status(500).json({ ok: false, error: "server error" });
   }
 });
 
-// dashboard API
 app.get("/api/events", async (req, res) => {
-  const limit = Math.min(Number(req.query.limit || 200), 1000);
+  const limit = Math.min(Number(req.query.limit || 300), 1000);
   const rows = await getEvents(limit);
   res.json({ ok: true, items: rows });
 });
@@ -222,6 +232,5 @@ app.get("/api/stats", async (req, res) => {
 app.get("/health", (req, res) => res.send("OK"));
 
 const port = process.env.PORT || 3000;
-
 await initDb();
 app.listen(port, () => console.log(`listening on ${port}`));
