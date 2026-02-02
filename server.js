@@ -278,10 +278,9 @@ function readFirstBytes(fontPath, n = 64) {
 }
 
 function isProbablyText(buf) {
-  // když je to skoro celé printable ASCII (a vidíš to ve VSCode jako text), není to font
   let printable = 0;
   for (const b of buf) {
-    if (b === 9 || b === 10 || b === 13) { printable++; continue; } // \t \n \r
+    if (b === 9 || b === 10 || b === 13) { printable++; continue; }
     if (b >= 32 && b <= 126) printable++;
   }
   return printable / buf.length > 0.85;
@@ -303,16 +302,13 @@ function validateFontFile(fontPath) {
     if (!fs.existsSync(fontPath)) return { ok: false, reason: "missing" };
 
     const st = fs.statSync(fontPath);
-    // reálné fonty bývají stovky kB; když to má pár bajtů, je to špatně
     if (!st.isFile()) return { ok: false, reason: "not_file" };
     if (st.size < 50_000) return { ok: false, reason: `too_small_${st.size}` };
 
     const buf64 = readFirstBytes(fontPath, 64);
     if (isProbablyText(buf64)) return { ok: false, reason: "looks_like_text_file" };
 
-    const buf4 = buf64.subarray(0, 4);
-    const hdr = sniffFontHeader(buf4);
-
+    const hdr = sniffFontHeader(buf64.subarray(0, 4));
     if (hdr === "TTF" || hdr === "OTF") return { ok: true, format: hdr };
     if (hdr === "TTC") return { ok: false, reason: "ttc_not_supported_use_ttf" };
 
@@ -340,7 +336,6 @@ function findCzFontPath() {
     const v = validateFontFile(p);
     if (v.ok) return { path: p, format: v.format, reason: "ok" };
 
-    // pokud je to assets/DejaVuSans.ttf a je špatně, chceme mít konkrétní důvod
     if (p.includes(path.join("assets", "DejaVuSans.ttf")) && v.reason) {
       return { path: p, format: null, reason: v.reason, invalid: true };
     }
@@ -351,8 +346,6 @@ function findCzFontPath() {
 function tryApplyPdfFont(doc) {
   const r = findCzFontPath();
   if (!r.path) return { ok: false, fontPath: null, reason: r.reason };
-
-  // když existuje assets/DejaVuSans.ttf ale je invalid, vrať to s důvodem
   if (r.invalid) return { ok: false, fontPath: r.path, reason: r.reason };
 
   try {
@@ -526,7 +519,7 @@ app.get("/api/export.csv", async (req, res) => {
   res.send([header, ...lines].join("\n"));
 });
 
-// export PDF
+// ✅ export PDF (FIX: stránkování dle reálné výšky řádku)
 app.get("/api/export.pdf", async (req, res) => {
   const filters = parseFilters(req);
   const limit = Math.min(Number(req.query.limit || 800), 2000);
@@ -551,22 +544,22 @@ app.get("/api/export.pdf", async (req, res) => {
   doc.fontSize(18).fillColor("#000").text(title);
   doc.moveDown(0.2);
   doc.fontSize(10).fillColor("#333").text(`Vygenerováno: ${now.toLocaleString("cs-CZ")}   •   ${filt}`);
-  doc.moveDown(0.3);
+  doc.moveDown(0.4);
 
   if (!font.ok) {
     const fp = font.fontPath ? `(${font.fontPath})` : "";
     doc.fontSize(9).fillColor("#a33").text(
-      `Pozn.: CZ font nelze použít ${fp}. Důvod: ${font.reason}. ` +
-      `Použij opravdový binární TTF (např. DejaVuSans.ttf ~700kB+) v assets/DejaVuSans.ttf.`
+      `Pozn.: CZ font nelze použít ${fp}. Důvod: ${font.reason}.`
     );
-    doc.moveDown(0.5);
-  } else {
-    doc.moveDown(0.6);
+    doc.moveDown(0.3);
   }
 
+  // tabulka
   const col = { time: 88, state: 62, type: 78, city: 170, dur: 70, title: 330 };
   const startX = doc.x;
   let y = doc.y;
+
+  const tableWidth = col.time + col.state + col.type + col.city + col.dur + col.title;
 
   function ensureFontAfterPage() {
     if (font.ok) {
@@ -582,46 +575,90 @@ app.get("/api/export.pdf", async (req, res) => {
     doc.text("Město", startX + col.time + col.state + col.type, y, { width: col.city });
     doc.text("Délka", startX + col.time + col.state + col.type + col.city, y, { width: col.dur });
     doc.text("Název", startX + col.time + col.state + col.type + col.city + col.dur, y, { width: col.title });
+
     y += 14;
-    doc.moveTo(startX, y)
-      .lineTo(startX + col.time + col.state + col.type + col.city + col.dur + col.title, y)
-      .strokeColor("#999")
-      .stroke();
+    doc.moveTo(startX, y).lineTo(startX + tableWidth, y).strokeColor("#999").stroke();
     y += 8;
   }
 
+  function rowHeightFor(docRef, rowObj, fontSize = 9) {
+    docRef.fontSize(fontSize);
+
+    const d = new Date(rowObj.pub_date || rowObj.created_at);
+    const timeText = Number.isNaN(d.getTime()) ? String(rowObj.pub_date || rowObj.created_at || "") : d.toLocaleString("cs-CZ");
+    const state = rowObj.is_closed ? "UKONČENO" : "AKTIVNÍ";
+    const typ = typeLabel(rowObj.event_type || "other");
+    const city = String(rowObj.city_text || rowObj.place_text || "");
+    const dur = Number.isFinite(rowObj.duration_min) ? `${rowObj.duration_min} min` : "—";
+    const ttl = String(rowObj.title || "");
+
+    const opts = { align: "left", lineBreak: true };
+
+    const hTime = docRef.heightOfString(timeText, { width: col.time, ...opts });
+    const hState = docRef.heightOfString(state, { width: col.state, ...opts });
+    const hType = docRef.heightOfString(typ, { width: col.type, ...opts });
+    const hCity = docRef.heightOfString(city, { width: col.city, ...opts });
+    const hDur = docRef.heightOfString(dur, { width: col.dur, ...opts });
+    const hTitle = docRef.heightOfString(ttl, { width: col.title, ...opts });
+
+    const maxH = Math.max(hTime, hState, hType, hCity, hDur, hTitle);
+    return Math.max(14, Math.ceil(maxH) + 4); // min výška řádku + padding
+  }
+
+  function drawRow(rowObj) {
+    doc.fontSize(9).fillColor("#111");
+
+    const d = new Date(rowObj.pub_date || rowObj.created_at);
+    const timeText = Number.isNaN(d.getTime()) ? String(rowObj.pub_date || rowObj.created_at || "") : d.toLocaleString("cs-CZ");
+    const state = rowObj.is_closed ? "UKONČENO" : "AKTIVNÍ";
+    const typ = typeLabel(rowObj.event_type || "other");
+    const city = String(rowObj.city_text || rowObj.place_text || "");
+    const dur = Number.isFinite(rowObj.duration_min) ? `${rowObj.duration_min} min` : "—";
+    const ttl = String(rowObj.title || "");
+
+    const opts = { align: "left", lineBreak: true };
+
+    doc.text(timeText, startX, y, { width: col.time, ...opts });
+    doc.text(state, startX + col.time, y, { width: col.state, ...opts });
+    doc.text(typ, startX + col.time + col.state, y, { width: col.type, ...opts });
+    doc.text(city, startX + col.time + col.state + col.type, y, { width: col.city, ...opts });
+    doc.text(dur, startX + col.time + col.state + col.type + col.city, y, { width: col.dur, ...opts });
+    doc.text(ttl, startX + col.time + col.state + col.type + col.city + col.dur, y, { width: col.title, ...opts });
+  }
+
   drawHeader();
-  doc.fontSize(9).fillColor("#111");
+  ensureFontAfterPage();
+
+  const bottomLimit = () => doc.page.height - doc.page.margins.bottom - 18; // rezerva
 
   for (const r of rows) {
-    const d = new Date(r.pub_date || r.created_at);
-    const timeText = Number.isNaN(d.getTime()) ? String(r.pub_date || r.created_at || "") : d.toLocaleString("cs-CZ");
-    const state = r.is_closed ? "UKONČENO" : "AKTIVNÍ";
-    const typ = typeLabel(r.event_type || "other");
-    const city = String(r.city_text || r.place_text || "");
-    const dur = Number.isFinite(r.duration_min) ? `${r.duration_min} min` : "—";
-    const ttl = String(r.title || "");
+    const h = rowHeightFor(doc, r, 9);
 
-    if (y > doc.page.height - 40) {
+    // když se nevejde, uděláme novou stránku
+    if (y + h > bottomLimit()) {
       doc.addPage({ size: "A4", layout: "landscape", margin: 24 });
       ensureFontAfterPage();
       y = doc.y;
       drawHeader();
-      doc.fontSize(9).fillColor("#111");
+      ensureFontAfterPage();
     }
 
-    doc.text(timeText, startX, y, { width: col.time });
-    doc.text(state, startX + col.time, y, { width: col.state });
-    doc.text(typ, startX + col.time + col.state, y, { width: col.type });
-    doc.text(city, startX + col.time + col.state + col.type, y, { width: col.city });
-    doc.text(dur, startX + col.time + col.state + col.type + col.city, y, { width: col.dur });
-    doc.text(ttl, startX + col.time + col.state + col.type + col.city + col.dur, y, { width: col.title });
+    drawRow(r);
 
-    y += 14;
+    // oddělovač řádku (jemně)
+    y += h;
+    doc.moveTo(startX, y - 2).lineTo(startX + tableWidth, y - 2).strokeColor("#eee").opacity(0.5).stroke();
+    doc.opacity(1);
   }
 
-  doc.moveDown(0.6);
-  doc.fontSize(9).fillColor("#444").text(`Záznamů: ${rows.length}`);
+  // footer se záznamy vždy na poslední stránce dolů (pokud je místo)
+  if (y + 24 > bottomLimit()) {
+    doc.addPage({ size: "A4", layout: "landscape", margin: 24 });
+    ensureFontAfterPage();
+    y = doc.y;
+  }
+  doc.fontSize(9).fillColor("#444").text(`Záznamů: ${rows.length}`, startX, y + 10);
+
   doc.end();
 });
 
