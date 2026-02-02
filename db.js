@@ -67,7 +67,7 @@ async function getOrGeocode(client, placeText) {
   const placeNorm = normPlace(placeText);
   if (!placeNorm) return { placeNorm, lat: null, lon: null };
 
-  // cache
+  // cache lookup
   try {
     const c = await client.query(
       `SELECT lat, lon FROM geocode_cache WHERE place_norm=$1 LIMIT 1`,
@@ -77,11 +77,12 @@ async function getOrGeocode(client, placeText) {
       return { placeNorm, lat: c.rows[0].lat, lon: c.rows[0].lon };
     }
   } catch {
-    // kdyby cache tabulka ještě nebyla, initDb ji vytvoří; tady jen nepadneme
+    // cache tabulka není kritická
   }
 
   const geo = await nominatimGeocode(`${placeText}, Czechia`);
 
+  // cache upsert (nesmí shodit ingest)
   try {
     await client.query(
       `INSERT INTO geocode_cache(place_norm, place_text, lat, lon, updated_at)
@@ -91,7 +92,7 @@ async function getOrGeocode(client, placeText) {
       [placeNorm, placeText, geo ? geo.lat : null, geo ? geo.lon : null]
     );
   } catch {
-    // nic — cache není kritická
+    // ignore
   }
 
   return { placeNorm, lat: geo ? geo.lat : null, lon: geo ? geo.lon : null };
@@ -167,83 +168,111 @@ export async function upsertBatch({ source = "unknown", items = [] }) {
 
     let accepted = 0;
     let updatedClosed = 0;
+    let failed = 0;
 
     for (const it of items) {
-      const id = String(it.id || "").trim();
-      if (!id) continue;
+      // SAVEPOINT = jeden rozbitý item neshodí celý batch
+      await client.query("SAVEPOINT sp_item");
 
-      const title = it.title ?? "";
-      const link = it.link ?? "";
-      const placeText = it.placeText ?? it.place_text ?? "";
-      const statusText = it.statusText ?? it.status_text ?? "";
-      const descRaw = it.descriptionRaw ?? it.description_raw ?? "";
+      try {
+        const id = String(it.id || "").trim();
+        if (!id) {
+          await client.query("RELEASE SAVEPOINT sp_item");
+          continue;
+        }
 
-      const st = String(statusText).toLowerCase();
-      const active =
-        st.includes("stav: nova") || st.includes("stav: nová") ||
-        st.includes(" nova") || st.includes(" nová");
+        const title = it.title ?? "";
+        const link = it.link ?? "";
+        const placeText = it.placeText ?? it.place_text ?? "";
+        const statusText = it.statusText ?? it.status_text ?? "";
+        const descRaw = it.descriptionRaw ?? it.description_raw ?? "";
 
-      const kind = (it.kind || detectKind(title));
-      const placeNorm = normPlace(placeText);
+        const st = String(statusText).toLowerCase();
+        const active =
+          st.includes("stav: nova") || st.includes("stav: nová") ||
+          st.includes(" nova") || st.includes(" nová");
 
-      let lat = Number(it.lat);
-      let lon = Number(it.lon);
-      if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
-        const geo = await getOrGeocode(client, placeText);
-        lat = geo.lat;
-        lon = geo.lon;
+        const kind = (it.kind || detectKind(title));
+        const placeNorm = normPlace(placeText);
+
+        // zjisti předchozí stav (kvůli just_closed)
+        const prev = await client.query(`SELECT is_active, started_at, ended_at FROM events WHERE id=$1`, [id]);
+        const prevActive = prev.rows?.[0]?.is_active;
+
+        let lat = Number(it.lat);
+        let lon = Number(it.lon);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+          const geo = await getOrGeocode(client, placeText);
+          lat = geo.lat;
+          lon = geo.lon;
+        }
+
+        const q = `
+          INSERT INTO events (
+            id, source, title, link, place_text, place_norm, status_text, description_raw,
+            kind, lat, lon, is_active, started_at, ended_at, duration_min, first_seen_at, last_seen_at
+          )
+          VALUES (
+            $1,$2,$3,$4,$5,$6,$7,$8,
+            $9,$10,$11,$12,
+            CASE WHEN $12=true THEN NOW() ELSE NOW() END,
+            CASE WHEN $12=false THEN NOW() ELSE NULL END,
+            NULL,
+            NOW(),
+            NOW()
+          )
+          ON CONFLICT (id) DO UPDATE SET
+            source = EXCLUDED.source,
+            title = EXCLUDED.title,
+            link = EXCLUDED.link,
+            place_text = EXCLUDED.place_text,
+            place_norm = EXCLUDED.place_norm,
+            status_text = EXCLUDED.status_text,
+            description_raw = EXCLUDED.description_raw,
+            kind = EXCLUDED.kind,
+            lat = COALESCE(EXCLUDED.lat, events.lat),
+            lon = COALESCE(EXCLUDED.lon, events.lon),
+            last_seen_at = NOW(),
+            is_active = EXCLUDED.is_active,
+            started_at = COALESCE(events.started_at, NOW()),
+            ended_at = CASE
+              WHEN events.is_active = true AND EXCLUDED.is_active = false THEN NOW()
+              WHEN EXCLUDED.is_active = true THEN NULL
+              ELSE events.ended_at
+            END
+          RETURNING is_active, started_at, ended_at;
+        `;
+
+        const res = await client.query(q, [
+          id, source, title, link, placeText, placeNorm, statusText, descRaw,
+          kind,
+          (Number.isFinite(lat) ? lat : null),
+          (Number.isFinite(lon) ? lon : null),
+          active
+        ]);
+
+        const newActive = res.rows?.[0]?.is_active;
+
+        accepted += 1;
+        if (prevActive === true && newActive === false) updatedClosed += 1;
+
+        await client.query("RELEASE SAVEPOINT sp_item");
+      } catch (e) {
+        failed += 1;
+        // rollback jen tohoto itemu
+        await client.query("ROLLBACK TO SAVEPOINT sp_item");
+        await client.query("RELEASE SAVEPOINT sp_item");
+
+        console.error("[db] item failed:", {
+          id: it?.id,
+          title: it?.title,
+          placeText: it?.placeText || it?.place_text
+        });
+        console.error("[db] error:", e?.message || e);
       }
-
-      const q = `
-        INSERT INTO events (
-          id, source, title, link, place_text, place_norm, status_text, description_raw,
-          kind, lat, lon, is_active, started_at, ended_at, duration_min, first_seen_at, last_seen_at
-        )
-        VALUES (
-          $1,$2,$3,$4,$5,$6,$7,$8,
-          $9,$10,$11,$12,
-          CASE WHEN $12=true THEN COALESCE($13, NOW()) ELSE $13 END,
-          CASE WHEN $12=false THEN COALESCE($14, NOW()) ELSE NULL END,
-          $15,
-          COALESCE($16, NOW()),
-          NOW()
-        )
-        ON CONFLICT (id) DO UPDATE SET
-          source = EXCLUDED.source,
-          title = EXCLUDED.title,
-          link = EXCLUDED.link,
-          place_text = EXCLUDED.place_text,
-          place_norm = EXCLUDED.place_norm,
-          status_text = EXCLUDED.status_text,
-          description_raw = EXCLUDED.description_raw,
-          kind = EXCLUDED.kind,
-          lat = COALESCE(EXCLUDED.lat, events.lat),
-          lon = COALESCE(EXCLUDED.lon, events.lon),
-          last_seen_at = NOW(),
-          is_active = EXCLUDED.is_active,
-          ended_at = CASE
-            WHEN events.is_active = true AND EXCLUDED.is_active = false THEN NOW()
-            WHEN EXCLUDED.is_active = true THEN NULL
-            ELSE events.ended_at
-          END
-        RETURNING (events.is_active = true AND EXCLUDED.is_active = false) AS just_closed;
-      `;
-
-      const res = await client.query(q, [
-        id, source, title, link, placeText, placeNorm, statusText, descRaw,
-        kind,
-        (Number.isFinite(lat) ? lat : null),
-        (Number.isFinite(lon) ? lon : null),
-        active,
-        null, null, null,
-        null
-      ]);
-
-      accepted += 1;
-      if (res.rows?.[0]?.just_closed) updatedClosed += 1;
     }
 
-    // duration after close
+    // duration after close (doplní duration, když se něco zavřelo)
     await client.query(`
       UPDATE events
       SET duration_min = FLOOR(EXTRACT(EPOCH FROM (ended_at - started_at)) / 60)
@@ -251,7 +280,7 @@ export async function upsertBatch({ source = "unknown", items = [] }) {
     `);
 
     await client.query("COMMIT");
-    return { accepted, updatedClosed };
+    return { accepted, updatedClosed, failed };
   } catch (e) {
     await client.query("ROLLBACK");
     throw e;
@@ -305,15 +334,16 @@ export async function getStats({ days = 30 } = {}) {
       AND last_seen_at > NOW() - ($1::int || ' days')::interval
     GROUP BY place_text
     ORDER BY cnt DESC
-    LIMIT 1
+    LIMIT 10
   `, [d]);
 
-  const top = rTop.rows[0] || null;
+  const top1 = rTop.rows[0] || null;
 
   return {
     days: d,
     active_count: Number(r1.rows[0].active_count || 0),
     closed_count: Number(r1.rows[0].closed_count || 0),
-    top_city: top ? { city: top.city, cnt: top.cnt } : null
+    top_city: top1 ? { city: top1.city, cnt: top1.cnt } : null,
+    leaderboard: rTop.rows
   };
 }
