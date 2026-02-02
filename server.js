@@ -192,7 +192,6 @@ async function geocodePlace(placeText) {
   if (cleaned) candidates.push(`${cleaned}, Czechia`);
   candidates.push(`${String(placeText).trim()}, Czechia`);
 
-  // lon_left, lat_top, lon_right, lat_bottom
   const CZ_VIEWBOX = "12.09,51.06,18.87,48.55";
 
   for (const q of candidates) {
@@ -269,24 +268,57 @@ async function backfillCoords(rows, max = 5) {
   return fixed;
 }
 
-// ---------------- PDF FONT (safe) ----------------
-function sniffFontFormat(fontPath) {
+// ---------------- PDF FONT (robust) ----------------
+function readFirstBytes(fontPath, n = 64) {
+  const fd = fs.openSync(fontPath, "r");
+  const buf = Buffer.alloc(n);
+  fs.readSync(fd, buf, 0, n, 0);
+  fs.closeSync(fd);
+  return buf;
+}
+
+function isProbablyText(buf) {
+  // když je to skoro celé printable ASCII (a vidíš to ve VSCode jako text), není to font
+  let printable = 0;
+  for (const b of buf) {
+    if (b === 9 || b === 10 || b === 13) { printable++; continue; } // \t \n \r
+    if (b >= 32 && b <= 126) printable++;
+  }
+  return printable / buf.length > 0.85;
+}
+
+function sniffFontHeader(buf4) {
+  const s = buf4.toString("ascii");
+  const u32 = buf4.readUInt32BE(0);
+
+  if (s === "OTTO") return "OTF";
+  if (s === "ttcf") return "TTC";
+  if (s === "true" || s === "typ1") return "TTF";
+  if (u32 === 0x00010000) return "TTF";
+  return "UNKNOWN";
+}
+
+function validateFontFile(fontPath) {
   try {
-    const fd = fs.openSync(fontPath, "r");
-    const buf = Buffer.alloc(4);
-    fs.readSync(fd, buf, 0, 4, 0);
-    fs.closeSync(fd);
+    if (!fs.existsSync(fontPath)) return { ok: false, reason: "missing" };
 
-    const s = buf.toString("ascii");
-    const u32 = buf.readUInt32BE(0);
+    const st = fs.statSync(fontPath);
+    // reálné fonty bývají stovky kB; když to má pár bajtů, je to špatně
+    if (!st.isFile()) return { ok: false, reason: "not_file" };
+    if (st.size < 50_000) return { ok: false, reason: `too_small_${st.size}` };
 
-    if (s === "OTTO") return "OTF";
-    if (s === "ttcf") return "TTC";
-    if (s === "true" || s === "typ1") return "TTF";
-    if (u32 === 0x00010000) return "TTF";
-    return "UNKNOWN";
-  } catch {
-    return "UNKNOWN";
+    const buf64 = readFirstBytes(fontPath, 64);
+    if (isProbablyText(buf64)) return { ok: false, reason: "looks_like_text_file" };
+
+    const buf4 = buf64.subarray(0, 4);
+    const hdr = sniffFontHeader(buf4);
+
+    if (hdr === "TTF" || hdr === "OTF") return { ok: true, format: hdr };
+    if (hdr === "TTC") return { ok: false, reason: "ttc_not_supported_use_ttf" };
+
+    return { ok: false, reason: `unknown_header_${hdr}` };
+  } catch (e) {
+    return { ok: false, reason: `exception_${e?.message || e}` };
   }
 }
 
@@ -302,30 +334,34 @@ function findCzFontPath() {
   ];
 
   for (const p of candidates) {
-    try {
-      if (!fs.existsSync(p)) continue;
-      const ext = path.extname(p).toLowerCase();
-      if (ext !== ".ttf" && ext !== ".otf") continue;
-      const fmt = sniffFontFormat(p);
-      if (fmt === "TTF" || fmt === "OTF") return p;
-    } catch {
-      // ignore
+    const ext = path.extname(p).toLowerCase();
+    if (ext !== ".ttf" && ext !== ".otf") continue;
+
+    const v = validateFontFile(p);
+    if (v.ok) return { path: p, format: v.format, reason: "ok" };
+
+    // pokud je to assets/DejaVuSans.ttf a je špatně, chceme mít konkrétní důvod
+    if (p.includes(path.join("assets", "DejaVuSans.ttf")) && v.reason) {
+      return { path: p, format: null, reason: v.reason, invalid: true };
     }
   }
-  return null;
+  return { path: null, format: null, reason: "not_found" };
 }
 
 function tryApplyPdfFont(doc) {
-  const fontPath = findCzFontPath();
-  if (!fontPath) return { ok: false, fontPath: null, reason: "not_found" };
+  const r = findCzFontPath();
+  if (!r.path) return { ok: false, fontPath: null, reason: r.reason };
+
+  // když existuje assets/DejaVuSans.ttf ale je invalid, vrať to s důvodem
+  if (r.invalid) return { ok: false, fontPath: r.path, reason: r.reason };
 
   try {
-    doc.registerFont("CZ", fontPath);
+    doc.registerFont("CZ", r.path);
     doc.font("CZ");
-    return { ok: true, fontPath, reason: "ok" };
+    return { ok: true, fontPath: r.path, reason: "ok" };
   } catch (e) {
-    console.error("PDF: Font load failed:", fontPath, e?.message || e);
-    return { ok: false, fontPath, reason: "load_failed" };
+    console.error("PDF: Font load failed:", r.path, e?.message || e);
+    return { ok: false, fontPath: r.path, reason: `load_failed_${e?.message || "unknown"}` };
   }
 }
 
@@ -518,8 +554,11 @@ app.get("/api/export.pdf", async (req, res) => {
   doc.moveDown(0.3);
 
   if (!font.ok) {
-    doc.fontSize(9).fillColor("#a33")
-      .text("Pozn.: CZ font nebyl nalezen/nelze načíst. Přidej validní TTF do assets/DejaVuSans.ttf pro správnou diakritiku.");
+    const fp = font.fontPath ? `(${font.fontPath})` : "";
+    doc.fontSize(9).fillColor("#a33").text(
+      `Pozn.: CZ font nelze použít ${fp}. Důvod: ${font.reason}. ` +
+      `Použij opravdový binární TTF (např. DejaVuSans.ttf ~700kB+) v assets/DejaVuSans.ttf.`
+    );
     doc.moveDown(0.5);
   } else {
     doc.moveDown(0.6);
