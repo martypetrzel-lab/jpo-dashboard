@@ -58,7 +58,6 @@ export async function initDb() {
     );
   `);
 
-  // migrations for older schema
   const adds = [
     ["events", "event_type", "TEXT"],
     ["events", "description_raw", "TEXT"],
@@ -80,7 +79,6 @@ export async function initDb() {
     }
   }
 
-  // ensure defaults for new columns if migrated
   await pool.query(`
     UPDATE events
     SET is_closed = COALESCE(is_closed, FALSE),
@@ -89,8 +87,7 @@ export async function initDb() {
     WHERE is_closed IS NULL OR first_seen_at IS NULL OR last_seen_at IS NULL;
   `);
 
-  // ---- backfill city_text for existing rows ----
-  // 1) pokud place_text není "okres ...", ber to jako město
+  // backfill city_text for existing rows (ne okres)
   await pool.query(`
     UPDATE events
     SET city_text = COALESCE(city_text, place_text)
@@ -99,7 +96,7 @@ export async function initDb() {
       AND place_text !~* '^\\s*okres\\s+';
   `);
 
-  // 2) pokud place_text je "okres ...", vytáhni město z title (poslední " - ...")
+  // fallback: city z title " - Město"
   await pool.query(`
     UPDATE events
     SET city_text = COALESCE(
@@ -111,12 +108,6 @@ export async function initDb() {
   `);
 }
 
-/**
- * filters:
- *  - types: array of strings (event_type)
- *  - city: string (match city_text ILIKE %city%)
- *  - status: "all" | "open" | "closed"
- */
 function buildWhere(filters = {}, startIndex = 1) {
   const clauses = [];
   const params = [];
@@ -196,6 +187,10 @@ export async function updateEventCoords(id, lat, lon) {
   await pool.query(`UPDATE events SET lat=$2, lon=$3 WHERE id=$1`, [id, lat, lon]);
 }
 
+export async function clearEventCoords(id) {
+  await pool.query(`UPDATE events SET lat=NULL, lon=NULL WHERE id=$1`, [id]);
+}
+
 export async function getEventsFiltered(filters = {}, limit = 300) {
   const lim = Math.max(1, Math.min(Number(limit || 300), 2000));
 
@@ -233,7 +228,6 @@ export async function getStatsFiltered(filters = {}) {
     params
   );
 
-  // ✅ TOP města podle city_text (ne okres)
   const topCities = await pool.query(
     `
     SELECT COALESCE(NULLIF(city_text,''),'(neznamé)') AS city, COUNT(*)::int AS count
@@ -260,7 +254,6 @@ export async function getStatsFiltered(filters = {}) {
     params
   );
 
-  // open/closed counts – bez status filtru
   const fNoStatus = { ...filters, status: "all" };
   const ws = buildWhere(fNoStatus, 1);
   const where30NoStatus = ws.where ? `${ws.where} AND ${baseTime}` : `WHERE ${baseTime}`;
@@ -316,6 +309,27 @@ export async function setCachedGeocode(placeText, lat, lon) {
     `,
     [placeText, lat, lon]
   );
+}
+
+export async function deleteCachedGeocode(placeText) {
+  await pool.query(`DELETE FROM geocode_cache WHERE place_text=$1`, [placeText]);
+}
+
+// ✅ mimo CZ (bounding box) - pro Variant B
+export async function getEventsOutsideCz(limit = 200) {
+  const lim = Math.max(1, Math.min(Number(limit || 200), 2000));
+  const res = await pool.query(
+    `
+    SELECT id, city_text, place_text, lat, lon
+    FROM events
+    WHERE lat IS NOT NULL AND lon IS NOT NULL
+      AND (lat < 48.55 OR lat > 51.06 OR lon < 12.09 OR lon > 18.87)
+    ORDER BY created_at DESC
+    LIMIT $1
+    `,
+    [lim]
+  );
+  return res.rows;
 }
 
 export async function getEventFirstSeen(id) {

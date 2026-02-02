@@ -12,6 +12,9 @@ import {
   getCachedGeocode,
   setCachedGeocode,
   updateEventCoords,
+  clearEventCoords,
+  deleteCachedGeocode,
+  getEventsOutsideCz,
   getEventFirstSeen
 } from "./db.js";
 
@@ -23,8 +26,9 @@ app.use(express.json({ limit: "2mb" }));
 app.use(express.static("public"));
 
 const API_KEY = process.env.API_KEY || "";
-const GEOCODE_UA = process.env.GEOCODE_USER_AGENT || "jpo-dashboard/1.5 (contact: missing)";
+const GEOCODE_UA = process.env.GEOCODE_USER_AGENT || "jpo-dashboard/1.7 (contact: missing)";
 
+// ---------------- AUTH ----------------
 function requireKey(req, res, next) {
   const key = req.header("X-API-Key") || "";
   if (!API_KEY) return res.status(500).json({ ok: false, error: "API_KEY not set on server" });
@@ -32,6 +36,7 @@ function requireKey(req, res, next) {
   next();
 }
 
+// ---------------- HELPERS ----------------
 function classifyType(title = "") {
   const t = title.toLowerCase();
   if (t.includes("požár") || t.includes("pozar")) return "fire";
@@ -46,7 +51,6 @@ function isDistrictPlace(placeText = "") {
   return /^\s*okres\s+/i.test(String(placeText || ""));
 }
 
-// město z title: poslední segment po " - "
 function extractCityFromTitle(title = "") {
   const s = String(title || "").trim();
   if (!s.includes(" - ")) return null;
@@ -57,7 +61,6 @@ function extractCityFromTitle(title = "") {
   return last;
 }
 
-// město z DESCRIPTION
 function extractCityFromDescription(descRaw = "") {
   if (!descRaw) return null;
 
@@ -87,7 +90,6 @@ function extractCityFromDescription(descRaw = "") {
   return null;
 }
 
-// parse CZ date like "2. února 2026, 17:27"
 function parseCzDateToIso(s) {
   if (!s) return null;
   const norm = String(s)
@@ -173,12 +175,7 @@ function normalizePlaceQuery(placeText) {
   return raw.replace(/^okres\s+/i, "").replace(/^ok\.\s*/i, "").trim();
 }
 
-/**
- * ✅ GEOCODE pouze ČR:
- * - countrycodes=cz
- * - addressdetails=1 + kontrola address.country_code
- * - viewbox + bounded=1 (pevné ohraničení)
- */
+// ---------------- GEOCODE (CZ ONLY) ----------------
 async function geocodePlace(placeText) {
   if (!placeText || placeText.trim().length < 2) return null;
 
@@ -192,22 +189,18 @@ async function geocodePlace(placeText) {
   const candidates = [];
   candidates.push(String(placeText).trim());
   if (cleaned && cleaned !== String(placeText).trim()) candidates.push(cleaned);
-
-  // vždy přidáme "Czechia" jako kontext (ale stejně enforce přes countrycodes)
   if (cleaned) candidates.push(`${cleaned}, Czechia`);
   candidates.push(`${String(placeText).trim()}, Czechia`);
 
-  // Rough bounding box ČR: left,top,right,bottom
-  // (lon_left, lat_top, lon_right, lat_bottom)
+  // lon_left, lat_top, lon_right, lat_bottom
   const CZ_VIEWBOX = "12.09,51.06,18.87,48.55";
 
   for (const q of candidates) {
     const url = new URL("https://nominatim.openstreetmap.org/search");
     url.searchParams.set("format", "json");
-    url.searchParams.set("limit", "3"); // vezmeme pár kandidátů a ověříme CZ
+    url.searchParams.set("limit", "3");
     url.searchParams.set("q", q);
 
-    // ✅ omezení na ČR
     url.searchParams.set("countrycodes", "cz");
     url.searchParams.set("addressdetails", "1");
     url.searchParams.set("bounded", "1");
@@ -221,16 +214,14 @@ async function geocodePlace(placeText) {
     const data = await r.json();
     if (!Array.isArray(data) || data.length === 0) continue;
 
-    // projdi kandidáty a vezmi první, který je fakt CZ
     for (const cand of data) {
       const lat = Number(cand.lat);
       const lon = Number(cand.lon);
       if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
 
       const cc = String(cand?.address?.country_code || "").toLowerCase();
-      if (cc && cc !== "cz") continue; // mimo ČR
+      if (cc && cc !== "cz") continue;
 
-      // někdy address není – tak ještě druhá pojistka: display_name
       const dn = String(cand.display_name || "").toLowerCase();
       if (!cc && dn && !(dn.includes("czechia") || dn.includes("cesko") || dn.includes("česko") || dn.includes("czech republic"))) {
         continue;
@@ -278,8 +269,7 @@ async function backfillCoords(rows, max = 5) {
   return fixed;
 }
 
-// ---------------- PDF FONT (beze změn) ----------------
-
+// ---------------- PDF FONT (safe) ----------------
 function sniffFontFormat(fontPath) {
   try {
     const fd = fs.openSync(fontPath, "r");
@@ -305,7 +295,6 @@ function findCzFontPath() {
     path.join(__dirname, "assets", "DejaVuSans.ttf"),
     path.join(__dirname, "assets", "NotoSans-Regular.ttf"),
     path.join(__dirname, "assets", "Roboto-Regular.ttf"),
-
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed.ttf",
     "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
@@ -315,10 +304,8 @@ function findCzFontPath() {
   for (const p of candidates) {
     try {
       if (!fs.existsSync(p)) continue;
-
       const ext = path.extname(p).toLowerCase();
       if (ext !== ".ttf" && ext !== ".otf") continue;
-
       const fmt = sniffFontFormat(p);
       if (fmt === "TTF" || fmt === "OTF") return p;
     } catch {
@@ -336,7 +323,8 @@ function tryApplyPdfFont(doc) {
     doc.registerFont("CZ", fontPath);
     doc.font("CZ");
     return { ok: true, fontPath, reason: "ok" };
-  } catch {
+  } catch (e) {
+    console.error("PDF: Font load failed:", fontPath, e?.message || e);
     return { ok: false, fontPath, reason: "load_failed" };
   }
 }
@@ -354,6 +342,7 @@ function typeLabel(t) {
 
 // ---------------- ROUTES ----------------
 
+// ingest (data z ESP)
 app.post("/api/ingest", requireKey, async (req, res) => {
   try {
     const { source, items } = req.body || {};
@@ -369,7 +358,6 @@ app.post("/api/ingest", requireKey, async (req, res) => {
       if (!it?.id || !it?.title || !it?.link) continue;
 
       const eventType = it.eventType || classifyType(it.title);
-
       const desc = it.descriptionRaw || it.descRaw || it.description || "";
       const times = parseTimesFromDescription(desc);
 
@@ -432,20 +420,77 @@ app.post("/api/ingest", requireKey, async (req, res) => {
   }
 });
 
+// events (filters)
 app.get("/api/events", async (req, res) => {
   const limit = Math.min(Number(req.query.limit || 400), 2000);
   const filters = parseFilters(req);
   const rows = await getEventsFiltered(filters, limit);
-  const fixed = await backfillCoords(rows, 5);
+  const fixed = await backfillCoords(rows, 8);
   res.json({ ok: true, filters, backfilled_coords: fixed, items: rows });
 });
 
+// stats (filters)
 app.get("/api/stats", async (req, res) => {
   const filters = parseFilters(req);
   const stats = await getStatsFiltered(filters);
   res.json({ ok: true, filters, ...stats });
 });
 
+// export CSV
+app.get("/api/export.csv", async (req, res) => {
+  const filters = parseFilters(req);
+  const limit = Math.min(Number(req.query.limit || 2000), 5000);
+  const rows = await getEventsFiltered(filters, limit);
+
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="jpo_vyjezdy_export.csv"`);
+
+  const csvEscape = (v) => {
+    const s = String(v ?? "");
+    if (/[",\n\r;]/.test(s)) return `"${s.replaceAll('"', '""')}"`;
+    return s;
+  };
+
+  const formatDateForCsv = (v) => {
+    if (!v) return "";
+    const d = new Date(v);
+    if (Number.isNaN(d.getTime())) return String(v);
+    return d.toISOString();
+  };
+
+  const header = [
+    "time_iso",
+    "state",
+    "type",
+    "title",
+    "city",
+    "place_text",
+    "status_text",
+    "duration_min",
+    "link"
+  ].join(";");
+
+  const lines = rows.map(r => {
+    const timeIso = formatDateForCsv(r.pub_date || r.created_at);
+    const state = r.is_closed ? "UKONCENO" : "AKTIVNI";
+    const typ = typeLabel(r.event_type || "other");
+    return [
+      csvEscape(timeIso),
+      csvEscape(state),
+      csvEscape(typ),
+      csvEscape(r.title || ""),
+      csvEscape(r.city_text || ""),
+      csvEscape(r.place_text || ""),
+      csvEscape(r.status_text || ""),
+      csvEscape(Number.isFinite(r.duration_min) ? r.duration_min : ""),
+      csvEscape(r.link || "")
+    ].join(";");
+  });
+
+  res.send([header, ...lines].join("\n"));
+});
+
+// export PDF
 app.get("/api/export.pdf", async (req, res) => {
   const filters = parseFilters(req);
   const limit = Math.min(Number(req.query.limit || 800), 2000);
@@ -480,7 +525,7 @@ app.get("/api/export.pdf", async (req, res) => {
     doc.moveDown(0.6);
   }
 
-  const col = { time: 88, state: 62, type: 78, city: 160, dur: 70, title: 340 };
+  const col = { time: 88, state: 62, type: 78, city: 170, dur: 70, title: 330 };
   const startX = doc.x;
   let y = doc.y;
 
@@ -498,7 +543,6 @@ app.get("/api/export.pdf", async (req, res) => {
     doc.text("Město", startX + col.time + col.state + col.type, y, { width: col.city });
     doc.text("Délka", startX + col.time + col.state + col.type + col.city, y, { width: col.dur });
     doc.text("Název", startX + col.time + col.state + col.type + col.city + col.dur, y, { width: col.title });
-
     y += 14;
     doc.moveTo(startX, y)
       .lineTo(startX + col.time + col.state + col.type + col.city + col.dur + col.title, y)
@@ -513,7 +557,6 @@ app.get("/api/export.pdf", async (req, res) => {
   for (const r of rows) {
     const d = new Date(r.pub_date || r.created_at);
     const timeText = Number.isNaN(d.getTime()) ? String(r.pub_date || r.created_at || "") : d.toLocaleString("cs-CZ");
-
     const state = r.is_closed ? "UKONČENO" : "AKTIVNÍ";
     const typ = typeLabel(r.event_type || "other");
     const city = String(r.city_text || r.place_text || "");
@@ -541,6 +584,57 @@ app.get("/api/export.pdf", async (req, res) => {
   doc.moveDown(0.6);
   doc.fontSize(9).fillColor("#444").text(`Záznamů: ${rows.length}`);
   doc.end();
+});
+
+// ✅ Varianta B: oprava špatných bodů mimo ČR (purge cache + re-geocode)
+app.post("/api/admin/regeocode", requireKey, async (req, res) => {
+  try {
+    const mode = String(req.body?.mode || "outside_cz");
+    const limit = Math.max(1, Math.min(Number(req.body?.limit || 200), 2000));
+
+    if (mode !== "outside_cz") {
+      return res.status(400).json({ ok: false, error: "mode must be 'outside_cz'" });
+    }
+
+    const bad = await getEventsOutsideCz(limit);
+
+    let cacheDeleted = 0;
+    let coordsCleared = 0;
+    let reGeocoded = 0;
+    let failed = 0;
+
+    for (const ev of bad) {
+      const q = (ev.city_text && String(ev.city_text).trim()) ? ev.city_text : ev.place_text;
+      if (!q) continue;
+
+      await deleteCachedGeocode(q);
+      cacheDeleted++;
+
+      await clearEventCoords(ev.id);
+      coordsCleared++;
+
+      const g = await geocodePlace(q);
+      if (g) {
+        await updateEventCoords(ev.id, g.lat, g.lon);
+        reGeocoded++;
+      } else {
+        failed++;
+      }
+    }
+
+    res.json({
+      ok: true,
+      mode,
+      processed: bad.length,
+      cache_deleted: cacheDeleted,
+      coords_cleared: coordsCleared,
+      re_geocoded: reGeocoded,
+      failed
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok: false, error: "server error" });
+  }
 });
 
 app.get("/health", (req, res) => res.send("OK"));
