@@ -71,7 +71,6 @@ function minutesSince(dtIso) {
 }
 
 function effectiveRunningMinutes(it) {
-  // prefer start_time_iso, else first_seen_at, else created_at
   const m =
     minutesSince(it.start_time_iso) ??
     minutesSince(it.first_seen_at) ??
@@ -309,11 +308,13 @@ async function loadAll() {
   renderLongest(statsJson.longest || []);
 
   const openNow = items.filter(x => !x.is_closed).length;
-  setStatus(`OK • ${items.length} záznamů • aktivní ${openNow}`, true);
+  const noCoords = items.filter(x => !(typeof x.lat === "number" && typeof x.lon === "number")).length;
+  const backfilled = Number(eventsJson.backfilled_coords || 0);
+
+  setStatus(`OK • ${items.length} záznamů • aktivní ${openNow} • bez souřadnic ${noCoords}${backfilled ? ` • doplněno ${backfilled}` : ""}`, true);
 }
 
 document.getElementById("refreshBtn").addEventListener("click", loadAll);
-
 document.getElementById("applyBtn").addEventListener("click", loadAll);
 document.getElementById("resetBtn").addEventListener("click", () => {
   document.getElementById("filterType").value = "";

@@ -1,5 +1,9 @@
 import express from "express";
 import PDFDocument from "pdfkit";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+
 import {
   initDb,
   upsertEvent,
@@ -11,12 +15,15 @@ import {
   getEventFirstSeen
 } from "./db.js";
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 const app = express();
 app.use(express.json({ limit: "2mb" }));
 app.use(express.static("public"));
 
 const API_KEY = process.env.API_KEY || "";
-const GEOCODE_UA = process.env.GEOCODE_USER_AGENT || "jpo-dashboard/1.1";
+const GEOCODE_UA = process.env.GEOCODE_USER_AGENT || "jpo-dashboard/1.2 (contact: missing)";
 
 function requireKey(req, res, next) {
   const key = req.header("X-API-Key") || "";
@@ -71,7 +78,6 @@ function parseCzDateToIso(s) {
   const month = months[monName];
   if (!month) return null;
 
-  // UTC timestamp for stable math
   const dt = new Date(Date.UTC(year, month - 1, day, hh, mm, 0));
   if (Number.isNaN(dt.getTime())) return null;
   return dt.toISOString();
@@ -115,7 +121,6 @@ async function computeDurationMin(id, startIso, endIso) {
 
   let startMs = startIso ? new Date(startIso).getTime() : NaN;
 
-  // fallback: use first_seen_at if start missing
   if (!Number.isFinite(startMs)) {
     const firstSeen = await getEventFirstSeen(id);
     if (firstSeen) startMs = new Date(firstSeen).getTime();
@@ -127,6 +132,12 @@ async function computeDurationMin(id, startIso, endIso) {
   return Math.round((endMs - startMs) / 60000);
 }
 
+function normalizePlaceQuery(placeText) {
+  const raw = String(placeText || "").trim();
+  if (!raw) return "";
+  return raw.replace(/^okres\s+/i, "").replace(/^ok\.\s*/i, "").trim();
+}
+
 async function geocodePlace(placeText) {
   if (!placeText || placeText.trim().length < 2) return null;
 
@@ -135,23 +146,37 @@ async function geocodePlace(placeText) {
     return { lat: cached.lat, lon: cached.lon, cached: true };
   }
 
-  const url = new URL("https://nominatim.openstreetmap.org/search");
-  url.searchParams.set("format", "json");
-  url.searchParams.set("limit", "1");
-  url.searchParams.set("q", placeText);
+  const cleaned = normalizePlaceQuery(placeText);
 
-  const r = await fetch(url.toString(), { headers: { "User-Agent": GEOCODE_UA } });
-  if (!r.ok) return null;
+  const candidates = [];
+  candidates.push(String(placeText).trim());
+  if (cleaned && cleaned !== String(placeText).trim()) candidates.push(cleaned);
+  if (cleaned) candidates.push(`${cleaned}, Czechia`);
+  candidates.push(`${String(placeText).trim()}, Czechia`);
 
-  const data = await r.json();
-  if (!Array.isArray(data) || data.length === 0) return null;
+  for (const q of candidates) {
+    const url = new URL("https://nominatim.openstreetmap.org/search");
+    url.searchParams.set("format", "json");
+    url.searchParams.set("limit", "1");
+    url.searchParams.set("q", q);
 
-  const lat = Number(data[0].lat);
-  const lon = Number(data[0].lon);
-  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+    const r = await fetch(url.toString(), {
+      headers: { "User-Agent": GEOCODE_UA, "Accept-Language": "cs,en;q=0.8" }
+    });
+    if (!r.ok) continue;
 
-  await setCachedGeocode(placeText, lat, lon);
-  return { lat, lon, cached: false };
+    const data = await r.json();
+    if (!Array.isArray(data) || data.length === 0) continue;
+
+    const lat = Number(data[0].lat);
+    const lon = Number(data[0].lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+
+    await setCachedGeocode(placeText, lat, lon);
+    return { lat, lon, cached: false, qUsed: q };
+  }
+
+  return null;
 }
 
 function parseFilters(req) {
@@ -159,17 +184,9 @@ function parseFilters(req) {
   const city = String(req.query.city || "").trim();
   const status = String(req.query.status || "all").trim().toLowerCase();
 
-  const types = typeQ
-    ? typeQ.split(",").map(s => s.trim()).filter(Boolean)
-    : [];
-
+  const types = typeQ ? typeQ.split(",").map(s => s.trim()).filter(Boolean) : [];
   const normStatus = ["all", "open", "closed"].includes(status) ? status : "all";
-
-  return {
-    types,
-    city,
-    status: normStatus
-  };
+  return { types, city, status: normStatus };
 }
 
 function csvEscape(v) {
@@ -196,6 +213,52 @@ function typeLabel(t) {
   }
 }
 
+async function backfillCoords(rows, max = 5) {
+  const need = rows
+    .filter(r => (r.place_text && (r.lat == null || r.lon == null)))
+    .slice(0, Math.max(0, Math.min(max, 20)));
+
+  let fixed = 0;
+  for (const r of need) {
+    try {
+      const g = await geocodePlace(r.place_text);
+      if (g) {
+        await updateEventCoords(r.id, g.lat, g.lon);
+        r.lat = g.lat;
+        r.lon = g.lon;
+        fixed++;
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return fixed;
+}
+
+/** Najde font s diakritikou pro PDF (ideálně přibalený v repu). */
+function findCzFontPath() {
+  const candidates = [
+    // 1) Doporučené: přibal do repa (nejjistější)
+    path.join(__dirname, "assets", "DejaVuSans.ttf"),
+    path.join(__dirname, "assets", "Roboto-Regular.ttf"),
+
+    // 2) Linux systémové fonty (často funguje i na Railway)
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/truetype/freefont/FreeSans.ttf"
+  ];
+
+  for (const p of candidates) {
+    try {
+      if (fs.existsSync(p)) return p;
+    } catch {
+      // ignore
+    }
+  }
+  return null;
+}
+
 app.post("/api/ingest", requireKey, async (req, res) => {
   try {
     const { source, items } = req.body || {};
@@ -214,8 +277,6 @@ app.post("/api/ingest", requireKey, async (req, res) => {
       const desc = it.descriptionRaw || it.descRaw || it.description || "";
 
       const times = parseTimesFromDescription(desc);
-
-      // duration: only if end known; start from parsed start or first_seen_at fallback
       const durationMin =
         Number.isFinite(it.durationMin) ? it.durationMin : await computeDurationMin(it.id, times.startIso, times.endIso);
 
@@ -265,7 +326,8 @@ app.get("/api/events", async (req, res) => {
   const limit = Math.min(Number(req.query.limit || 400), 2000);
   const filters = parseFilters(req);
   const rows = await getEventsFiltered(filters, limit);
-  res.json({ ok: true, filters, items: rows });
+  const fixed = await backfillCoords(rows, 5);
+  res.json({ ok: true, filters, backfilled_coords: fixed, items: rows });
 });
 
 app.get("/api/stats", async (req, res) => {
@@ -274,7 +336,6 @@ app.get("/api/stats", async (req, res) => {
   res.json({ ok: true, filters, ...stats });
 });
 
-// export CSV for municipality/commander
 app.get("/api/export.csv", async (req, res) => {
   const filters = parseFilters(req);
   const limit = Math.min(Number(req.query.limit || 2000), 5000);
@@ -313,7 +374,6 @@ app.get("/api/export.csv", async (req, res) => {
   res.send([header, ...lines].join("\n"));
 });
 
-// export PDF for municipality/commander
 app.get("/api/export.pdf", async (req, res) => {
   const filters = parseFilters(req);
   const limit = Math.min(Number(req.query.limit || 800), 2000);
@@ -323,6 +383,17 @@ app.get("/api/export.pdf", async (req, res) => {
   res.setHeader("Content-Disposition", `attachment; filename="jpo_vyjezdy_export.pdf"`);
 
   const doc = new PDFDocument({ size: "A4", layout: "landscape", margin: 24 });
+
+  // ✅ font s diakritikou
+  const fontPath = findCzFontPath();
+  if (fontPath) {
+    doc.registerFont("CZ", fontPath);
+    doc.font("CZ");
+  } else {
+    // fallback (diakritika nebude OK)
+    console.warn("PDF font with CZ diacritics not found. Add assets/DejaVuSans.ttf to repo.");
+  }
+
   doc.pipe(res);
 
   const now = new Date();
@@ -333,21 +404,12 @@ app.get("/api/export.pdf", async (req, res) => {
     filters.status === "open" ? "Stav: aktivní" : filters.status === "closed" ? "Stav: ukončené" : "Stav: všechny"
   ].join("  •  ");
 
-  doc.fontSize(18).text(title, { continued: false });
+  doc.fontSize(18).fillColor("#000").text(title);
   doc.moveDown(0.2);
   doc.fontSize(10).fillColor("#333").text(`Vygenerováno: ${now.toLocaleString("cs-CZ")}   •   ${filt}`);
   doc.moveDown(0.8);
 
-  // table layout
-  const col = {
-    time: 88,
-    state: 62,
-    type: 78,
-    place: 130,
-    dur: 70,
-    title: 360
-  };
-
+  const col = { time: 88, state: 62, type: 78, place: 130, dur: 70, title: 360 };
   const startX = doc.x;
   let y = doc.y;
 
@@ -360,7 +422,10 @@ app.get("/api/export.pdf", async (req, res) => {
     doc.text("Délka", startX + col.time + col.state + col.type + col.place, y, { width: col.dur });
     doc.text("Název", startX + col.time + col.state + col.type + col.place + col.dur, y, { width: col.title });
     y += 14;
-    doc.moveTo(startX, y).lineTo(startX + col.time + col.state + col.type + col.place + col.dur + col.title, y).strokeColor("#999").stroke();
+    doc.moveTo(startX, y)
+      .lineTo(startX + col.time + col.state + col.type + col.place + col.dur + col.title, y)
+      .strokeColor("#999")
+      .stroke();
     y += 8;
   }
 
@@ -369,10 +434,8 @@ app.get("/api/export.pdf", async (req, res) => {
   doc.fontSize(9).fillColor("#111");
 
   for (const r of rows) {
-    const timeText = (() => {
-      const d = new Date(r.pub_date || r.created_at);
-      return Number.isNaN(d.getTime()) ? String(r.pub_date || r.created_at || "") : d.toLocaleString("cs-CZ");
-    })();
+    const d = new Date(r.pub_date || r.created_at);
+    const timeText = Number.isNaN(d.getTime()) ? String(r.pub_date || r.created_at || "") : d.toLocaleString("cs-CZ");
 
     const state = r.is_closed ? "UKONČENO" : "AKTIVNÍ";
     const typ = typeLabel(r.event_type || "other");
@@ -380,13 +443,12 @@ app.get("/api/export.pdf", async (req, res) => {
     const dur = Number.isFinite(r.duration_min) ? `${r.duration_min} min` : "—";
     const ttl = String(r.title || "");
 
-    const rowHeight = 14;
-
-    // page break
     if (y > doc.page.height - 40) {
       doc.addPage({ size: "A4", layout: "landscape", margin: 24 });
+      if (fontPath) doc.font("CZ"); // znovu nastavit font po addPage
       y = doc.y;
       drawHeader();
+      doc.fontSize(9).fillColor("#111");
     }
 
     doc.text(timeText, startX, y, { width: col.time });
@@ -396,7 +458,7 @@ app.get("/api/export.pdf", async (req, res) => {
     doc.text(dur, startX + col.time + col.state + col.type + col.place, y, { width: col.dur });
     doc.text(ttl, startX + col.time + col.state + col.type + col.place + col.dur, y, { width: col.title });
 
-    y += rowHeight;
+    y += 14;
   }
 
   doc.moveDown(0.6);
