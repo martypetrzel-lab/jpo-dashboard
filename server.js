@@ -23,9 +23,7 @@ app.use(express.json({ limit: "2mb" }));
 app.use(express.static("public"));
 
 const API_KEY = process.env.API_KEY || "";
-
-// Nominatim
-const GEOCODE_UA = process.env.GEOCODE_USER_AGENT || "jpo-dashboard/1.3 (contact: missing)";
+const GEOCODE_UA = process.env.GEOCODE_USER_AGENT || "jpo-dashboard/1.5 (contact: missing)";
 
 function requireKey(req, res, next) {
   const key = req.header("X-API-Key") || "";
@@ -44,6 +42,10 @@ function classifyType(title = "") {
   return "other";
 }
 
+function isDistrictPlace(placeText = "") {
+  return /^\s*okres\s+/i.test(String(placeText || ""));
+}
+
 // město z title: poslední segment po " - "
 function extractCityFromTitle(title = "") {
   const s = String(title || "").trim();
@@ -55,11 +57,37 @@ function extractCityFromTitle(title = "") {
   return last;
 }
 
-function isDistrictPlace(placeText = "") {
-  return /^\s*okres\s+/i.test(String(placeText || ""));
+// město z DESCRIPTION
+function extractCityFromDescription(descRaw = "") {
+  if (!descRaw) return null;
+
+  const norm = String(descRaw)
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+
+  const lines = norm.split("\n").map(l => l.trim()).filter(Boolean);
+
+  for (const line of lines) {
+    const low = line
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/\p{Diacritic}/gu, "");
+
+    if (low.startsWith("stav:")) continue;
+    if (low.startsWith("ukonceni:")) continue;
+    if (low.startsWith("vyhlaseni:")) continue;
+    if (low.startsWith("ohlaseni:")) continue;
+    if (low.startsWith("okres ")) continue;
+    if (line.length < 2) continue;
+
+    return line;
+  }
+  return null;
 }
 
-// parse CZ date like "31. ledna 2026, 15:07"
+// parse CZ date like "2. února 2026, 17:27"
 function parseCzDateToIso(s) {
   if (!s) return null;
   const norm = String(s)
@@ -145,6 +173,12 @@ function normalizePlaceQuery(placeText) {
   return raw.replace(/^okres\s+/i, "").replace(/^ok\.\s*/i, "").trim();
 }
 
+/**
+ * ✅ GEOCODE pouze ČR:
+ * - countrycodes=cz
+ * - addressdetails=1 + kontrola address.country_code
+ * - viewbox + bounded=1 (pevné ohraničení)
+ */
 async function geocodePlace(placeText) {
   if (!placeText || placeText.trim().length < 2) return null;
 
@@ -158,14 +192,26 @@ async function geocodePlace(placeText) {
   const candidates = [];
   candidates.push(String(placeText).trim());
   if (cleaned && cleaned !== String(placeText).trim()) candidates.push(cleaned);
+
+  // vždy přidáme "Czechia" jako kontext (ale stejně enforce přes countrycodes)
   if (cleaned) candidates.push(`${cleaned}, Czechia`);
   candidates.push(`${String(placeText).trim()}, Czechia`);
+
+  // Rough bounding box ČR: left,top,right,bottom
+  // (lon_left, lat_top, lon_right, lat_bottom)
+  const CZ_VIEWBOX = "12.09,51.06,18.87,48.55";
 
   for (const q of candidates) {
     const url = new URL("https://nominatim.openstreetmap.org/search");
     url.searchParams.set("format", "json");
-    url.searchParams.set("limit", "1");
+    url.searchParams.set("limit", "3"); // vezmeme pár kandidátů a ověříme CZ
     url.searchParams.set("q", q);
+
+    // ✅ omezení na ČR
+    url.searchParams.set("countrycodes", "cz");
+    url.searchParams.set("addressdetails", "1");
+    url.searchParams.set("bounded", "1");
+    url.searchParams.set("viewbox", CZ_VIEWBOX);
 
     const r = await fetch(url.toString(), {
       headers: { "User-Agent": GEOCODE_UA, "Accept-Language": "cs,en;q=0.8" }
@@ -175,12 +221,24 @@ async function geocodePlace(placeText) {
     const data = await r.json();
     if (!Array.isArray(data) || data.length === 0) continue;
 
-    const lat = Number(data[0].lat);
-    const lon = Number(data[0].lon);
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+    // projdi kandidáty a vezmi první, který je fakt CZ
+    for (const cand of data) {
+      const lat = Number(cand.lat);
+      const lon = Number(cand.lon);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
 
-    await setCachedGeocode(placeText, lat, lon);
-    return { lat, lon, cached: false, qUsed: q };
+      const cc = String(cand?.address?.country_code || "").toLowerCase();
+      if (cc && cc !== "cz") continue; // mimo ČR
+
+      // někdy address není – tak ještě druhá pojistka: display_name
+      const dn = String(cand.display_name || "").toLowerCase();
+      if (!cc && dn && !(dn.includes("czechia") || dn.includes("cesko") || dn.includes("česko") || dn.includes("czech republic"))) {
+        continue;
+      }
+
+      await setCachedGeocode(placeText, lat, lon);
+      return { lat, lon, cached: false, qUsed: q };
+    }
   }
 
   return null;
@@ -220,12 +278,8 @@ async function backfillCoords(rows, max = 5) {
   return fixed;
 }
 
-/**
- * ✅ VALIDACE FONTU: PDFKit/fontkit berou jen TTF/OTF.
- * - TTF hlavička: 00 01 00 00 / 'true' / 'typ1'
- * - OTF hlavička: 'OTTO'
- * - TTC hlavička: 'ttcf' (kolekce) – tu radši odmítneme, protože často dělá problémy
- */
+// ---------------- PDF FONT (beze změn) ----------------
+
 function sniffFontFormat(fontPath) {
   try {
     const fd = fs.openSync(fontPath, "r");
@@ -240,7 +294,6 @@ function sniffFontFormat(fontPath) {
     if (s === "ttcf") return "TTC";
     if (s === "true" || s === "typ1") return "TTF";
     if (u32 === 0x00010000) return "TTF";
-
     return "UNKNOWN";
   } catch {
     return "UNKNOWN";
@@ -249,11 +302,10 @@ function sniffFontFormat(fontPath) {
 
 function findCzFontPath() {
   const candidates = [
-    // 🔥 Doporučeno: přibal do repa validní TTF
     path.join(__dirname, "assets", "DejaVuSans.ttf"),
+    path.join(__dirname, "assets", "NotoSans-Regular.ttf"),
     path.join(__dirname, "assets", "Roboto-Regular.ttf"),
 
-    // systémové (Railway/Ubuntu někdy má, někdy ne)
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed.ttf",
     "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
@@ -264,36 +316,28 @@ function findCzFontPath() {
     try {
       if (!fs.existsSync(p)) continue;
 
-      // nejdřív rychlá validace přípony
       const ext = path.extname(p).toLowerCase();
       if (ext !== ".ttf" && ext !== ".otf") continue;
 
-      // pak hlavička
       const fmt = sniffFontFormat(p);
       if (fmt === "TTF" || fmt === "OTF") return p;
-
-      // TTC nebo UNKNOWN → přeskoč
-      console.warn(`PDF font skipped (unsupported format ${fmt}): ${p}`);
     } catch {
       // ignore
     }
   }
-
   return null;
 }
 
 function tryApplyPdfFont(doc) {
   const fontPath = findCzFontPath();
-  if (!fontPath) return { ok: false, fontPath: null };
+  if (!fontPath) return { ok: false, fontPath: null, reason: "not_found" };
 
   try {
     doc.registerFont("CZ", fontPath);
     doc.font("CZ");
-    return { ok: true, fontPath };
-  } catch (e) {
-    // ✅ klíčové: už nikdy to nespadne na "Unknown font format"
-    console.error("PDF font load failed:", e?.message || e);
-    return { ok: false, fontPath };
+    return { ok: true, fontPath, reason: "ok" };
+  } catch {
+    return { ok: false, fontPath, reason: "load_failed" };
   }
 }
 
@@ -308,7 +352,7 @@ function typeLabel(t) {
   }
 }
 
-// -------------------- ROUTES --------------------
+// ---------------- ROUTES ----------------
 
 app.post("/api/ingest", requireKey, async (req, res) => {
   try {
@@ -325,6 +369,7 @@ app.post("/api/ingest", requireKey, async (req, res) => {
       if (!it?.id || !it?.title || !it?.link) continue;
 
       const eventType = it.eventType || classifyType(it.title);
+
       const desc = it.descriptionRaw || it.descRaw || it.description || "";
       const times = parseTimesFromDescription(desc);
 
@@ -334,10 +379,12 @@ app.post("/api/ingest", requireKey, async (req, res) => {
           : await computeDurationMin(it.id, times.startIso, times.endIso);
 
       const placeText = it.placeText || null;
+      const cityFromDesc = extractCityFromDescription(desc);
       const cityFromTitle = extractCityFromTitle(it.title);
 
       const cityText =
         it.cityText ||
+        cityFromDesc ||
         (!placeText ? cityFromTitle : (isDistrictPlace(placeText) ? cityFromTitle : placeText)) ||
         null;
 
@@ -362,7 +409,6 @@ app.post("/api/ingest", requireKey, async (req, res) => {
 
       if (ev.isClosed) updatedClosed++;
 
-      // geokóduj primárně město
       const geoQuery = ev.cityText || ev.placeText;
       if (geoQuery) {
         const g = await geocodePlace(geoQuery);
@@ -400,59 +446,6 @@ app.get("/api/stats", async (req, res) => {
   res.json({ ok: true, filters, ...stats });
 });
 
-app.get("/api/export.csv", async (req, res) => {
-  const filters = parseFilters(req);
-  const limit = Math.min(Number(req.query.limit || 2000), 5000);
-  const rows = await getEventsFiltered(filters, limit);
-
-  res.setHeader("Content-Type", "text/csv; charset=utf-8");
-  res.setHeader("Content-Disposition", `attachment; filename="jpo_vyjezdy_export.csv"`);
-
-  const csvEscape = (v) => {
-    const s = String(v ?? "");
-    if (/[",\n\r;]/.test(s)) return `"${s.replaceAll('"', '""')}"`;
-    return s;
-  };
-
-  const formatDateForCsv = (v) => {
-    if (!v) return "";
-    const d = new Date(v);
-    if (Number.isNaN(d.getTime())) return String(v);
-    return d.toISOString();
-  };
-
-  const header = [
-    "time_iso",
-    "state",
-    "type",
-    "title",
-    "city",
-    "place_text",
-    "status_text",
-    "duration_min",
-    "link"
-  ].join(";");
-
-  const lines = rows.map(r => {
-    const timeIso = formatDateForCsv(r.pub_date || r.created_at);
-    const state = r.is_closed ? "UKONCENO" : "AKTIVNI";
-    const typ = typeLabel(r.event_type || "other");
-    return [
-      csvEscape(timeIso),
-      csvEscape(state),
-      csvEscape(typ),
-      csvEscape(r.title || ""),
-      csvEscape(r.city_text || ""),
-      csvEscape(r.place_text || ""),
-      csvEscape(r.status_text || ""),
-      csvEscape(Number.isFinite(r.duration_min) ? r.duration_min : ""),
-      csvEscape(r.link || "")
-    ].join(";");
-  });
-
-  res.send([header, ...lines].join("\n"));
-});
-
 app.get("/api/export.pdf", async (req, res) => {
   const filters = parseFilters(req);
   const limit = Math.min(Number(req.query.limit || 800), 2000);
@@ -464,7 +457,6 @@ app.get("/api/export.pdf", async (req, res) => {
   const doc = new PDFDocument({ size: "A4", layout: "landscape", margin: 24 });
   doc.pipe(res);
 
-  // ✅ aplikuj font bezpečně (bez pádu)
   const font = tryApplyPdfFont(doc);
 
   const now = new Date();
@@ -480,7 +472,6 @@ app.get("/api/export.pdf", async (req, res) => {
   doc.fontSize(10).fillColor("#333").text(`Vygenerováno: ${now.toLocaleString("cs-CZ")}   •   ${filt}`);
   doc.moveDown(0.3);
 
-  // pokud font chybí, dej malou poznámku (aby bylo jasné proč není diakritika)
   if (!font.ok) {
     doc.fontSize(9).fillColor("#a33")
       .text("Pozn.: CZ font nebyl nalezen/nelze načíst. Přidej validní TTF do assets/DejaVuSans.ttf pro správnou diakritiku.");
@@ -489,7 +480,7 @@ app.get("/api/export.pdf", async (req, res) => {
     doc.moveDown(0.6);
   }
 
-  const col = { time: 88, state: 62, type: 78, city: 140, dur: 70, title: 360 };
+  const col = { time: 88, state: 62, type: 78, city: 160, dur: 70, title: 340 };
   const startX = doc.x;
   let y = doc.y;
 
@@ -507,6 +498,7 @@ app.get("/api/export.pdf", async (req, res) => {
     doc.text("Město", startX + col.time + col.state + col.type, y, { width: col.city });
     doc.text("Délka", startX + col.time + col.state + col.type + col.city, y, { width: col.dur });
     doc.text("Název", startX + col.time + col.state + col.type + col.city + col.dur, y, { width: col.title });
+
     y += 14;
     doc.moveTo(startX, y)
       .lineTo(startX + col.time + col.state + col.type + col.city + col.dur + col.title, y)
