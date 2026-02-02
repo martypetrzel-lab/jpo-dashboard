@@ -25,7 +25,10 @@ export async function initDb() {
       title TEXT NOT NULL,
       link TEXT NOT NULL,
       pub_date TEXT,
+
       place_text TEXT,
+      city_text TEXT,
+
       status_text TEXT,
       event_type TEXT,
 
@@ -55,7 +58,7 @@ export async function initDb() {
     );
   `);
 
-  // migrations if you started from older schema
+  // migrations for older schema
   const adds = [
     ["events", "event_type", "TEXT"],
     ["events", "description_raw", "TEXT"],
@@ -64,7 +67,8 @@ export async function initDb() {
     ["events", "duration_min", "INTEGER"],
     ["events", "is_closed", "BOOLEAN"],
     ["events", "first_seen_at", "TIMESTAMPTZ"],
-    ["events", "last_seen_at", "TIMESTAMPTZ"]
+    ["events", "last_seen_at", "TIMESTAMPTZ"],
+    ["events", "city_text", "TEXT"]
   ];
 
   for (const [t, c, typ] of adds) {
@@ -84,12 +88,33 @@ export async function initDb() {
         last_seen_at = COALESCE(last_seen_at, NOW())
     WHERE is_closed IS NULL OR first_seen_at IS NULL OR last_seen_at IS NULL;
   `);
+
+  // ---- backfill city_text for existing rows ----
+  // 1) pokud place_text není "okres ...", ber to jako město
+  await pool.query(`
+    UPDATE events
+    SET city_text = COALESCE(city_text, place_text)
+    WHERE (city_text IS NULL OR city_text = '')
+      AND place_text IS NOT NULL
+      AND place_text !~* '^\\s*okres\\s+';
+  `);
+
+  // 2) pokud place_text je "okres ...", vytáhni město z title (poslední " - ...")
+  await pool.query(`
+    UPDATE events
+    SET city_text = COALESCE(
+      NULLIF(city_text, ''),
+      NULLIF(regexp_replace(title, '^.*\\s-\\s', ''), title)
+    )
+    WHERE (city_text IS NULL OR city_text = '')
+      AND title LIKE '% - %';
+  `);
 }
 
 /**
  * filters:
  *  - types: array of strings (event_type)
- *  - city: string (match place_text ILIKE %city%)
+ *  - city: string (match city_text ILIKE %city%)
  *  - status: "all" | "open" | "closed"
  */
 function buildWhere(filters = {}, startIndex = 1) {
@@ -108,7 +133,7 @@ function buildWhere(filters = {}, startIndex = 1) {
   }
 
   if (city) {
-    clauses.push(`place_text ILIKE $${i}`);
+    clauses.push(`COALESCE(city_text,'') ILIKE $${i}`);
     params.push(`%${city}%`);
     i++;
   }
@@ -124,17 +149,20 @@ export async function upsertEvent(ev) {
   await pool.query(
     `
     INSERT INTO events (
-      id, title, link, pub_date, place_text, status_text, event_type,
+      id, title, link, pub_date,
+      place_text, city_text,
+      status_text, event_type,
       description_raw,
       start_time_iso, end_time_iso, duration_min, is_closed,
       first_seen_at, last_seen_at
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, NOW(), NOW())
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, NOW(), NOW())
     ON CONFLICT (id) DO UPDATE SET
       title = EXCLUDED.title,
       link = EXCLUDED.link,
       pub_date = EXCLUDED.pub_date,
       place_text = EXCLUDED.place_text,
+      city_text = COALESCE(EXCLUDED.city_text, events.city_text),
       status_text = EXCLUDED.status_text,
       event_type = EXCLUDED.event_type,
       description_raw = COALESCE(EXCLUDED.description_raw, events.description_raw),
@@ -152,6 +180,7 @@ export async function upsertEvent(ev) {
       ev.link,
       ev.pubDate || null,
       ev.placeText || null,
+      ev.cityText || null,
       ev.statusText || null,
       ev.eventType || null,
       ev.descriptionRaw || null,
@@ -177,10 +206,8 @@ export async function getEventsFiltered(filters = {}, limit = 300) {
 }
 
 export async function getStatsFiltered(filters = {}) {
-  // stats are computed for last 30 days
   const baseTime = `created_at >= NOW() - INTERVAL '30 days'`;
 
-  // for byDay/topCities/byType/longest we respect status filter (if user asks open only, it applies)
   const { where, params } = buildWhere(filters, 1);
   const where30 = where ? `${where} AND ${baseTime}` : `WHERE ${baseTime}`;
 
@@ -206,9 +233,10 @@ export async function getStatsFiltered(filters = {}) {
     params
   );
 
+  // ✅ TOP města podle city_text (ne okres)
   const topCities = await pool.query(
     `
-    SELECT COALESCE(place_text,'(neznamé)') AS city, COUNT(*)::int AS count
+    SELECT COALESCE(NULLIF(city_text,''),'(neznamé)') AS city, COUNT(*)::int AS count
     FROM events
     ${where30}
     GROUP BY city
@@ -222,7 +250,7 @@ export async function getStatsFiltered(filters = {}) {
 
   const longest = await pool.query(
     `
-    SELECT id, title, link, place_text, status_text, duration_min, start_time_iso, end_time_iso, created_at, is_closed
+    SELECT id, title, link, place_text, city_text, status_text, duration_min, start_time_iso, end_time_iso, created_at, is_closed
     FROM events
     ${where30}
       AND duration_min IS NOT NULL AND duration_min > 0
@@ -232,7 +260,7 @@ export async function getStatsFiltered(filters = {}) {
     params
   );
 
-  // open/closed counts should NOT be destroyed by status filter – ať vidíš poměr.
+  // open/closed counts – bez status filtru
   const fNoStatus = { ...filters, status: "all" };
   const ws = buildWhere(fNoStatus, 1);
   const where30NoStatus = ws.where ? `${ws.where} AND ${baseTime}` : `WHERE ${baseTime}`;

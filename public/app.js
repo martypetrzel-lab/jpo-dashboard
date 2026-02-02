@@ -9,12 +9,12 @@ const TYPE = {
   other: { emoji: "❓", label: "jiné" }
 };
 
-function typeEmoji(t) {
-  return (TYPE[t] || TYPE.other).emoji;
-}
+function typeEmoji(t) { return (TYPE[t] || TYPE.other).emoji; }
+function typeLabel(t) { return (TYPE[t] || TYPE.other).label; }
 
-function typeLabel(t) {
-  return (TYPE[t] || TYPE.other).label;
+function bestPlace(it) {
+  // ✅ preferuj město; okres nech klidně jako fallback
+  return (it.city_text && String(it.city_text).trim()) ? it.city_text : (it.place_text || "");
 }
 
 function setStatus(text, ok = true) {
@@ -30,7 +30,6 @@ function initMap() {
     maxZoom: 18,
     attribution: "&copy; OpenStreetMap"
   }).addTo(map);
-
   markersLayer = L.layerGroup().addTo(map);
 }
 
@@ -40,9 +39,7 @@ function formatDate(d) {
     const dt = new Date(d);
     if (isNaN(dt.getTime())) return d;
     return dt.toLocaleString("cs-CZ");
-  } catch {
-    return d;
-  }
+  } catch { return d; }
 }
 
 function formatDuration(min) {
@@ -90,13 +87,13 @@ function renderTable(items) {
 
   for (const it of items) {
     const t = it.event_type || "other";
-    const tr = document.createElement("tr");
     const isClosed = !!it.is_closed;
 
     const durMin = isClosed
       ? (Number.isFinite(it.duration_min) ? it.duration_min : null)
       : effectiveRunningMinutes(it);
 
+    const tr = document.createElement("tr");
     tr.className = isClosed ? "" : "rowActive";
 
     tr.innerHTML = `
@@ -104,7 +101,7 @@ function renderTable(items) {
       <td><span class="iconPill" title="${escapeHtml(typeLabel(t))}">${typeEmoji(t)}</span></td>
       <td>${statePill(isClosed)}</td>
       <td>${escapeHtml(it.title || "")}</td>
-      <td>${escapeHtml(it.place_text || "")}</td>
+      <td>${escapeHtml(bestPlace(it))}</td>
       <td>${escapeHtml(it.status_text || "")}</td>
       <td>${escapeHtml(formatDuration(durMin))}</td>
       <td>${it.link ? `<a href="${it.link}" target="_blank" rel="noopener">otevřít</a>` : ""}</td>
@@ -123,12 +120,8 @@ function makeMarkerIcon(emoji, isClosed) {
   });
 }
 
-/**
- * Když více markerů sdílí stejný bod, rozhoď je do malého kruhu,
- * aby se nepřekrývaly. (Jinak ve "vše" uvidíš jen ten poslední.)
- */
+// (tvoje „spreadOverlappingPoints“ + renderMap se může nechat jak máš, jen v popupu změním Místo)
 function spreadOverlappingPoints(items) {
-  // klíč: souřadnice zaokrouhlené, aby se to dobře skupinovalo
   const keyOf = (lat, lon) => `${lat.toFixed(5)}|${lon.toFixed(5)}`;
 
   const groups = new Map();
@@ -140,26 +133,22 @@ function spreadOverlappingPoints(items) {
     }
   }
 
-  // poloměr rozhození v metrech (cca)
   const baseMeters = 120;
-
-  // převod metrů -> stupně (hrubě; stačí na vizuál)
   const metersToLat = (m) => m / 111320;
   const metersToLon = (m, atLat) => m / (111320 * Math.cos((atLat * Math.PI) / 180));
 
-  for (const [k, arr] of groups.entries()) {
+  for (const arr of groups.values()) {
     if (arr.length <= 1) continue;
 
-    // aktivní ať mají prioritu i v rozhození (budou blíž středu)
     const sorted = [...arr].sort((a, b) => (a.is_closed === b.is_closed ? 0 : a.is_closed ? 1 : -1));
 
-    // rozhoď do kruhu + případně do druhého kruhu, když jich je hodně
     for (let i = 0; i < sorted.length; i++) {
       const it = sorted[i];
-
       const ring = i < 8 ? 1 : i < 20 ? 2 : 3;
       const posInRing = ring === 1 ? i : ring === 2 ? i - 8 : i - 20;
-      const countInRing = ring === 1 ? Math.min(sorted.length, 8) : ring === 2 ? Math.min(sorted.length - 8, 12) : Math.min(sorted.length - 20, 16);
+      const countInRing = ring === 1 ? Math.min(sorted.length, 8)
+        : ring === 2 ? Math.min(sorted.length - 8, 12)
+          : Math.min(sorted.length - 20, 16);
 
       const angle = (2 * Math.PI * posInRing) / Math.max(1, countInRing);
       const radiusM = baseMeters * ring;
@@ -175,14 +164,10 @@ function spreadOverlappingPoints(items) {
 
 function renderMap(items) {
   markersLayer.clearLayers();
-
-  // 1) rozhoď překryvy
   spreadOverlappingPoints(items);
 
-  // 2) nejdřív vykresli UKONČENÉ, pak AKTIVNÍ (aktivní budou navrchu)
   const closed = [];
   const open = [];
-
   for (const it of items) {
     if (typeof it.lat === "number" && typeof it.lon === "number") {
       (it.is_closed ? closed : open).push(it);
@@ -201,7 +186,6 @@ function renderMap(items) {
 
     const m = L.marker([lat, lon], {
       icon: makeMarkerIcon(emoji, isClosed),
-      // aktivní vždy navrch
       zIndexOffset: isClosed ? 0 : 1000
     });
 
@@ -214,21 +198,19 @@ function renderMap(items) {
         <div style="font-weight:700;margin-bottom:6px">${emoji} ${escapeHtml(it.title || "")}</div>
         <div><b>Stav:</b> ${isClosed ? "UKONČENO" : "AKTIVNÍ"}</div>
         <div><b>Typ:</b> ${escapeHtml(typeLabel(t))}</div>
-        <div><b>Místo:</b> ${escapeHtml(it.place_text || "")}</div>
+        <div><b>Místo:</b> ${escapeHtml(bestPlace(it))}</div>
         <div><b>Čas:</b> ${escapeHtml(formatDate(it.pub_date || it.created_at))}</div>
         <div><b>Délka:</b> ${escapeHtml(formatDuration(durMin))}${isClosed ? "" : " (běží)"}</div>
         ${it.link ? `<div style="margin-top:8px"><a href="${it.link}" target="_blank" rel="noopener">Detail</a></div>` : ""}
       </div>
     `;
+
     m.bindPopup(html);
     m.addTo(markersLayer);
-
     pts.push([lat, lon]);
   }
 
-  // ukončené nejdřív…
   for (const it of closed) addMarker(it);
-  // …pak aktivní (navrch)
   for (const it of open) addMarker(it);
 
   if (pts.length > 0) {
@@ -237,6 +219,7 @@ function renderMap(items) {
   }
 }
 
+// zbytek souboru nech beze změn (stats render apod.) – jen loadAll / filtry
 function renderTopCities(rows) {
   const wrap = document.getElementById("topCities");
   wrap.innerHTML = "";
