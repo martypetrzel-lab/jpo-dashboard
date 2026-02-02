@@ -3,86 +3,99 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>JPO výjezdy – dashboard</title>
+  <title>JPO Dashboard</title>
 
-  <!-- Leaflet -->
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-
-  <!-- MarkerCluster -->
-  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"/>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"/>
-
-  <link rel="stylesheet" href="/styles.css"/>
-
-  <style>
-    /* ikonky markerů */
-    .evt-icon {
-      width: 34px;
-      height: 34px;
-      border-radius: 50%;
-      display:flex;
-      align-items:center;
-      justify-content:center;
-      font-size: 18px;
-      color:#fff;
-      border:2px solid rgba(0,0,0,.35);
-      box-shadow: 0 8px 18px rgba(0,0,0,.25);
-    }
-    .evt-pozar { background:#e23b2e; }
-    .evt-nehoda { background:#1e88e5; }
-    .evt-technicka { background:#6a1b9a; }
-    .evt-zachrana { background:#2e7d32; }
-    .evt-jine { background:#607d8b; }
-  </style>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
 </head>
-
 <body>
-  <div class="app">
-    <header class="topbar">
-      <div>
-        <h1>JPO výjezdy – dashboard</h1>
-        <div class="sub">Mapa • ikony událostí • statistiky • žebříčky (data posílá ESP32)</div>
-      </div>
-      <div class="right">
-        <button id="btnReload">Obnovit</button>
-        <span id="statusPill" class="pill">…</span>
-      </div>
-    </header>
+  <header class="topbar">
+    <div class="title">
+      <h1>JPO výjezdy – dashboard</h1>
+      <div class="sub">Mapa • ikony událostí • statistiky • žebříčky (data posílá ESP32)</div>
+    </div>
+    <div class="actions">
+      <button id="refreshBtn">Obnovit</button>
+      <span id="statusPill" class="pill">…</span>
+    </div>
+  </header>
 
-    <main class="grid">
-      <section class="card mapCard">
-        <div class="cardTitle">
-          <div>Mapa výjezdů</div>
-          <div class="filters">
-            <button class="chip" data-filter="all">Vše</button>
-            <button class="chip" data-filter="pozar">🔥 požár</button>
-            <button class="chip" data-filter="nehoda">🚗 nehoda</button>
-            <button class="chip" data-filter="technicka">🔧 technická</button>
-            <button class="chip" data-filter="zachrana">🧑‍🚒 záchrana</button>
-            <button class="chip" data-filter="jine">❓ jiné</button>
-          </div>
+  <main class="grid">
+    <section class="card mapCard">
+      <div class="cardHeader">
+        <h2>Mapa výjezdů</h2>
+        <div class="hint">
+          <span class="legendItem">🔥 požár</span>
+          <span class="legendItem">🚗 nehoda</span>
+          <span class="legendItem">🛠️ technická</span>
+          <span class="legendItem">🧍 záchrana</span>
+          <span class="legendItem">❓ jiné</span>
         </div>
-        <div id="map" class="map"></div>
-      </section>
+      </div>
+      <div id="map"></div>
+    </section>
 
-      <section class="card sideCard">
-        <div class="cardTitle">Statistika (30 dní)</div>
-        <div id="statsBox" class="statsBox">—</div>
-      </section>
+    <section class="card">
+      <div class="cardHeader">
+        <h2>Statistika (30 dní)</h2>
+        <div class="hint">Počet výjezdů po dnech</div>
+      </div>
+      <canvas id="chartByDay" height="140"></canvas>
+    </section>
 
-      <section class="card listCard">
-        <div class="cardTitle">Poslední události</div>
-        <div id="eventsTable" class="tableWrap"></div>
-      </section>
-    </main>
-  </div>
+    <section class="card">
+      <div class="cardHeader">
+        <h2>Nejvíc výjezdů ve městě</h2>
+        <div class="hint">Top město (počtem)</div>
+      </div>
+      <div class="bigStat">
+        <div class="bigStatValue" id="bestCityValue">—</div>
+        <div class="bigStatLabel" id="bestCityLabel">—</div>
+      </div>
+    </section>
 
-  <!-- Leaflet -->
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <section class="card">
+      <div class="cardHeader">
+        <h2>Žebříček měst</h2>
+        <div class="hint">Top 10</div>
+      </div>
+      <div class="list" id="topCities"></div>
+    </section>
 
-  <!-- MarkerCluster -->
-  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+    <section class="card">
+      <div class="cardHeader">
+        <h2>Nejdelší zásahy</h2>
+        <div class="hint">Jen tam, kde RSS obsahuje vyhlášení + ukončení</div>
+      </div>
+      <div class="list" id="longestList"></div>
+    </section>
 
-  <script src="/app.js"></script>
+    <section class="card tableCard">
+      <div class="cardHeader">
+        <h2>Poslední výjezdy</h2>
+        <div class="hint">Zobrazuje i bez souřadnic</div>
+      </div>
+      <div class="tableWrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Čas</th>
+              <th>Typ</th>
+              <th>Název</th>
+              <th>Místo</th>
+              <th>Stav</th>
+              <th>Délka</th>
+              <th>Odkaz</th>
+            </tr>
+          </thead>
+          <tbody id="eventsTbody"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>

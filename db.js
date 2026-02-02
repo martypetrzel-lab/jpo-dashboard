@@ -1,349 +1,211 @@
 import pg from "pg";
-const { Pool } = pg;
 
-let pool;
+export const pool = new pg.Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL?.includes("railway") ? { rejectUnauthorized: false } : false
+});
 
-export function getPool() {
-  if (!pool) {
-    const url = process.env.DATABASE_URL;
-    if (!url) throw new Error("Missing DATABASE_URL env var");
-    pool = new Pool({
-      connectionString: url,
-      ssl: { rejectUnauthorized: false }
-    });
-  }
-  return pool;
-}
-
-async function ensureColumn(client, table, col, typeSql) {
-  await client.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${col} ${typeSql};`);
-}
-
-function normPlace(s = "") {
-  return String(s)
-    .toLowerCase()
-    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function detectKind(title = "") {
-  const t = String(title).toLowerCase();
-  if (t.includes("požár") || t.includes("pozar")) return "pozar";
-  if (t.includes("doprav") || t.includes("nehod")) return "nehoda";
-  if (t.includes("techn")) return "technicka";
-  if (t.includes("zachran") || t.includes("záchran")) return "zachrana";
-  return "jine";
-}
-
-// --------------------
-// Geocoding (Nominatim) + DB cache
-// --------------------
-async function nominatimGeocode(q) {
-  const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(q)}`;
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 8000);
-
-  try {
-    const r = await fetch(url, {
-      headers: { "User-Agent": "jpo-dashboard/1.0 (Railway)" },
-      signal: ctrl.signal
-    });
-    if (!r.ok) return null;
-    const j = await r.json();
-    if (!Array.isArray(j) || !j.length) return null;
-    const lat = Number(j[0].lat);
-    const lon = Number(j[0].lon);
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
-    return { lat, lon };
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(t);
-  }
-}
-
-async function getOrGeocode(client, placeText) {
-  const placeNorm = normPlace(placeText);
-  if (!placeNorm) return { placeNorm, lat: null, lon: null };
-
-  // cache lookup
-  try {
-    const c = await client.query(
-      `SELECT lat, lon FROM geocode_cache WHERE place_norm=$1 LIMIT 1`,
-      [placeNorm]
-    );
-    if (c.rows?.length) {
-      return { placeNorm, lat: c.rows[0].lat, lon: c.rows[0].lon };
-    }
-  } catch {
-    // cache tabulka není kritická
-  }
-
-  const geo = await nominatimGeocode(`${placeText}, Czechia`);
-
-  // cache upsert (nesmí shodit ingest)
-  try {
-    await client.query(
-      `INSERT INTO geocode_cache(place_norm, place_text, lat, lon, updated_at)
-       VALUES($1,$2,$3,$4,NOW())
-       ON CONFLICT(place_norm) DO UPDATE
-         SET place_text=EXCLUDED.place_text, lat=EXCLUDED.lat, lon=EXCLUDED.lon, updated_at=NOW()`,
-      [placeNorm, placeText, geo ? geo.lat : null, geo ? geo.lon : null]
-    );
-  } catch {
-    // ignore
-  }
-
-  return { placeNorm, lat: geo ? geo.lat : null, lon: geo ? geo.lon : null };
+async function colExists(table, col) {
+  const res = await pool.query(
+    `
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_name = $1 AND column_name = $2
+    LIMIT 1
+    `,
+    [table, col]
+  );
+  return res.rowCount > 0;
 }
 
 export async function initDb() {
-  const p = getPool();
-  const client = await p.connect();
-  try {
-    await client.query("BEGIN");
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS events (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      link TEXT NOT NULL,
+      pub_date TEXT,
+      place_text TEXT,
+      status_text TEXT,
+      event_type TEXT,
 
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS events (
-        id TEXT PRIMARY KEY,
-        source TEXT DEFAULT 'unknown',
-        title TEXT,
-        link TEXT,
-        place_text TEXT,
-        place_norm TEXT,
-        status_text TEXT,
-        description_raw TEXT,
-        kind TEXT DEFAULT 'jine',
-        lat DOUBLE PRECISION,
-        lon DOUBLE PRECISION,
-        is_active BOOLEAN DEFAULT true,
-        started_at TIMESTAMPTZ,
-        ended_at TIMESTAMPTZ,
-        duration_min INTEGER,
-        first_seen_at TIMESTAMPTZ DEFAULT NOW(),
-        last_seen_at  TIMESTAMPTZ DEFAULT NOW()
-      );
-    `);
+      description_raw TEXT,
 
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS geocode_cache (
-        place_norm TEXT PRIMARY KEY,
-        place_text TEXT,
-        lat DOUBLE PRECISION,
-        lon DOUBLE PRECISION,
-        updated_at TIMESTAMPTZ DEFAULT NOW()
-      );
-    `);
+      start_time_iso TEXT,
+      end_time_iso TEXT,
+      duration_min INTEGER,
+      is_closed BOOLEAN NOT NULL DEFAULT FALSE,
 
-    // migrations
-    await ensureColumn(client, "events", "place_norm", "TEXT");
-    await ensureColumn(client, "events", "kind", "TEXT DEFAULT 'jine'");
-    await ensureColumn(client, "events", "lat", "DOUBLE PRECISION");
-    await ensureColumn(client, "events", "lon", "DOUBLE PRECISION");
-    await ensureColumn(client, "events", "is_active", "BOOLEAN DEFAULT true");
-    await ensureColumn(client, "events", "started_at", "TIMESTAMPTZ");
-    await ensureColumn(client, "events", "ended_at", "TIMESTAMPTZ");
-    await ensureColumn(client, "events", "duration_min", "INTEGER");
-    await ensureColumn(client, "events", "last_seen_at", "TIMESTAMPTZ DEFAULT NOW()");
+      lat DOUBLE PRECISION,
+      lon DOUBLE PRECISION,
 
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_events_active ON events(is_active);`);
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_events_place_norm ON events(place_norm);`);
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_events_last_seen_at ON events(last_seen_at);`);
+      first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_seen_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-    await client.query("COMMIT");
-  } catch (e) {
-    await client.query("ROLLBACK");
-    throw e;
-  } finally {
-    client.release();
-  }
-}
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
 
-export async function upsertBatch({ source = "unknown", items = [] }) {
-  const p = getPool();
-  const client = await p.connect();
-  try {
-    await client.query("BEGIN");
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS geocode_cache (
+      place_text TEXT PRIMARY KEY,
+      lat DOUBLE PRECISION,
+      lon DOUBLE PRECISION,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
 
-    let accepted = 0;
-    let updatedClosed = 0;
-    let failed = 0;
+  // migrations if you started from older schema
+  const adds = [
+    ["events", "event_type", "TEXT"],
+    ["events", "description_raw", "TEXT"],
+    ["events", "start_time_iso", "TEXT"],
+    ["events", "end_time_iso", "TEXT"],
+    ["events", "duration_min", "INTEGER"],
+    ["events", "is_closed", "BOOLEAN"],
+    ["events", "first_seen_at", "TIMESTAMPTZ"],
+    ["events", "last_seen_at", "TIMESTAMPTZ"]
+  ];
 
-    for (const it of items) {
-      // SAVEPOINT = jeden rozbitý item neshodí celý batch
-      await client.query("SAVEPOINT sp_item");
-
-      try {
-        const id = String(it.id || "").trim();
-        if (!id) {
-          await client.query("RELEASE SAVEPOINT sp_item");
-          continue;
-        }
-
-        const title = it.title ?? "";
-        const link = it.link ?? "";
-        const placeText = it.placeText ?? it.place_text ?? "";
-        const statusText = it.statusText ?? it.status_text ?? "";
-        const descRaw = it.descriptionRaw ?? it.description_raw ?? "";
-
-        const st = String(statusText).toLowerCase();
-        const active =
-          st.includes("stav: nova") || st.includes("stav: nová") ||
-          st.includes(" nova") || st.includes(" nová");
-
-        const kind = (it.kind || detectKind(title));
-        const placeNorm = normPlace(placeText);
-
-        // zjisti předchozí stav (kvůli just_closed)
-        const prev = await client.query(`SELECT is_active, started_at, ended_at FROM events WHERE id=$1`, [id]);
-        const prevActive = prev.rows?.[0]?.is_active;
-
-        let lat = Number(it.lat);
-        let lon = Number(it.lon);
-        if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
-          const geo = await getOrGeocode(client, placeText);
-          lat = geo.lat;
-          lon = geo.lon;
-        }
-
-        const q = `
-          INSERT INTO events (
-            id, source, title, link, place_text, place_norm, status_text, description_raw,
-            kind, lat, lon, is_active, started_at, ended_at, duration_min, first_seen_at, last_seen_at
-          )
-          VALUES (
-            $1,$2,$3,$4,$5,$6,$7,$8,
-            $9,$10,$11,$12,
-            CASE WHEN $12=true THEN NOW() ELSE NOW() END,
-            CASE WHEN $12=false THEN NOW() ELSE NULL END,
-            NULL,
-            NOW(),
-            NOW()
-          )
-          ON CONFLICT (id) DO UPDATE SET
-            source = EXCLUDED.source,
-            title = EXCLUDED.title,
-            link = EXCLUDED.link,
-            place_text = EXCLUDED.place_text,
-            place_norm = EXCLUDED.place_norm,
-            status_text = EXCLUDED.status_text,
-            description_raw = EXCLUDED.description_raw,
-            kind = EXCLUDED.kind,
-            lat = COALESCE(EXCLUDED.lat, events.lat),
-            lon = COALESCE(EXCLUDED.lon, events.lon),
-            last_seen_at = NOW(),
-            is_active = EXCLUDED.is_active,
-            started_at = COALESCE(events.started_at, NOW()),
-            ended_at = CASE
-              WHEN events.is_active = true AND EXCLUDED.is_active = false THEN NOW()
-              WHEN EXCLUDED.is_active = true THEN NULL
-              ELSE events.ended_at
-            END
-          RETURNING is_active, started_at, ended_at;
-        `;
-
-        const res = await client.query(q, [
-          id, source, title, link, placeText, placeNorm, statusText, descRaw,
-          kind,
-          (Number.isFinite(lat) ? lat : null),
-          (Number.isFinite(lon) ? lon : null),
-          active
-        ]);
-
-        const newActive = res.rows?.[0]?.is_active;
-
-        accepted += 1;
-        if (prevActive === true && newActive === false) updatedClosed += 1;
-
-        await client.query("RELEASE SAVEPOINT sp_item");
-      } catch (e) {
-        failed += 1;
-        // rollback jen tohoto itemu
-        await client.query("ROLLBACK TO SAVEPOINT sp_item");
-        await client.query("RELEASE SAVEPOINT sp_item");
-
-        console.error("[db] item failed:", {
-          id: it?.id,
-          title: it?.title,
-          placeText: it?.placeText || it?.place_text
-        });
-        console.error("[db] error:", e?.message || e);
-      }
+  for (const [t, c, typ] of adds) {
+    // eslint-disable-next-line no-await-in-loop
+    const exists = await colExists(t, c);
+    if (!exists) {
+      // eslint-disable-next-line no-await-in-loop
+      await pool.query(`ALTER TABLE ${t} ADD COLUMN ${c} ${typ};`);
     }
-
-    // duration after close (doplní duration, když se něco zavřelo)
-    await client.query(`
-      UPDATE events
-      SET duration_min = FLOOR(EXTRACT(EPOCH FROM (ended_at - started_at)) / 60)
-      WHERE ended_at IS NOT NULL AND started_at IS NOT NULL AND duration_min IS NULL;
-    `);
-
-    await client.query("COMMIT");
-    return { accepted, updatedClosed, failed };
-  } catch (e) {
-    await client.query("ROLLBACK");
-    throw e;
-  } finally {
-    client.release();
   }
+
+  // ensure defaults for new columns if migrated
+  await pool.query(`
+    UPDATE events
+    SET is_closed = COALESCE(is_closed, FALSE),
+        first_seen_at = COALESCE(first_seen_at, created_at, NOW()),
+        last_seen_at = COALESCE(last_seen_at, NOW())
+    WHERE is_closed IS NULL OR first_seen_at IS NULL OR last_seen_at IS NULL;
+  `);
 }
 
-export async function getEvents({ limit = 200, active = null } = {}) {
-  const p = getPool();
-
-  const where = [];
-  if (active === true) where.push(`is_active = true`);
-  if (active === false) where.push(`is_active = false`);
-  const w = where.length ? `WHERE ${where.join(" AND ")}` : "";
-
-  const r = await p.query(
+export async function upsertEvent(ev) {
+  await pool.query(
     `
-    SELECT
-      id, title, link,
-      place_text, kind,
-      is_active,
-      started_at, ended_at, duration_min,
-      lat, lon,
-      last_seen_at
-    FROM events
-    ${w}
-    ORDER BY last_seen_at DESC
-    LIMIT $1
-    `,
-    [Math.min(Number(limit) || 200, 1000)]
-  );
+    INSERT INTO events (
+      id, title, link, pub_date, place_text, status_text, event_type,
+      description_raw,
+      start_time_iso, end_time_iso, duration_min, is_closed,
+      first_seen_at, last_seen_at
+    )
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, NOW(), NOW())
+    ON CONFLICT (id) DO UPDATE SET
+      title = EXCLUDED.title,
+      link = EXCLUDED.link,
+      pub_date = EXCLUDED.pub_date,
+      place_text = EXCLUDED.place_text,
+      status_text = EXCLUDED.status_text,
+      event_type = EXCLUDED.event_type,
+      description_raw = COALESCE(EXCLUDED.description_raw, events.description_raw),
 
-  return r.rows;
+      start_time_iso = COALESCE(EXCLUDED.start_time_iso, events.start_time_iso),
+      end_time_iso   = COALESCE(EXCLUDED.end_time_iso, events.end_time_iso),
+      duration_min   = COALESCE(EXCLUDED.duration_min, events.duration_min),
+      is_closed      = (events.is_closed OR EXCLUDED.is_closed),
+
+      last_seen_at = NOW()
+    `,
+    [
+      ev.id,
+      ev.title,
+      ev.link,
+      ev.pubDate || null,
+      ev.placeText || null,
+      ev.statusText || null,
+      ev.eventType || null,
+      ev.descriptionRaw || null,
+      ev.startTimeIso || null,
+      ev.endTimeIso || null,
+      Number.isFinite(ev.durationMin) ? Math.round(ev.durationMin) : null,
+      !!ev.isClosed
+    ]
+  );
 }
 
-export async function getStats({ days = 30 } = {}) {
-  const p = getPool();
-  const d = Math.max(1, Math.min(365, Number(days) || 30));
+export async function updateEventCoords(id, lat, lon) {
+  await pool.query(`UPDATE events SET lat=$2, lon=$3 WHERE id=$1`, [id, lat, lon]);
+}
 
-  const r1 = await p.query(`
-    SELECT
-      (SELECT COUNT(*) FROM events WHERE is_active = true) AS active_count,
-      (SELECT COUNT(*) FROM events WHERE is_active = false AND last_seen_at > NOW() - ($1::int || ' days')::interval) AS closed_count
-  `, [d]);
+export async function getEvents(limit = 300) {
+  const res = await pool.query(
+    `SELECT * FROM events ORDER BY created_at DESC LIMIT $1`,
+    [limit]
+  );
+  return res.rows;
+}
 
-  const rTop = await p.query(`
-    SELECT place_text AS city, COUNT(*)::int AS cnt
+export async function getStats() {
+  const byDay = await pool.query(`
+    SELECT to_char(created_at::date, 'YYYY-MM-DD') AS day, COUNT(*)::int AS count
     FROM events
-    WHERE place_text IS NOT NULL AND place_text <> ''
-      AND last_seen_at > NOW() - ($1::int || ' days')::interval
-    GROUP BY place_text
-    ORDER BY cnt DESC
-    LIMIT 10
-  `, [d]);
+    WHERE created_at >= NOW() - INTERVAL '30 days'
+    GROUP BY day
+    ORDER BY day ASC;
+  `);
 
-  const top1 = rTop.rows[0] || null;
+  const topCities = await pool.query(`
+    SELECT COALESCE(place_text,'(neznamé)') AS city, COUNT(*)::int AS count
+    FROM events
+    GROUP BY city
+    ORDER BY count DESC
+    LIMIT 10;
+  `);
+
+  const bestCity = topCities.rows[0] || null;
+
+  const longest = await pool.query(`
+    SELECT id, title, link, place_text, status_text, duration_min, start_time_iso, end_time_iso, created_at
+    FROM events
+    WHERE duration_min IS NOT NULL AND duration_min > 0
+    ORDER BY duration_min DESC
+    LIMIT 10;
+  `);
+
+  const openCount = await pool.query(`
+    SELECT COUNT(*)::int AS count
+    FROM events
+    WHERE is_closed = FALSE
+  `);
 
   return {
-    days: d,
-    active_count: Number(r1.rows[0].active_count || 0),
-    closed_count: Number(r1.rows[0].closed_count || 0),
-    top_city: top1 ? { city: top1.city, cnt: top1.cnt } : null,
-    leaderboard: rTop.rows
+    byDay: byDay.rows,
+    bestCity,
+    topCities: topCities.rows,
+    longest: longest.rows,
+    openCount: openCount.rows[0]?.count ?? 0
   };
+}
+
+export async function getCachedGeocode(placeText) {
+  const res = await pool.query(
+    `SELECT lat, lon FROM geocode_cache WHERE place_text=$1`,
+    [placeText]
+  );
+  return res.rows[0] || null;
+}
+
+export async function setCachedGeocode(placeText, lat, lon) {
+  await pool.query(
+    `
+    INSERT INTO geocode_cache (place_text, lat, lon)
+    VALUES ($1,$2,$3)
+    ON CONFLICT (place_text) DO UPDATE SET
+      lat=EXCLUDED.lat,
+      lon=EXCLUDED.lon,
+      updated_at=NOW()
+    `,
+    [placeText, lat, lon]
+  );
+}
+
+export async function getEventFirstSeen(id) {
+  const res = await pool.query(`SELECT first_seen_at FROM events WHERE id=$1`, [id]);
+  return res.rows[0]?.first_seen_at || null;
 }

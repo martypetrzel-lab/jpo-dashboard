@@ -1,207 +1,221 @@
-let map;
-let cluster;
-let currentFilter = "all";
-let eventsCache = [];
+let map, markersLayer, chart;
 
-const NEHVIZDY = [50.1309, 14.7289];
+const TYPE = {
+  fire: { emoji: "🔥", label: "požár" },
+  traffic: { emoji: "🚗", label: "nehoda" },
+  tech: { emoji: "🛠️", label: "technická" },
+  rescue: { emoji: "🧍", label: "záchrana" },
+  false_alarm: { emoji: "🚨", label: "planý poplach" },
+  other: { emoji: "❓", label: "jiné" }
+};
 
-function setStatus(text, ok=true) {
-  const el = document.getElementById("statusPill");
-  el.textContent = text;
-  el.style.color = ok ? "#a6f4c5" : "#ffd1d1";
+function typeEmoji(t) {
+  return (TYPE[t] || TYPE.other).emoji;
 }
 
-function iconForKind(kind) {
-  const k = (kind || "jine").toLowerCase();
-  const emoji =
-    k === "pozar" ? "🔥" :
-    k === "nehoda" ? "🚗" :
-    k === "technicka" ? "🔧" :
-    k === "zachrana" ? "🧑‍🚒" : "❓";
-
-  const cls =
-    k === "pozar" ? "evt-pozar" :
-    k === "nehoda" ? "evt-nehoda" :
-    k === "technicka" ? "evt-technicka" :
-    k === "zachrana" ? "evt-zachrana" : "evt-jine";
-
-  return L.divIcon({
-    className: "",
-    html: `<div class="evt-icon ${cls}">${emoji}</div>`,
-    iconSize: [34,34],
-    iconAnchor: [17,17],
-    popupAnchor: [0,-14]
-  });
+function setStatus(text, ok = true) {
+  const pill = document.getElementById("statusPill");
+  pill.textContent = text;
+  pill.style.background = ok ? "rgba(60, 180, 120, 0.20)" : "rgba(220, 80, 80, 0.20)";
+  pill.style.borderColor = ok ? "rgba(60, 180, 120, 0.35)" : "rgba(220, 80, 80, 0.35)";
 }
 
-function formatDt(s) {
-  if (!s) return "—";
-  try {
-    const d = new Date(s);
-    return d.toLocaleString("cs-CZ");
-  } catch { return "—"; }
-}
-
-function safe(s) {
-  return String(s ?? "").replace(/[<>&"]/g, (c) => ({
-    "<":"&lt;", ">":"&gt;", "&":"&amp;", '"':"&quot;"
-  }[c]));
-}
-
-function ensureMap() {
-  if (map) return;
-
-  map = L.map("map", { zoomControl: true }).setView(NEHVIZDY, 9);
-
-  // OSM standard
+function initMap() {
+  map = L.map("map").setView([50.08, 14.43], 8);
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 18,
     attribution: "&copy; OpenStreetMap"
   }).addTo(map);
 
-  cluster = L.markerClusterGroup({
-    showCoverageOnHover: false,
-    spiderfyOnMaxZoom: true,
-    disableClusteringAtZoom: 15,
-    maxClusterRadius: 60
-  });
-
-  map.addLayer(cluster);
+  markersLayer = L.layerGroup().addTo(map);
 }
 
-function renderMap(items) {
-  ensureMap();
-  cluster.clearLayers();
-
-  const filtered = items.filter(it => {
-    if (currentFilter === "all") return true;
-    return (it.kind || "jine") === currentFilter;
-  });
-
-  let any = false;
-
-  for (const it of filtered) {
-    const lat = Number(it.lat);
-    const lon = Number(it.lon);
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
-
-    any = true;
-
-    const isActive = !!it.is_active;
-    const badge = isActive ? `<span class="badge active">🟢 aktivní</span>` : `<span class="badge closed">⚫ ukončeno</span>`;
-
-    const popup = `
-      <div style="min-width:220px">
-        <div style="font-weight:700;margin-bottom:6px">${safe(it.title || "—")}</div>
-        <div style="color:#93a4bd;margin-bottom:8px">${badge}</div>
-        <div><b>Město:</b> ${safe(it.place_text || "—")}</div>
-        <div><b>Typ:</b> ${safe(it.kind || "jine")}</div>
-        <div><b>Začátek:</b> ${safe(formatDt(it.started_at))}</div>
-        <div><b>Konec:</b> ${safe(formatDt(it.ended_at))}</div>
-        <div><b>Trvání:</b> ${it.duration_min ? `${it.duration_min} min` : "—"}</div>
-        <div style="margin-top:8px">
-          ${it.link ? `<a href="${safe(it.link)}" target="_blank" rel="noreferrer">detail</a>` : ""}
-        </div>
-      </div>
-    `;
-
-    const m = L.marker([lat, lon], { icon: iconForKind(it.kind) }).bindPopup(popup);
-    cluster.addLayer(m);
+function formatDate(d) {
+  if (!d) return "";
+  try {
+    const dt = new Date(d);
+    if (isNaN(dt.getTime())) return d;
+    return dt.toLocaleString("cs-CZ");
+  } catch {
+    return d;
   }
+}
 
-  if (any) {
-    // necháme mapu přibližně tam kde user je, ale když je to poprvé, tak fit bounds
-    if (!map._didFitOnce) {
-      const bounds = cluster.getBounds();
-      if (bounds.isValid()) map.fitBounds(bounds.pad(0.2));
-      map._didFitOnce = true;
-    }
-  }
+function formatDuration(min) {
+  if (!Number.isFinite(min) || min <= 0) return "—";
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  if (h <= 0) return `${m} min`;
+  return `${h} h ${m} min`;
+}
+
+function escapeHtml(s) {
+  return String(s)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
 }
 
 function renderTable(items) {
-  const el = document.getElementById("eventsTable");
-
-  const rows = items.slice(0, 50).map(it => {
-    const badge = it.is_active
-      ? `<span class="badge active">aktivní</span>`
-      : `<span class="badge closed">ukončeno</span>`;
-
-    return `
-      <tr>
-        <td>${badge}</td>
-        <td>${safe(it.kind || "jine")}</td>
-        <td>${it.link ? `<a href="${safe(it.link)}" target="_blank" rel="noreferrer">${safe(it.title || "—")}</a>` : safe(it.title || "—")}</td>
-        <td>${safe(it.place_text || "—")}</td>
-        <td>${it.duration_min ? `${it.duration_min} min` : "—"}</td>
-      </tr>
+  const tbody = document.getElementById("eventsTbody");
+  tbody.innerHTML = "";
+  for (const it of items) {
+    const t = it.event_type || "other";
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${formatDate(it.pub_date || it.created_at)}</td>
+      <td><span class="iconPill" title="${escapeHtml((TYPE[t]||TYPE.other).label)}">${typeEmoji(t)}</span></td>
+      <td>${escapeHtml(it.title || "")}</td>
+      <td>${escapeHtml(it.place_text || "")}</td>
+      <td>${escapeHtml(it.status_text || "")}</td>
+      <td>${formatDuration(it.duration_min)}</td>
+      <td>${it.link ? `<a href="${it.link}" target="_blank" rel="noopener">otevřít</a>` : ""}</td>
     `;
-  }).join("");
-
-  el.innerHTML = `
-    <table>
-      <thead>
-        <tr>
-          <th>Stav</th>
-          <th>Typ</th>
-          <th>Název</th>
-          <th>Město</th>
-          <th>Délka</th>
-        </tr>
-      </thead>
-      <tbody>${rows}</tbody>
-    </table>
-  `;
+    tbody.appendChild(tr);
+  }
 }
 
-async function loadStats() {
-  const r = await fetch("/api/stats?days=30");
-  const j = await r.json();
-  if (!j.ok) return;
+function makeMarkerIcon(emoji) {
+  return L.divIcon({
+    className: "leaflet-div-icon",
+    html: `<div style="transform:translate(-50%,-50%);font-size:22px;">${emoji}</div>`,
+    iconSize: [22, 22],
+    iconAnchor: [11, 11]
+  });
+}
 
-  const top = j.top_city ? `${j.top_city.city} (${j.top_city.cnt}×)` : "—";
-  document.getElementById("statsBox").innerHTML = `
-    <div><b>Aktivní:</b> ${j.active_count}</div>
-    <div><b>Ukončené (30 dní):</b> ${j.closed_count}</div>
-    <div style="margin-top:10px"><b>Top město:</b> ${safe(top)}</div>
-  `;
+function renderMap(items) {
+  markersLayer.clearLayers();
+
+  const pts = [];
+  for (const it of items) {
+    if (typeof it.lat === "number" && typeof it.lon === "number") {
+      const t = it.event_type || "other";
+      const emoji = typeEmoji(t);
+
+      const m = L.marker([it.lat, it.lon], { icon: makeMarkerIcon(emoji) });
+
+      const html = `
+        <div style="min-width:240px">
+          <div style="font-weight:700;margin-bottom:6px">${emoji} ${escapeHtml(it.title || "")}</div>
+          <div><b>Místo:</b> ${escapeHtml(it.place_text || "")}</div>
+          <div><b>Stav:</b> ${escapeHtml(it.status_text || "")}</div>
+          <div><b>Čas:</b> ${escapeHtml(formatDate(it.pub_date || it.created_at))}</div>
+          <div><b>Délka:</b> ${escapeHtml(formatDuration(it.duration_min))}</div>
+          ${it.link ? `<div style="margin-top:8px"><a href="${it.link}" target="_blank" rel="noopener">Detail</a></div>` : ""}
+        </div>
+      `;
+      m.bindPopup(html);
+      m.addTo(markersLayer);
+      pts.push([it.lat, it.lon]);
+    }
+  }
+
+  if (pts.length > 0) {
+    const bounds = L.latLngBounds(pts);
+    map.fitBounds(bounds.pad(0.2));
+  }
+}
+
+function renderTopCities(rows) {
+  const wrap = document.getElementById("topCities");
+  wrap.innerHTML = "";
+  rows.forEach((r, idx) => {
+    const div = document.createElement("div");
+    div.className = "row";
+    div.innerHTML = `
+      <div class="left">
+        <div class="meta">#${idx + 1}</div>
+        <div class="name">${escapeHtml(r.city)}</div>
+      </div>
+      <div class="meta">${r.count}×</div>
+    `;
+    wrap.appendChild(div);
+  });
+}
+
+function renderLongest(rows) {
+  const wrap = document.getElementById("longestList");
+  wrap.innerHTML = "";
+  rows.forEach((r, idx) => {
+    const div = document.createElement("div");
+    div.className = "row";
+    div.innerHTML = `
+      <div class="left">
+        <div class="meta">#${idx + 1}</div>
+        <div class="name">${escapeHtml(r.title || "")}</div>
+      </div>
+      <div class="meta">${escapeHtml(formatDuration(r.duration_min))}</div>
+    `;
+    div.addEventListener("click", () => {
+      if (r.link) window.open(r.link, "_blank", "noopener");
+    });
+    wrap.appendChild(div);
+  });
+}
+
+function renderBestCity(bestCity) {
+  const v = document.getElementById("bestCityValue");
+  const l = document.getElementById("bestCityLabel");
+  if (!bestCity) {
+    v.textContent = "—";
+    l.textContent = "Zatím žádná data";
+    return;
+  }
+  v.textContent = `${bestCity.count}×`;
+  l.textContent = bestCity.city;
+}
+
+function renderChart(byDay) {
+  const labels = byDay.map(x => x.day);
+  const data = byDay.map(x => x.count);
+
+  const ctx = document.getElementById("chartByDay");
+  if (chart) chart.destroy();
+  chart = new Chart(ctx, {
+    type: "line",
+    data: { labels, datasets: [{ label: "Výjezdy", data }] },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { maxRotation: 0, autoSkip: true } },
+        y: { beginAtZero: true }
+      }
+    }
+  });
 }
 
 async function loadAll() {
   setStatus("načítám…", true);
 
-  const r = await fetch("/api/events?limit=500");
-  const j = await r.json();
+  const [eventsRes, statsRes] = await Promise.all([
+    fetch("/api/events?limit=400"),
+    fetch("/api/stats")
+  ]);
 
-  if (!j.ok) {
+  if (!eventsRes.ok || !statsRes.ok) {
     setStatus("chyba API", false);
     return;
   }
 
-  eventsCache = j.items || [];
-  setStatus(`OK • ${eventsCache.length} záznamů`, true);
+  const eventsJson = await eventsRes.json();
+  const statsJson = await statsRes.json();
 
-  renderMap(eventsCache);
-  renderTable(eventsCache);
-  await loadStats();
+  const items = (eventsJson.items || []);
+  renderTable(items);
+  renderMap(items);
+
+  renderChart(statsJson.byDay || []);
+  renderBestCity(statsJson.bestCity || null);
+  renderTopCities(statsJson.topCities || []);
+  renderLongest(statsJson.longest || []);
+
+  setStatus(`OK • ${items.length} záznamů`, true);
 }
 
-function bindUI() {
-  document.getElementById("btnReload").addEventListener("click", () => loadAll());
+document.getElementById("refreshBtn").addEventListener("click", loadAll);
 
-  document.querySelectorAll(".chip").forEach(btn => {
-    btn.addEventListener("click", () => {
-      document.querySelectorAll(".chip").forEach(b => b.classList.remove("active"));
-      btn.classList.add("active");
-      currentFilter = btn.dataset.filter || "all";
-      renderMap(eventsCache);
-    });
-  });
-
-  // default aktivní chip
-  const first = document.querySelector('.chip[data-filter="all"]');
-  if (first) first.classList.add("active");
-}
-
-bindUI();
+initMap();
 loadAll();
