@@ -9,12 +9,8 @@ const TYPE = {
   other: { emoji: "❓", label: "jiné" }
 };
 
-function typeEmoji(t) { return (TYPE[t] || TYPE.other).emoji; }
-function typeLabel(t) { return (TYPE[t] || TYPE.other).label; }
-
-function bestPlace(it) {
-  // ✅ preferuj město; okres nech klidně jako fallback
-  return (it.city_text && String(it.city_text).trim()) ? it.city_text : (it.place_text || "");
+function typeEmoji(t) {
+  return (TYPE[t] || TYPE.other).emoji;
 }
 
 function setStatus(text, ok = true) {
@@ -30,6 +26,7 @@ function initMap() {
     maxZoom: 18,
     attribution: "&copy; OpenStreetMap"
   }).addTo(map);
+
   markersLayer = L.layerGroup().addTo(map);
 }
 
@@ -39,13 +36,15 @@ function formatDate(d) {
     const dt = new Date(d);
     if (isNaN(dt.getTime())) return d;
     return dt.toLocaleString("cs-CZ");
-  } catch { return d; }
+  } catch {
+    return d;
+  }
 }
 
 function formatDuration(min) {
   if (!Number.isFinite(min) || min <= 0) return "—";
   const h = Math.floor(min / 60);
-  const m = Math.round(min % 60);
+  const m = min % 60;
   if (h <= 0) return `${m} min`;
   return `${h} h ${m} min`;
 }
@@ -58,168 +57,80 @@ function escapeHtml(s) {
     .replaceAll('"', "&quot;");
 }
 
-function minutesSince(dtIso) {
-  if (!dtIso) return null;
-  const dt = new Date(dtIso);
-  if (isNaN(dt.getTime())) return null;
-  const ms = Date.now() - dt.getTime();
-  if (!Number.isFinite(ms) || ms < 0) return null;
-  return Math.round(ms / 60000);
-}
-
-function effectiveRunningMinutes(it) {
-  const m =
-    minutesSince(it.start_time_iso) ??
-    minutesSince(it.first_seen_at) ??
-    minutesSince(it.created_at);
-  return Number.isFinite(m) ? m : null;
-}
-
-function statePill(isClosed) {
-  return isClosed
-    ? `<span class="statePill closed">UKONČENO</span>`
-    : `<span class="statePill open">AKTIVNÍ</span>`;
-}
-
 function renderTable(items) {
   const tbody = document.getElementById("eventsTbody");
   tbody.innerHTML = "";
-
   for (const it of items) {
     const t = it.event_type || "other";
-    const isClosed = !!it.is_closed;
-
-    const durMin = isClosed
-      ? (Number.isFinite(it.duration_min) ? it.duration_min : null)
-      : effectiveRunningMinutes(it);
-
     const tr = document.createElement("tr");
-    tr.className = isClosed ? "" : "rowActive";
-
     tr.innerHTML = `
-      <td>${escapeHtml(formatDate(it.pub_date || it.created_at))}</td>
-      <td><span class="iconPill" title="${escapeHtml(typeLabel(t))}">${typeEmoji(t)}</span></td>
-      <td>${statePill(isClosed)}</td>
+      <td>${formatDate(it.pub_date || it.created_at)}</td>
+      <td><span class="iconPill" title="${escapeHtml((TYPE[t]||TYPE.other).label)}">${typeEmoji(t)}</span></td>
       <td>${escapeHtml(it.title || "")}</td>
-      <td>${escapeHtml(bestPlace(it))}</td>
+      <td>${escapeHtml(it.place_text || "")}</td>
       <td>${escapeHtml(it.status_text || "")}</td>
-      <td>${escapeHtml(formatDuration(durMin))}</td>
+      <td>${formatDuration(it.duration_min)}</td>
       <td>${it.link ? `<a href="${it.link}" target="_blank" rel="noopener">otevřít</a>` : ""}</td>
     `;
     tbody.appendChild(tr);
   }
 }
 
-function makeMarkerIcon(emoji, isClosed) {
-  const cls = isClosed ? "mIcon" : "mIcon mIconActive";
+function makeMarkerIcon(emoji) {
   return L.divIcon({
     className: "leaflet-div-icon",
-    html: `<div class="${cls}" style="transform:translate(-50%,-50%);font-size:22px;">${emoji}</div>`,
+    html: `<div style="transform:translate(-50%,-50%);font-size:22px;">${emoji}</div>`,
     iconSize: [22, 22],
     iconAnchor: [11, 11]
   });
 }
 
-// (tvoje „spreadOverlappingPoints“ + renderMap se může nechat jak máš, jen v popupu změním Místo)
-function spreadOverlappingPoints(items) {
-  const keyOf = (lat, lon) => `${lat.toFixed(5)}|${lon.toFixed(5)}`;
-
-  const groups = new Map();
-  for (const it of items) {
-    if (typeof it.lat === "number" && typeof it.lon === "number") {
-      const k = keyOf(it.lat, it.lon);
-      if (!groups.has(k)) groups.set(k, []);
-      groups.get(k).push(it);
-    }
-  }
-
-  const baseMeters = 120;
-  const metersToLat = (m) => m / 111320;
-  const metersToLon = (m, atLat) => m / (111320 * Math.cos((atLat * Math.PI) / 180));
-
-  for (const arr of groups.values()) {
-    if (arr.length <= 1) continue;
-
-    const sorted = [...arr].sort((a, b) => (a.is_closed === b.is_closed ? 0 : a.is_closed ? 1 : -1));
-
-    for (let i = 0; i < sorted.length; i++) {
-      const it = sorted[i];
-      const ring = i < 8 ? 1 : i < 20 ? 2 : 3;
-      const posInRing = ring === 1 ? i : ring === 2 ? i - 8 : i - 20;
-      const countInRing = ring === 1 ? Math.min(sorted.length, 8)
-        : ring === 2 ? Math.min(sorted.length - 8, 12)
-          : Math.min(sorted.length - 20, 16);
-
-      const angle = (2 * Math.PI * posInRing) / Math.max(1, countInRing);
-      const radiusM = baseMeters * ring;
-
-      const dLat = metersToLat(radiusM) * Math.sin(angle);
-      const dLon = metersToLon(radiusM, it.lat) * Math.cos(angle);
-
-      it.__lat_spread = it.lat + dLat;
-      it.__lon_spread = it.lon + dLon;
-    }
-  }
-}
-
 function renderMap(items) {
   markersLayer.clearLayers();
-  spreadOverlappingPoints(items);
-
-  const closed = [];
-  const open = [];
-  for (const it of items) {
-    if (typeof it.lat === "number" && typeof it.lon === "number") {
-      (it.is_closed ? closed : open).push(it);
-    }
-  }
 
   const pts = [];
+  for (const it of items) {
+    if (typeof it.lat === "number" && typeof it.lon === "number") {
+      const t = it.event_type || "other";
+      const emoji = typeEmoji(t);
 
-  function addMarker(it) {
-    const t = it.event_type || "other";
-    const emoji = typeEmoji(t);
-    const isClosed = !!it.is_closed;
+      const m = L.marker([it.lat, it.lon], { icon: makeMarkerIcon(emoji) });
 
-    const lat = typeof it.__lat_spread === "number" ? it.__lat_spread : it.lat;
-    const lon = typeof it.__lon_spread === "number" ? it.__lon_spread : it.lon;
-
-    const m = L.marker([lat, lon], {
-      icon: makeMarkerIcon(emoji, isClosed),
-      zIndexOffset: isClosed ? 0 : 1000
-    });
-
-    const durMin = isClosed
-      ? (Number.isFinite(it.duration_min) ? it.duration_min : null)
-      : effectiveRunningMinutes(it);
-
-    const html = `
-      <div style="min-width:260px">
-        <div style="font-weight:700;margin-bottom:6px">${emoji} ${escapeHtml(it.title || "")}</div>
-        <div><b>Stav:</b> ${isClosed ? "UKONČENO" : "AKTIVNÍ"}</div>
-        <div><b>Typ:</b> ${escapeHtml(typeLabel(t))}</div>
-        <div><b>Místo:</b> ${escapeHtml(bestPlace(it))}</div>
-        <div><b>Čas:</b> ${escapeHtml(formatDate(it.pub_date || it.created_at))}</div>
-        <div><b>Délka:</b> ${escapeHtml(formatDuration(durMin))}${isClosed ? "" : " (běží)"}</div>
-        ${it.link ? `<div style="margin-top:8px"><a href="${it.link}" target="_blank" rel="noopener">Detail</a></div>` : ""}
-      </div>
-    `;
-
-    m.bindPopup(html);
-    m.addTo(markersLayer);
-    pts.push([lat, lon]);
+      const html = `
+        <div style="min-width:240px">
+          <div style="font-weight:700;margin-bottom:6px">${emoji} ${escapeHtml(it.title || "")}</div>
+          <div><b>Místo:</b> ${escapeHtml(it.place_text || "")}</div>
+          <div><b>Stav:</b> ${escapeHtml(it.status_text || "")}</div>
+          <div><b>Čas:</b> ${escapeHtml(formatDate(it.pub_date || it.created_at))}</div>
+          <div><b>Délka:</b> ${escapeHtml(formatDuration(it.duration_min))}</div>
+          ${it.link ? `<div style="margin-top:8px"><a href="${it.link}" target="_blank" rel="noopener">Detail</a></div>` : ""}
+        </div>
+      `;
+      m.bindPopup(html);
+      m.addTo(markersLayer);
+      pts.push([it.lat, it.lon]);
+    }
   }
-
-  for (const it of closed) addMarker(it);
-  for (const it of open) addMarker(it);
 
   if (pts.length > 0) {
     const bounds = L.latLngBounds(pts);
     map.fitBounds(bounds.pad(0.2));
   }
+
+  // když se mapa vykreslí po změnách layoutu, Leaflet někdy potřebuje refresh
+  safeInvalidateMap();
 }
 
-// zbytek souboru nech beze změn (stats render apod.) – jen loadAll / filtry
+function safeInvalidateMap() {
+  try {
+    if (!map) return;
+    // drobný timeout aby se DOM stihl překreslit
+    setTimeout(() => {
+      try { map.invalidateSize(true); } catch { /* ignore */ }
+    }, 80);
+  } catch { /* ignore */ }
+}
+
 function renderTopCities(rows) {
   const wrap = document.getElementById("topCities");
   wrap.innerHTML = "";
@@ -269,29 +180,6 @@ function renderBestCity(bestCity) {
   l.textContent = bestCity.city;
 }
 
-function renderOpenClosed(openCount, closedCount) {
-  document.getElementById("openCountValue").textContent = `${openCount ?? 0}`;
-  document.getElementById("closedCountValue").textContent = `${closedCount ?? 0}`;
-}
-
-function renderByType(rows) {
-  const wrap = document.getElementById("byTypeList");
-  wrap.innerHTML = "";
-  rows.forEach((r, idx) => {
-    const t = r.type || "other";
-    const div = document.createElement("div");
-    div.className = "row";
-    div.innerHTML = `
-      <div class="left">
-        <div class="meta">#${idx + 1}</div>
-        <div class="name">${typeEmoji(t)} ${escapeHtml(typeLabel(t))}</div>
-      </div>
-      <div class="meta">${r.count}×</div>
-    `;
-    wrap.appendChild(div);
-  });
-}
-
 function renderChart(byDay) {
   const labels = byDay.map(x => x.day);
   const data = byDay.map(x => x.count);
@@ -312,37 +200,12 @@ function renderChart(byDay) {
   });
 }
 
-function getFiltersFromUi() {
-  const type = document.getElementById("filterType").value.trim();
-  const city = document.getElementById("filterCity").value.trim();
-  const status = document.getElementById("filterStatus").value.trim();
-
-  const p = new URLSearchParams();
-  if (type) p.set("type", type);
-  if (city) p.set("city", city);
-  if (status && status !== "all") p.set("status", status);
-  return p;
-}
-
-function updateExportLinks(params) {
-  const qs = params.toString();
-  const csv = document.getElementById("exportCsvBtn");
-  const pdf = document.getElementById("exportPdfBtn");
-  csv.href = "/api/export.csv" + (qs ? `?${qs}` : "");
-  pdf.href = "/api/export.pdf" + (qs ? `?${qs}` : "");
-}
-
 async function loadAll() {
   setStatus("načítám…", true);
 
-  const params = getFiltersFromUi();
-  params.set("limit", "400");
-  updateExportLinks(params);
-
-  const qs = params.toString();
   const [eventsRes, statsRes] = await Promise.all([
-    fetch("/api/events" + (qs ? `?${qs}` : "")),
-    fetch("/api/stats" + (qs ? `?${qs}` : ""))
+    fetch("/api/events?limit=400"),
+    fetch("/api/stats")
   ]);
 
   if (!eventsRes.ok || !statsRes.ok) {
@@ -358,28 +221,22 @@ async function loadAll() {
   renderMap(items);
 
   renderChart(statsJson.byDay || []);
-  renderOpenClosed(statsJson.openCount ?? 0, statsJson.closedCount ?? 0);
-  renderByType(statsJson.byType || []);
-
   renderBestCity(statsJson.bestCity || null);
   renderTopCities(statsJson.topCities || []);
   renderLongest(statsJson.longest || []);
 
-  const openNow = items.filter(x => !x.is_closed).length;
-  const noCoords = items.filter(x => !(typeof x.lat === "number" && typeof x.lon === "number")).length;
-  const backfilled = Number(eventsJson.backfilled_coords || 0);
-
-  setStatus(`OK • ${items.length} záznamů • aktivní ${openNow} • bez souřadnic ${noCoords}${backfilled ? ` • doplněno ${backfilled}` : ""}`, true);
+  setStatus(`OK • ${items.length} záznamů`, true);
 }
 
 document.getElementById("refreshBtn").addEventListener("click", loadAll);
-document.getElementById("applyBtn").addEventListener("click", loadAll);
-document.getElementById("resetBtn").addEventListener("click", () => {
-  document.getElementById("filterType").value = "";
-  document.getElementById("filterCity").value = "";
-  document.getElementById("filterStatus").value = "all";
-  loadAll();
+
+// ✅ při změně velikosti okna / otočení mobilu přepočítej mapu
+let resizeTimer = null;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => safeInvalidateMap(), 120);
 });
+window.addEventListener("orientationchange", () => safeInvalidateMap());
 
 initMap();
 loadAll();

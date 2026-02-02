@@ -2,7 +2,8 @@
 <html lang="cs">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#0b0f14" />
   <title>JPO Dashboard</title>
 
   <link rel="stylesheet" href="styles.css" />
@@ -12,46 +13,11 @@
   <header class="topbar">
     <div class="title">
       <h1>JPO výjezdy – dashboard</h1>
-      <div class="sub">Mapa • aktivní/ukončené • běžící zásahy • filtry • statistiky • export CSV/PDF (data posílá ESP32)</div>
+      <div class="sub">Mapa • ikony událostí • statistiky • žebříčky (data posílá ESP32)</div>
     </div>
 
     <div class="actions">
-      <div class="filters">
-        <label>
-          Typ
-          <select id="filterType">
-            <option value="">vše</option>
-            <option value="fire">🔥 požár</option>
-            <option value="traffic">🚗 nehoda</option>
-            <option value="tech">🛠️ technická</option>
-            <option value="rescue">🧍 záchrana</option>
-            <option value="false_alarm">🚨 planý poplach</option>
-            <option value="other">❓ jiné</option>
-          </select>
-        </label>
-
-        <label>
-          Město
-          <input id="filterCity" type="text" placeholder="např. Nehvizdy" />
-        </label>
-
-        <label>
-          Stav
-          <select id="filterStatus">
-            <option value="all">vše</option>
-            <option value="open">aktivní</option>
-            <option value="closed">ukončené</option>
-          </select>
-        </label>
-
-        <button id="applyBtn">Použít</button>
-        <button id="resetBtn" class="ghost">Reset</button>
-
-        <a id="exportCsvBtn" class="linkBtn" href="/api/export.csv" target="_blank" rel="noopener">Export CSV</a>
-        <a id="exportPdfBtn" class="linkBtn" href="/api/export.pdf" target="_blank" rel="noopener">Export PDF</a>
-      </div>
-
-      <button id="refreshBtn">Obnovit</button>
+      <button id="refreshBtn" class="primary">Obnovit</button>
       <span id="statusPill" class="pill">…</span>
     </div>
   </header>
@@ -60,14 +26,12 @@
     <section class="card mapCard">
       <div class="cardHeader">
         <h2>Mapa výjezdů</h2>
-        <div class="hint">
+        <div class="hint legend">
           <span class="legendItem">🔥 požár</span>
           <span class="legendItem">🚗 nehoda</span>
           <span class="legendItem">🛠️ technická</span>
           <span class="legendItem">🧍 záchrana</span>
-          <span class="legendItem">🚨 planý poplach</span>
           <span class="legendItem">❓ jiné</span>
-          <span class="legendItem legendActive">● aktivní</span>
         </div>
       </div>
       <div id="map"></div>
@@ -78,32 +42,9 @@
         <h2>Statistika (30 dní)</h2>
         <div class="hint">Počet výjezdů po dnech</div>
       </div>
-      <canvas id="chartByDay" height="140"></canvas>
-    </section>
-
-    <section class="card">
-      <div class="cardHeader">
-        <h2>Aktivní vs ukončené</h2>
-        <div class="hint">Poměr (30 dní, podle filtrů)</div>
+      <div class="canvasWrap">
+        <canvas id="chartByDay" height="140"></canvas>
       </div>
-      <div class="bigStat twoCols">
-        <div class="statBox">
-          <div class="bigStatValue" id="openCountValue">—</div>
-          <div class="bigStatLabel">aktivní</div>
-        </div>
-        <div class="statBox">
-          <div class="bigStatValue" id="closedCountValue">—</div>
-          <div class="bigStatLabel">ukončené</div>
-        </div>
-      </div>
-    </section>
-
-    <section class="card">
-      <div class="cardHeader">
-        <h2>Podle typu zásahu</h2>
-        <div class="hint">Počty (30 dní)</div>
-      </div>
-      <div class="list" id="byTypeList"></div>
     </section>
 
     <section class="card">
@@ -120,7 +61,7 @@
     <section class="card">
       <div class="cardHeader">
         <h2>Žebříček měst</h2>
-        <div class="hint">Top 15</div>
+        <div class="hint">Top 10</div>
       </div>
       <div class="list" id="topCities"></div>
     </section>
@@ -136,18 +77,18 @@
     <section class="card tableCard">
       <div class="cardHeader">
         <h2>Poslední výjezdy</h2>
-        <div class="hint">Zobrazuje aktivní/ukončené + běžící délku u aktivních</div>
+        <div class="hint">Zobrazuje i bez souřadnic</div>
       </div>
-      <div class="tableWrap">
+
+      <div class="tableWrap" role="region" aria-label="Tabulka výjezdů" tabindex="0">
         <table>
           <thead>
             <tr>
               <th>Čas</th>
               <th>Typ</th>
-              <th>Stav</th>
               <th>Název</th>
               <th>Místo</th>
-              <th>RSS stav</th>
+              <th>Stav</th>
               <th>Délka</th>
               <th>Odkaz</th>
             </tr>
