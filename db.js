@@ -16,80 +16,13 @@ export function getPool() {
 }
 
 async function ensureColumn(client, table, col, typeSql) {
-  await client.query(
-    `ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${col} ${typeSql};`
-  );
-}
-
-export async function initDb() {
-  const p = getPool();
-  const client = await p.connect();
-  try {
-    await client.query("BEGIN");
-
-    // ---------- core tables ----------
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS events (
-        id TEXT PRIMARY KEY,
-        source TEXT DEFAULT 'unknown',
-        title TEXT,
-        link TEXT,
-        place_text TEXT,
-        place_norm TEXT,
-        status_text TEXT,
-        description_raw TEXT,
-        kind TEXT DEFAULT 'jine',
-
-        lat DOUBLE PRECISION,
-        lon DOUBLE PRECISION,
-
-        is_active BOOLEAN DEFAULT true,
-        started_at TIMESTAMPTZ,
-        ended_at TIMESTAMPTZ,
-        duration_min INTEGER,
-
-        first_seen_at TIMESTAMPTZ DEFAULT NOW(),
-        last_seen_at  TIMESTAMPTZ DEFAULT NOW()
-      );
-    `);
-
-    // ---------- migrations / backfill columns ----------
-    await ensureColumn(client, "events", "source", "TEXT DEFAULT 'unknown'");
-    await ensureColumn(client, "events", "title", "TEXT");
-    await ensureColumn(client, "events", "link", "TEXT");
-    await ensureColumn(client, "events", "place_text", "TEXT");
-    await ensureColumn(client, "events", "place_norm", "TEXT");
-    await ensureColumn(client, "events", "status_text", "TEXT");
-    await ensureColumn(client, "events", "description_raw", "TEXT");
-    await ensureColumn(client, "events", "kind", "TEXT DEFAULT 'jine'");
-    await ensureColumn(client, "events", "lat", "DOUBLE PRECISION");
-    await ensureColumn(client, "events", "lon", "DOUBLE PRECISION");
-    await ensureColumn(client, "events", "is_active", "BOOLEAN DEFAULT true");
-    await ensureColumn(client, "events", "started_at", "TIMESTAMPTZ");
-    await ensureColumn(client, "events", "ended_at", "TIMESTAMPTZ");
-    await ensureColumn(client, "events", "duration_min", "INTEGER");
-    await ensureColumn(client, "events", "first_seen_at", "TIMESTAMPTZ DEFAULT NOW()");
-    await ensureColumn(client, "events", "last_seen_at", "TIMESTAMPTZ DEFAULT NOW()");
-
-    // ---------- indexes ----------
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_events_active ON events(is_active);`);
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_events_place_norm ON events(place_norm);`);
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_events_started_at ON events(started_at);`);
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_events_last_seen_at ON events(last_seen_at);`);
-
-    await client.query("COMMIT");
-  } catch (e) {
-    await client.query("ROLLBACK");
-    throw e;
-  } finally {
-    client.release();
-  }
+  await client.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${col} ${typeSql};`);
 }
 
 function normPlace(s = "") {
   return String(s)
     .toLowerCase()
-    .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // diakritika pryč
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -103,6 +36,129 @@ function detectKind(title = "") {
   return "jine";
 }
 
+// --------------------
+// Geocoding (Nominatim) + DB cache
+// --------------------
+async function nominatimGeocode(q) {
+  const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(q)}`;
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 8000);
+
+  try {
+    const r = await fetch(url, {
+      headers: { "User-Agent": "jpo-dashboard/1.0 (Railway)" },
+      signal: ctrl.signal
+    });
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (!Array.isArray(j) || !j.length) return null;
+    const lat = Number(j[0].lat);
+    const lon = Number(j[0].lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+    return { lat, lon };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+async function getOrGeocode(client, placeText) {
+  const placeNorm = normPlace(placeText);
+  if (!placeNorm) return { placeNorm, lat: null, lon: null };
+
+  // cache
+  try {
+    const c = await client.query(
+      `SELECT lat, lon FROM geocode_cache WHERE place_norm=$1 LIMIT 1`,
+      [placeNorm]
+    );
+    if (c.rows?.length) {
+      return { placeNorm, lat: c.rows[0].lat, lon: c.rows[0].lon };
+    }
+  } catch {
+    // kdyby cache tabulka ještě nebyla, initDb ji vytvoří; tady jen nepadneme
+  }
+
+  const geo = await nominatimGeocode(`${placeText}, Czechia`);
+
+  try {
+    await client.query(
+      `INSERT INTO geocode_cache(place_norm, place_text, lat, lon, updated_at)
+       VALUES($1,$2,$3,$4,NOW())
+       ON CONFLICT(place_norm) DO UPDATE
+         SET place_text=EXCLUDED.place_text, lat=EXCLUDED.lat, lon=EXCLUDED.lon, updated_at=NOW()`,
+      [placeNorm, placeText, geo ? geo.lat : null, geo ? geo.lon : null]
+    );
+  } catch {
+    // nic — cache není kritická
+  }
+
+  return { placeNorm, lat: geo ? geo.lat : null, lon: geo ? geo.lon : null };
+}
+
+export async function initDb() {
+  const p = getPool();
+  const client = await p.connect();
+  try {
+    await client.query("BEGIN");
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS events (
+        id TEXT PRIMARY KEY,
+        source TEXT DEFAULT 'unknown',
+        title TEXT,
+        link TEXT,
+        place_text TEXT,
+        place_norm TEXT,
+        status_text TEXT,
+        description_raw TEXT,
+        kind TEXT DEFAULT 'jine',
+        lat DOUBLE PRECISION,
+        lon DOUBLE PRECISION,
+        is_active BOOLEAN DEFAULT true,
+        started_at TIMESTAMPTZ,
+        ended_at TIMESTAMPTZ,
+        duration_min INTEGER,
+        first_seen_at TIMESTAMPTZ DEFAULT NOW(),
+        last_seen_at  TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS geocode_cache (
+        place_norm TEXT PRIMARY KEY,
+        place_text TEXT,
+        lat DOUBLE PRECISION,
+        lon DOUBLE PRECISION,
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+
+    // migrations
+    await ensureColumn(client, "events", "place_norm", "TEXT");
+    await ensureColumn(client, "events", "kind", "TEXT DEFAULT 'jine'");
+    await ensureColumn(client, "events", "lat", "DOUBLE PRECISION");
+    await ensureColumn(client, "events", "lon", "DOUBLE PRECISION");
+    await ensureColumn(client, "events", "is_active", "BOOLEAN DEFAULT true");
+    await ensureColumn(client, "events", "started_at", "TIMESTAMPTZ");
+    await ensureColumn(client, "events", "ended_at", "TIMESTAMPTZ");
+    await ensureColumn(client, "events", "duration_min", "INTEGER");
+    await ensureColumn(client, "events", "last_seen_at", "TIMESTAMPTZ DEFAULT NOW()");
+
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_events_active ON events(is_active);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_events_place_norm ON events(place_norm);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_events_last_seen_at ON events(last_seen_at);`);
+
+    await client.query("COMMIT");
+  } catch (e) {
+    await client.query("ROLLBACK");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 export async function upsertBatch({ source = "unknown", items = [] }) {
   const p = getPool();
   const client = await p.connect();
@@ -111,8 +167,6 @@ export async function upsertBatch({ source = "unknown", items = [] }) {
 
     let accepted = 0;
     let updatedClosed = 0;
-
-    const now = new Date();
 
     for (const it of items) {
       const id = String(it.id || "").trim();
@@ -124,33 +178,34 @@ export async function upsertBatch({ source = "unknown", items = [] }) {
       const statusText = it.statusText ?? it.status_text ?? "";
       const descRaw = it.descriptionRaw ?? it.description_raw ?? "";
 
-      // pravidlo: active pokud je tam "stav: nova/nová" (na serveru přesnější)
       const st = String(statusText).toLowerCase();
       const active =
-        st.includes("nova") ||
-        st.includes("nová") ||
-        st.includes("nov") ||
-        st.includes("stav: nova") ||
-        st.includes("stav: nov");
+        st.includes("stav: nova") || st.includes("stav: nová") ||
+        st.includes(" nova") || st.includes(" nová");
 
-      // started_at: když poprvé vidím, nastavím NOW(), jinak zachovám
-      const kind = it.kind || detectKind(title);
-
+      const kind = (it.kind || detectKind(title));
       const placeNorm = normPlace(placeText);
 
-      // UPSERT
+      let lat = Number(it.lat);
+      let lon = Number(it.lon);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+        const geo = await getOrGeocode(client, placeText);
+        lat = geo.lat;
+        lon = geo.lon;
+      }
+
       const q = `
         INSERT INTO events (
           id, source, title, link, place_text, place_norm, status_text, description_raw,
-          kind, is_active, started_at, ended_at, duration_min, first_seen_at, last_seen_at
+          kind, lat, lon, is_active, started_at, ended_at, duration_min, first_seen_at, last_seen_at
         )
         VALUES (
           $1,$2,$3,$4,$5,$6,$7,$8,
-          $9,$10,
-          CASE WHEN $10=true THEN COALESCE($11, NOW()) ELSE $11 END,
-          CASE WHEN $10=false THEN COALESCE($12, NOW()) ELSE NULL END,
-          $13,
-          COALESCE($14, NOW()),
+          $9,$10,$11,$12,
+          CASE WHEN $12=true THEN COALESCE($13, NOW()) ELSE $13 END,
+          CASE WHEN $12=false THEN COALESCE($14, NOW()) ELSE NULL END,
+          $15,
+          COALESCE($16, NOW()),
           NOW()
         )
         ON CONFLICT (id) DO UPDATE SET
@@ -162,6 +217,8 @@ export async function upsertBatch({ source = "unknown", items = [] }) {
           status_text = EXCLUDED.status_text,
           description_raw = EXCLUDED.description_raw,
           kind = EXCLUDED.kind,
+          lat = COALESCE(EXCLUDED.lat, events.lat),
+          lon = COALESCE(EXCLUDED.lon, events.lon),
           last_seen_at = NOW(),
           is_active = EXCLUDED.is_active,
           ended_at = CASE
@@ -169,26 +226,24 @@ export async function upsertBatch({ source = "unknown", items = [] }) {
             WHEN EXCLUDED.is_active = true THEN NULL
             ELSE events.ended_at
           END
-        RETURNING
-          (xmax = 0) AS inserted,
-          (events.is_active = true AND EXCLUDED.is_active = false) AS just_closed;
+        RETURNING (events.is_active = true AND EXCLUDED.is_active = false) AS just_closed;
       `;
 
-      // started_at a ended_at neznáme z RSS, tak posíláme null a server si to řeší
       const res = await client.query(q, [
         id, source, title, link, placeText, placeNorm, statusText, descRaw,
-        kind, active,
+        kind,
+        (Number.isFinite(lat) ? lat : null),
+        (Number.isFinite(lon) ? lon : null),
+        active,
         null, null, null,
         null
       ]);
 
-      if (res.rows?.length) {
-        accepted += 1;
-        if (res.rows[0].just_closed) updatedClosed += 1;
-      }
+      accepted += 1;
+      if (res.rows?.[0]?.just_closed) updatedClosed += 1;
     }
 
-    // přepočet duration_min pro ukončené, které duration nemají
+    // duration after close
     await client.query(`
       UPDATE events
       SET duration_min = FLOOR(EXTRACT(EPOCH FROM (ended_at - started_at)) / 60)
@@ -207,20 +262,14 @@ export async function upsertBatch({ source = "unknown", items = [] }) {
 
 export async function getEvents({ limit = 200, active = null } = {}) {
   const p = getPool();
+
   const where = [];
-  const vals = [];
-  let idx = 1;
-
-  if (active === true) {
-    where.push(`is_active = true`);
-  } else if (active === false) {
-    where.push(`is_active = false`);
-  }
-
+  if (active === true) where.push(`is_active = true`);
+  if (active === false) where.push(`is_active = false`);
   const w = where.length ? `WHERE ${where.join(" AND ")}` : "";
-  vals.push(Number(limit) || 200);
 
-  const q = `
+  const r = await p.query(
+    `
     SELECT
       id, title, link,
       place_text, kind,
@@ -231,10 +280,11 @@ export async function getEvents({ limit = 200, active = null } = {}) {
     FROM events
     ${w}
     ORDER BY last_seen_at DESC
-    LIMIT $${idx};
-  `;
+    LIMIT $1
+    `,
+    [Math.min(Number(limit) || 200, 1000)]
+  );
 
-  const r = await p.query(q, vals);
   return r.rows;
 }
 

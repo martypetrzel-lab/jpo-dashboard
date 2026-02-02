@@ -1,84 +1,104 @@
 import express from "express";
 import cors from "cors";
+import path from "path";
+import { fileURLToPath } from "url";
+
 import { initDb, upsertBatch, getEvents, getStats } from "./db.js";
 
 const app = express();
 
 app.use(cors());
-app.use(express.json({ limit: "1mb" }));
 
-const API_KEY = process.env.API_KEY || "";
+// JSON payload limit (klidně navýšíme, ale 200kb je OK pro RSS batch)
+app.use(express.json({ limit: "200kb" }));
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Static web
+app.use(express.static(path.join(__dirname, "public")));
+
+// Health
+app.get("/health", (req, res) => res.send("OK"));
+
+// API KEY middleware
 function requireKey(req, res, next) {
-  if (!API_KEY) {
-    return res.status(500).json({ ok: false, error: "missing_api_key" });
+  const expected = process.env.JPO_API_KEY || "";
+  if (!expected) {
+    return res.status(500).json({ ok: false, error: "missing_server_api_key" });
   }
-  const k = req.header("X-API-Key") || "";
-  if (k !== API_KEY) {
+  const got = req.header("X-API-Key") || "";
+  if (got !== expected) {
     return res.status(401).json({ ok: false, error: "unauthorized" });
   }
   next();
 }
 
-app.get("/health", (req, res) => res.send("OK"));
-
+// Ingest endpoint
 app.post("/api/ingest", requireKey, async (req, res) => {
   try {
-    const { source, items } = req.body || {};
-    if (!Array.isArray(items)) {
-      return res.status(400).json({ ok: false, error: "bad_payload_items" });
-    }
+    const body = req.body || {};
+    const source = body.source || "unknown";
+    const items = Array.isArray(body.items) ? body.items : [];
 
-    const result = await upsertBatch({ source, items });
+    console.log(`[ingest] source=${source} items=${items.length} bytes=${JSON.stringify(body).length}`);
+
+    const { accepted, updatedClosed } = await upsertBatch({ source, items });
 
     res.json({
       ok: true,
-      source: source || "unknown",
-      accepted: result.accepted,
-      closed_seen_in_batch: result.updatedClosed
+      source,
+      accepted,
+      closed_seen_in_batch: updatedClosed
     });
   } catch (e) {
-    console.error("[INGEST] server_error:", e?.message || e, e?.stack || "");
-    res.status(500).json({ ok: false, error: "server_error" });
+    // Tohle je klíčové: v Railway logu uvidíš přesnou chybu
+    console.error("[ingest] ERROR:", e?.message || e);
+    console.error(e?.stack || "");
+
+    res.status(500).json({
+      ok: false,
+      error: "server_error",
+      details: e?.message || String(e)
+    });
   }
 });
 
+// Read events
 app.get("/api/events", async (req, res) => {
   try {
     const limit = Math.min(Number(req.query.limit || 200), 1000);
-    const activeQ = req.query.active;
-    let active = null;
-    if (activeQ === "1" || activeQ === "true") active = true;
-    if (activeQ === "0" || activeQ === "false") active = false;
+    const activeParam = req.query.active;
+    const active = activeParam === "true" ? true : activeParam === "false" ? false : null;
 
     const rows = await getEvents({ limit, active });
     res.json({ ok: true, items: rows });
   } catch (e) {
-    console.error("[EVENTS] error:", e?.message || e);
+    console.error("[events] ERROR:", e?.message || e);
     res.status(500).json({ ok: false, error: "server_error" });
   }
 });
 
 app.get("/api/stats", async (req, res) => {
   try {
-    const days = Math.min(Number(req.query.days || 30), 365);
+    const days = Math.max(1, Math.min(365, Number(req.query.days || 30)));
     const stats = await getStats({ days });
     res.json({ ok: true, ...stats });
   } catch (e) {
-    console.error("[STATS] error:", e?.message || e);
+    console.error("[stats] ERROR:", e?.message || e);
     res.status(500).json({ ok: false, error: "server_error" });
   }
 });
 
-// jednoduché statické UI (pokud máš public složku)
-app.use(express.static("public"));
-
-app.get("*", (req, res) => {
-  // když nemáš public/index.html, tak aspoň něco smysluplného
-  res.status(404).send("Not found");
+// Fallback: root -> index.html (když by express.static nestačil)
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
 const port = process.env.PORT || 3000;
 
 await initDb();
-app.listen(port, () => console.log(`listening on :${port}`));
+
+app.listen(port, () => {
+  console.log(`listening on ${port}`);
+});

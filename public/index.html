@@ -1,129 +1,126 @@
-<!doctype html>
-<html lang="cs">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>JPO výjezdy – dashboard</title>
-  <link rel="stylesheet" href="styles.css" />
+:root{
+  --bg:#0b0f14;
+  --card:#101826;
+  --card2:#0f1724;
+  --text:#e8eef7;
+  --muted:#93a4bd;
+  --line:rgba(255,255,255,.07);
+  --accent:#4aa3ff;
+}
 
-  <!-- Leaflet -->
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  background: radial-gradient(1200px 600px at 20% 0%, #17223a 0%, var(--bg) 55%);
+  color:var(--text);
+}
 
-  <!-- MarkerCluster -->
-  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
-  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css">
-  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+.app{max-width:1400px;margin:0 auto;padding:14px}
 
-  <!-- Chart.js -->
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-</head>
+.topbar{
+  display:flex;align-items:center;justify-content:space-between;
+  gap:12px;padding:10px 12px;border-radius:14px;
+  background: linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02));
+  border:1px solid var(--line);
+}
 
-<body>
-  <header class="topbar">
-    <div class="brand">
-      <div class="title">JPO výjezdy — dashboard</div>
-      <div class="subtitle">Mapa • aktivní/ukončené • statistiky • export (data posílá ESP32)</div>
-    </div>
+.topbar h1{margin:0;font-size:20px}
+.sub{color:var(--muted);font-size:13px;margin-top:4px}
+.right{display:flex;align-items:center;gap:10px}
 
-    <div class="actions">
-      <button id="btnRefresh" class="btn">Obnovit</button>
-      <a class="btn ghost" href="/api/export.csv" target="_blank">Export CSV</a>
-      <button id="btnPrint" class="btn ghost">PDF / tisk</button>
-      <span id="statusPill" class="pill">…</span>
-    </div>
-  </header>
+button{
+  background:rgba(255,255,255,.06);
+  color:var(--text);
+  border:1px solid var(--line);
+  border-radius:10px;
+  padding:8px 12px;
+  cursor:pointer;
+}
+button:hover{border-color:rgba(255,255,255,.18)}
 
-  <main class="grid">
-    <!-- MAP -->
-    <section class="card mapCard">
-      <div class="cardHead">
-        <div class="h">Mapa výjezdů</div>
-        <div class="filters">
-          <button class="chip" data-kind="all">vše</button>
-          <button class="chip" data-kind="pozar">🔥 požár</button>
-          <button class="chip" data-kind="nehoda">🚗 nehoda</button>
-          <button class="chip" data-kind="technicka">🛠 technická</button>
-          <button class="chip" data-kind="zachrana">🧍 záchrana</button>
-          <button class="chip" data-kind="jine">❓ jiné</button>
-          <span class="sep"></span>
-          <button class="chip chipOn" data-active="active">🟢 aktivní</button>
-          <button class="chip" data-active="closed">⚪ ukončené</button>
-          <button class="chip" data-active="all">🌓 vše</button>
-        </div>
-      </div>
-      <div id="map"></div>
-    </section>
+.pill{
+  display:inline-flex;align-items:center;
+  padding:6px 10px;border-radius:999px;
+  border:1px solid var(--line);
+  color:var(--muted);
+}
 
-    <!-- RIGHT STATS -->
-    <section class="card">
-      <div class="cardHead">
-        <div class="h">Statistika (30 dní)</div>
-      </div>
-      <div class="cardBody">
-        <canvas id="chartByDay" height="120"></canvas>
-      </div>
-    </section>
+.grid{
+  margin-top:12px;
+  display:grid;
+  grid-template-columns: 1.5fr 1fr;
+  grid-template-areas:
+    "map side"
+    "list list";
+  gap:12px;
+}
 
-    <section class="card">
-      <div class="cardHead">
-        <div class="h">Aktivní vs ukončené</div>
-      </div>
-      <div class="cardBody kpiRow">
-        <div class="kpi">
-          <div class="kpiLabel">Aktivní</div>
-          <div id="kpiActive" class="kpiValue">—</div>
-        </div>
-        <div class="kpi">
-          <div class="kpiLabel">Ukončené</div>
-          <div id="kpiClosed" class="kpiValue">—</div>
-        </div>
-      </div>
-    </section>
+.card{
+  background: linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.02));
+  border:1px solid var(--line);
+  border-radius:16px;
+  padding:12px;
+  min-height:140px;
+}
 
-    <section class="card">
-      <div class="cardHead">
-        <div class="h">Nejvíc výjezdů ve městě</div>
-        <div class="muted">Top město (počet)</div>
-      </div>
-      <div class="cardBody">
-        <div id="topCity" class="bigLine">—</div>
-      </div>
-    </section>
+.mapCard{grid-area:map}
+.sideCard{grid-area:side}
+.listCard{grid-area:list}
 
-    <section class="card">
-      <div class="cardHead">
-        <div class="h">Žebříček měst</div>
-        <div class="muted">Top 10</div>
-      </div>
-      <div class="cardBody">
-        <div id="topCities" class="list"></div>
-      </div>
-    </section>
+.cardTitle{
+  display:flex;align-items:center;justify-content:space-between;
+  gap:10px;margin-bottom:10px;
+  font-weight:600;
+}
 
-    <section class="card">
-      <div class="cardHead">
-        <div class="h">Nejdelší zásahy</div>
-        <div class="muted">Top 10 podle délky</div>
-      </div>
-      <div class="cardBody">
-        <div id="longest" class="list"></div>
-      </div>
-    </section>
+.filters{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end}
+.chip{
+  padding:6px 10px;border-radius:999px;
+  font-size:12px;
+}
+.chip.active{border-color:rgba(74,163,255,.8); color:#dbeaff}
 
-    <!-- TABLE -->
-    <section class="card tableCard">
-      <div class="cardHead">
-        <div class="h">Přehled událostí</div>
-        <div class="muted">klikni na odkaz → detail</div>
-      </div>
-      <div class="cardBody">
-        <div id="tableWrap"></div>
-      </div>
-    </section>
+.map{
+  height:420px;
+  border-radius:14px;
+  overflow:hidden;
+}
 
-  </main>
+.statsBox{color:var(--muted);font-size:14px;line-height:1.45}
 
-  <script src="app.js"></script>
-</body>
-</html>
+.tableWrap{overflow:auto}
+table{
+  width:100%;
+  border-collapse:collapse;
+  font-size:13px;
+}
+th,td{
+  border-bottom:1px solid var(--line);
+  padding:10px 8px;
+  vertical-align:top;
+}
+th{color:var(--muted);font-weight:600;text-align:left}
+a{color:#6bb4ff;text-decoration:none}
+a:hover{text-decoration:underline}
+
+.badge{
+  display:inline-flex;align-items:center;gap:6px;
+  padding:4px 10px;border-radius:999px;
+  border:1px solid var(--line);
+  font-size:12px;color:var(--muted);
+}
+.badge.active{color:#c8f7d2;border-color:rgba(46,125,50,.35)}
+.badge.closed{color:#ffd7d7;border-color:rgba(226,59,46,.35)}
+
+@media (max-width: 980px){
+  .grid{
+    grid-template-columns:1fr;
+    grid-template-areas:
+      "map"
+      "side"
+      "list";
+  }
+  .map{height:380px}
+}
