@@ -123,38 +123,113 @@ function makeMarkerIcon(emoji, isClosed) {
   });
 }
 
+/**
+ * Když více markerů sdílí stejný bod, rozhoď je do malého kruhu,
+ * aby se nepřekrývaly. (Jinak ve "vše" uvidíš jen ten poslední.)
+ */
+function spreadOverlappingPoints(items) {
+  // klíč: souřadnice zaokrouhlené, aby se to dobře skupinovalo
+  const keyOf = (lat, lon) => `${lat.toFixed(5)}|${lon.toFixed(5)}`;
+
+  const groups = new Map();
+  for (const it of items) {
+    if (typeof it.lat === "number" && typeof it.lon === "number") {
+      const k = keyOf(it.lat, it.lon);
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(it);
+    }
+  }
+
+  // poloměr rozhození v metrech (cca)
+  const baseMeters = 120;
+
+  // převod metrů -> stupně (hrubě; stačí na vizuál)
+  const metersToLat = (m) => m / 111320;
+  const metersToLon = (m, atLat) => m / (111320 * Math.cos((atLat * Math.PI) / 180));
+
+  for (const [k, arr] of groups.entries()) {
+    if (arr.length <= 1) continue;
+
+    // aktivní ať mají prioritu i v rozhození (budou blíž středu)
+    const sorted = [...arr].sort((a, b) => (a.is_closed === b.is_closed ? 0 : a.is_closed ? 1 : -1));
+
+    // rozhoď do kruhu + případně do druhého kruhu, když jich je hodně
+    for (let i = 0; i < sorted.length; i++) {
+      const it = sorted[i];
+
+      const ring = i < 8 ? 1 : i < 20 ? 2 : 3;
+      const posInRing = ring === 1 ? i : ring === 2 ? i - 8 : i - 20;
+      const countInRing = ring === 1 ? Math.min(sorted.length, 8) : ring === 2 ? Math.min(sorted.length - 8, 12) : Math.min(sorted.length - 20, 16);
+
+      const angle = (2 * Math.PI * posInRing) / Math.max(1, countInRing);
+      const radiusM = baseMeters * ring;
+
+      const dLat = metersToLat(radiusM) * Math.sin(angle);
+      const dLon = metersToLon(radiusM, it.lat) * Math.cos(angle);
+
+      it.__lat_spread = it.lat + dLat;
+      it.__lon_spread = it.lon + dLon;
+    }
+  }
+}
+
 function renderMap(items) {
   markersLayer.clearLayers();
 
-  const pts = [];
+  // 1) rozhoď překryvy
+  spreadOverlappingPoints(items);
+
+  // 2) nejdřív vykresli UKONČENÉ, pak AKTIVNÍ (aktivní budou navrchu)
+  const closed = [];
+  const open = [];
+
   for (const it of items) {
     if (typeof it.lat === "number" && typeof it.lon === "number") {
-      const t = it.event_type || "other";
-      const emoji = typeEmoji(t);
-      const isClosed = !!it.is_closed;
-
-      const m = L.marker([it.lat, it.lon], { icon: makeMarkerIcon(emoji, isClosed) });
-
-      const durMin = isClosed
-        ? (Number.isFinite(it.duration_min) ? it.duration_min : null)
-        : effectiveRunningMinutes(it);
-
-      const html = `
-        <div style="min-width:260px">
-          <div style="font-weight:700;margin-bottom:6px">${emoji} ${escapeHtml(it.title || "")}</div>
-          <div><b>Stav:</b> ${isClosed ? "UKONČENO" : "AKTIVNÍ"}</div>
-          <div><b>Typ:</b> ${escapeHtml(typeLabel(t))}</div>
-          <div><b>Místo:</b> ${escapeHtml(it.place_text || "")}</div>
-          <div><b>Čas:</b> ${escapeHtml(formatDate(it.pub_date || it.created_at))}</div>
-          <div><b>Délka:</b> ${escapeHtml(formatDuration(durMin))}${isClosed ? "" : " (běží)"}</div>
-          ${it.link ? `<div style="margin-top:8px"><a href="${it.link}" target="_blank" rel="noopener">Detail</a></div>` : ""}
-        </div>
-      `;
-      m.bindPopup(html);
-      m.addTo(markersLayer);
-      pts.push([it.lat, it.lon]);
+      (it.is_closed ? closed : open).push(it);
     }
   }
+
+  const pts = [];
+
+  function addMarker(it) {
+    const t = it.event_type || "other";
+    const emoji = typeEmoji(t);
+    const isClosed = !!it.is_closed;
+
+    const lat = typeof it.__lat_spread === "number" ? it.__lat_spread : it.lat;
+    const lon = typeof it.__lon_spread === "number" ? it.__lon_spread : it.lon;
+
+    const m = L.marker([lat, lon], {
+      icon: makeMarkerIcon(emoji, isClosed),
+      // aktivní vždy navrch
+      zIndexOffset: isClosed ? 0 : 1000
+    });
+
+    const durMin = isClosed
+      ? (Number.isFinite(it.duration_min) ? it.duration_min : null)
+      : effectiveRunningMinutes(it);
+
+    const html = `
+      <div style="min-width:260px">
+        <div style="font-weight:700;margin-bottom:6px">${emoji} ${escapeHtml(it.title || "")}</div>
+        <div><b>Stav:</b> ${isClosed ? "UKONČENO" : "AKTIVNÍ"}</div>
+        <div><b>Typ:</b> ${escapeHtml(typeLabel(t))}</div>
+        <div><b>Místo:</b> ${escapeHtml(it.place_text || "")}</div>
+        <div><b>Čas:</b> ${escapeHtml(formatDate(it.pub_date || it.created_at))}</div>
+        <div><b>Délka:</b> ${escapeHtml(formatDuration(durMin))}${isClosed ? "" : " (běží)"}</div>
+        ${it.link ? `<div style="margin-top:8px"><a href="${it.link}" target="_blank" rel="noopener">Detail</a></div>` : ""}
+      </div>
+    `;
+    m.bindPopup(html);
+    m.addTo(markersLayer);
+
+    pts.push([lat, lon]);
+  }
+
+  // ukončené nejdřív…
+  for (const it of closed) addMarker(it);
+  // …pak aktivní (navrch)
+  for (const it of open) addMarker(it);
 
   if (pts.length > 0) {
     const bounds = L.latLngBounds(pts);
