@@ -62,32 +62,6 @@ function extractCityFromTitle(title = "") {
   return last;
 }
 
-// ✅ nové: ignoruj řádky, které nejsou město
-function isBadCityLine(line = "") {
-  const raw = String(line || "").trim();
-  if (!raw) return true;
-
-  const low = raw
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/\p{Diacritic}/gu, "");
-
-  if (low.startsWith("stav:")) return true;
-  if (low.startsWith("ukonceni:")) return true;
-  if (low.startsWith("vyhlaseni:")) return true;
-  if (low.startsWith("ohlaseni:")) return true;
-  if (low.startsWith("okres ")) return true;
-
-  // 🔥 tohle řeší “km: 6.0”
-  if (low.startsWith("km:")) return true;
-  if (/^\s*\d+([.,]\d+)?\s*km\s*:?/i.test(raw)) return true;
-
-  // pokud řádek neobsahuje žádné písmeno (jen čísla / znaky), tak pryč
-  if (!/[a-zA-Z\u00C0-\u017F]/.test(raw)) return true;
-
-  return false;
-}
-
 function extractCityFromDescription(descRaw = "") {
   if (!descRaw) return null;
 
@@ -100,8 +74,18 @@ function extractCityFromDescription(descRaw = "") {
   const lines = norm.split("\n").map(l => l.trim()).filter(Boolean);
 
   for (const line of lines) {
+    const low = line
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/\p{Diacritic}/gu, "");
+
+    if (low.startsWith("stav:")) continue;
+    if (low.startsWith("ukonceni:")) continue;
+    if (low.startsWith("vyhlaseni:")) continue;
+    if (low.startsWith("ohlaseni:")) continue;
+    if (low.startsWith("okres ")) continue;
     if (line.length < 2) continue;
-    if (isBadCityLine(line)) continue;
+
     return line;
   }
   return null;
@@ -156,8 +140,11 @@ function parseTimesFromDescription(descRaw = "") {
       .normalize("NFD")
       .replace(/\p{Diacritic}/gu, "");
 
+    // start
     if (n.startsWith("vyhlaseni:")) startText = line.split(":").slice(1).join(":").trim();
     if (n.startsWith("ohlaseni:")) startText = startText || line.split(":").slice(1).join(":").trim();
+
+    // end
     if (n.startsWith("ukonceni:")) {
       endText = line.split(":").slice(1).join(":").trim();
       isClosed = true;
@@ -171,34 +158,64 @@ function parseTimesFromDescription(descRaw = "") {
   };
 }
 
-async function computeDurationMin(id, startIso, endIso, createdAtFallback) {
-  if (!endIso) return null;
-
-  let startMs = startIso ? new Date(startIso).getTime() : NaN;
-
-  if (!Number.isFinite(startMs)) {
-    const firstSeen = await getEventFirstSeen(id);
-    if (firstSeen) startMs = new Date(firstSeen).getTime();
-  }
-
-  if (!Number.isFinite(startMs) && createdAtFallback) {
-    const ca = new Date(createdAtFallback).getTime();
-    if (Number.isFinite(ca)) startMs = ca;
-  }
-
-  const endMs = new Date(endIso).getTime();
-  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return null;
-
-  return Math.round((endMs - startMs) / 60000);
+// RFC822 / ISO / cokoli co JS Date umí -> ISO
+function safeParseAnyDateToIso(v) {
+  if (!v) return null;
+  const d = new Date(String(v));
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString();
 }
 
-// ✅ FIX: pokud přijde durationMin v sekundách, přepočítáme na minuty.
-function normalizeDurationMin(v) {
-  if (!Number.isFinite(v)) return null;
-  let n = Math.round(v);
-  if (n <= 0) return null;
-  if (n > 20000) n = Math.round(n / 60);
-  return n;
+/**
+ * ✅ Robustní výpočet délky:
+ * - máme endIso (ukončení) a kandidáty startu:
+ *   startIso, pubDateIso, first_seen_at, createdAtFallback
+ * - vybereme NEJPOZDĚJŠÍ start <= end
+ * - tím se odstraní nesmysly typu 649 hodin (kdy start byl dávno v minulosti)
+ */
+async function computeDurationMin(id, startIso, endIso, pubDateText, createdAtFallback) {
+  if (!endIso) return null;
+
+  const endMs = new Date(endIso).getTime();
+  if (!Number.isFinite(endMs)) return null;
+
+  const candidates = [];
+
+  // 1) explicit start z textu
+  if (startIso) {
+    const ms = new Date(startIso).getTime();
+    if (Number.isFinite(ms)) candidates.push(ms);
+  }
+
+  // 2) pubDate z RSS (často je nejbližší k "zahájení")
+  const pubIso = safeParseAnyDateToIso(pubDateText);
+  if (pubIso) {
+    const ms = new Date(pubIso).getTime();
+    if (Number.isFinite(ms)) candidates.push(ms);
+  }
+
+  // 3) first_seen_at z DB
+  const firstSeen = await getEventFirstSeen(id);
+  if (firstSeen) {
+    const ms = new Date(firstSeen).getTime();
+    if (Number.isFinite(ms)) candidates.push(ms);
+  }
+
+  // 4) createdAt fallback
+  if (createdAtFallback) {
+    const ms = new Date(createdAtFallback).getTime();
+    if (Number.isFinite(ms)) candidates.push(ms);
+  }
+
+  // vyber nejpozdější start, který je <= end
+  const valid = candidates.filter(ms => ms <= endMs);
+  if (!valid.length) return null;
+
+  const startMs = Math.max(...valid);
+  const diff = endMs - startMs;
+  if (!Number.isFinite(diff) || diff <= 0) return null;
+
+  return Math.round(diff / 60000);
 }
 
 function normalizePlaceQuery(placeText) {
@@ -272,7 +289,7 @@ const PRAGUE_FMT = new Intl.DateTimeFormat("en-CA", {
 function pragueYmdOffset(offsetDays = 0) {
   const d = new Date();
   d.setDate(d.getDate() + Number(offsetDays || 0));
-  return PRAGUE_FMT.format(d);
+  return PRAGUE_FMT.format(d); // YYYY-MM-DD
 }
 
 // ---------------- FILTERS ----------------
@@ -280,7 +297,8 @@ function parseFilters(req) {
   const typeQ = String(req.query.type || "").trim();
   const city = String(req.query.city || "").trim();
   const status = String(req.query.status || "all").trim().toLowerCase();
-  const day = String(req.query.day || "today").trim().toLowerCase();
+
+  const day = String(req.query.day || "today").trim().toLowerCase(); // today/yesterday/3d/7d/all
 
   const types = typeQ ? typeQ.split(",").map(s => s.trim()).filter(Boolean) : [];
   const normStatus = ["all", "open", "closed"].includes(status) ? status : "all";
@@ -306,31 +324,21 @@ function parseFilters(req) {
 }
 
 // ✅ PRŮBĚŽNÉ DOPOČÍTÁVÁNÍ DÉLKY (a uložení do DB)
-// - primárně z ukončení/startu
-// - fallback: pokud nemáme end_time_iso, ale zásah je closed => last_seen_at - first_seen_at
 async function backfillDurations(rows, max = 40) {
   const candidates = rows
-    .filter(r => r?.is_closed && (r.duration_min == null))
+    .filter(r => r?.is_closed && r?.end_time_iso && (r.duration_min == null))
     .slice(0, Math.max(0, Math.min(max, 200)));
 
   let fixed = 0;
 
   for (const r of candidates) {
-    let dur = null;
-
-    if (r?.end_time_iso) {
-      dur = await computeDurationMin(r.id, r.start_time_iso, r.end_time_iso, r.created_at);
-    }
-
-    // ✅ fallback: DB timestamps (nejlepší dostupná aproximace)
-    if ((!Number.isFinite(dur) || dur <= 0) && r?.first_seen_at && r?.last_seen_at) {
-      const a = new Date(r.first_seen_at).getTime();
-      const b = new Date(r.last_seen_at).getTime();
-      if (Number.isFinite(a) && Number.isFinite(b) && b > a) {
-        dur = Math.round((b - a) / 60000);
-      }
-    }
-
+    const dur = await computeDurationMin(
+      r.id,
+      r.start_time_iso,
+      r.end_time_iso,
+      r.pub_date,       // ✅ nově i pub_date jako kandidát startu
+      r.created_at
+    );
     if (Number.isFinite(dur) && dur > 0) {
       await updateEventDuration(r.id, dur);
       r.duration_min = dur;
@@ -415,16 +423,20 @@ app.post("/api/ingest", requireKey, async (req, res) => {
       const desc = it.descriptionRaw || it.descRaw || it.description || "";
       const times = parseTimesFromDescription(desc);
 
-      const incomingDur = normalizeDurationMin(it.durationMin);
+      // ✅ důležité: pubDate si převeď na ISO (když jde)
+      const pubDateIso = safeParseAnyDateToIso(it.pubDate);
 
-      const computedDur = await computeDurationMin(
-        it.id,
-        it.startTimeIso || times.startIso,
-        it.endTimeIso || times.endIso,
-        null
-      );
-
-      const durationMin = Number.isFinite(incomingDur) ? incomingDur : computedDur;
+      // ✅ duration pro ukončené: robustní výpočet startu (startIso/pubDate/firstSeen/createdAt)
+      const durationMin =
+        Number.isFinite(it.durationMin)
+          ? it.durationMin
+          : await computeDurationMin(
+              it.id,
+              it.startTimeIso || times.startIso,
+              it.endTimeIso || times.endIso,
+              it.pubDate || null,
+              null
+            );
 
       const placeText = it.placeText || null;
       const cityFromDesc = extractCityFromDescription(desc);
@@ -440,14 +452,18 @@ app.post("/api/ingest", requireKey, async (req, res) => {
         id: it.id,
         title: it.title,
         link: it.link,
-        pubDate: it.pubDate || null,
+        pubDate: pubDateIso || it.pubDate || null,
+
         placeText,
         cityText,
         statusText: it.statusText || null,
         eventType,
         descriptionRaw: desc || null,
-        startTimeIso: it.startTimeIso || times.startIso || null,
+
+        // ✅ pokud startIso chybí, ulož pubDateIso jako start_time_iso (lepší než nic)
+        startTimeIso: it.startTimeIso || times.startIso || pubDateIso || null,
         endTimeIso: it.endTimeIso || times.endIso || null,
+
         durationMin,
         isClosed: !!times.isClosed
       };
@@ -488,7 +504,7 @@ app.get("/api/events", async (req, res) => {
   const rows = await getEventsFiltered(filters, limit);
 
   const fixedCoords = await backfillCoords(rows, 8);
-  const fixedDur = await backfillDurations(rows, 120);
+  const fixedDur = await backfillDurations(rows, 80);
 
   res.json({ ok: true, filters, backfilled_coords: fixedCoords, backfilled_durations: fixedDur, items: rows });
 });
@@ -500,13 +516,13 @@ app.get("/api/stats", async (req, res) => {
   res.json({ ok: true, filters, ...stats });
 });
 
-// export CSV
+// export CSV (nejdřív backfill duration, aby export měl vše)
 app.get("/api/export.csv", async (req, res) => {
   const filters = parseFilters(req);
   const limit = Math.min(Number(req.query.limit || 2000), 5000);
   const rows = await getEventsFiltered(filters, limit);
 
-  await backfillDurations(rows, 800);
+  await backfillDurations(rows, 500);
 
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader("Content-Disposition", `attachment; filename="jpo_vyjezdy_export.csv"`);
@@ -556,13 +572,13 @@ app.get("/api/export.csv", async (req, res) => {
   res.send([header, ...lines].join("\n"));
 });
 
-// export PDF (beze změny – ponecháno jak máš)
+// export PDF (backfill duration + jednoduché stránkování podle výšky řádku)
 app.get("/api/export.pdf", async (req, res) => {
   const filters = parseFilters(req);
   const limit = Math.min(Number(req.query.limit || 800), 2000);
   const rows = await getEventsFiltered(filters, limit);
 
-  await backfillDurations(rows, 800);
+  await backfillDurations(rows, 500);
 
   res.setHeader("Content-Type", "application/pdf");
   res.setHeader("Content-Disposition", `attachment; filename="jpo_vyjezdy_export.pdf"`);
