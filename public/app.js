@@ -198,12 +198,13 @@ function renderChart(byDay) {
 }
 
 function getFiltersFromUi() {
+  const day = document.getElementById("daySelect").value.trim();      // ✅ nový filtr
   const type = document.getElementById("typeSelect").value.trim();
   const city = document.getElementById("cityInput").value.trim();
   const status = document.getElementById("statusSelect").value.trim();
 
-  // do API posíláme: type=... (1 typ), city=..., status=all/open/closed
   return {
+    day: day || "today",
     type: type || "",
     city: city || "",
     status: status || "all"
@@ -212,9 +213,14 @@ function getFiltersFromUi() {
 
 function buildQuery(filters) {
   const qs = new URLSearchParams();
+
+  // ✅ day vždy posíláme (default today => mapa jen dnešní)
+  if (filters.day) qs.set("day", filters.day);
+
   if (filters.type) qs.set("type", filters.type);
   if (filters.city) qs.set("city", filters.city);
   if (filters.status && filters.status !== "all") qs.set("status", filters.status);
+
   return qs.toString();
 }
 
@@ -243,7 +249,7 @@ async function loadAll() {
   renderMap(items);
 
   renderChart(statsJson.byDay || []);
-  renderCounts(statsJson.openCount, statsJson.closedCount);
+  renderCounts(statsJson.openVsClosed?.open, statsJson.openVsClosed?.closed);
   renderTopCities(statsJson.topCities || []);
   renderLongest(statsJson.longest || []);
 
@@ -252,6 +258,7 @@ async function loadAll() {
 }
 
 function resetFilters() {
+  document.getElementById("daySelect").value = "today";  // ✅ reset = dnes
   document.getElementById("typeSelect").value = "";
   document.getElementById("cityInput").value = "";
   document.getElementById("statusSelect").value = "all";
@@ -272,6 +279,9 @@ document.getElementById("applyBtn").addEventListener("click", loadAll);
 document.getElementById("resetBtn").addEventListener("click", () => { resetFilters(); loadAll(); });
 document.getElementById("exportCsvBtn").addEventListener("click", () => exportWithFilters("csv"));
 document.getElementById("exportPdfBtn").addEventListener("click", () => exportWithFilters("pdf"));
+
+// ✅ změna dnů okamžitě refresh
+document.getElementById("daySelect").addEventListener("change", loadAll);
 
 // map resize on responsive changes
 let resizeTimer = null;

@@ -236,15 +236,53 @@ async function geocodePlace(placeText) {
   return null;
 }
 
+// ---- DAY FILTER (Europe/Prague) ----
+const PRAGUE_FMT = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Europe/Prague",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit"
+});
+
+function pragueYmdOffset(offsetDays = 0) {
+  const d = new Date();
+  d.setDate(d.getDate() + Number(offsetDays || 0));
+  return PRAGUE_FMT.format(d); // YYYY-MM-DD
+}
+
+// ---------------- FILTERS ----------------
 function parseFilters(req) {
   const typeQ = String(req.query.type || "").trim();
   const city = String(req.query.city || "").trim();
   const status = String(req.query.status || "all").trim().toLowerCase();
 
+  const day = String(req.query.day || "today").trim().toLowerCase(); // today/yesterday/3d/7d/all
+
   const types = typeQ ? typeQ.split(",").map(s => s.trim()).filter(Boolean) : [];
   const normStatus = ["all", "open", "closed"].includes(status) ? status : "all";
+  const normDay = ["today", "yesterday", "3d", "7d", "all"].includes(day) ? day : "today";
 
-  return { types, city, status: normStatus };
+  // Překlad na DB filtr:
+  // - today/yesterday => date (Prague) + spanDays=1
+  // - 3d/7d => recentDays
+  // - all => nic
+  let date = null;
+  let spanDays = null;
+  let recentDays = null;
+
+  if (normDay === "today") {
+    date = pragueYmdOffset(0);
+    spanDays = 1;
+  } else if (normDay === "yesterday") {
+    date = pragueYmdOffset(-1);
+    spanDays = 1;
+  } else if (normDay === "3d") {
+    recentDays = 3;
+  } else if (normDay === "7d") {
+    recentDays = 7;
+  }
+
+  return { types, city, status: normStatus, day: normDay, date, spanDays, recentDays };
 }
 
 // ✅ PRŮBĚŽNÉ DOPOČÍTÁVÁNÍ DÉLKY (a uložení do DB)

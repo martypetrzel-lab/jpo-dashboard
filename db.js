@@ -209,6 +209,11 @@ export async function getEventsFiltered(filters, limit = 400) {
   const city = String(filters?.city || "").trim();
   const status = String(filters?.status || "all").toLowerCase();
 
+  // day filter (server už posílá date/spanDays nebo recentDays)
+  const date = String(filters?.date || "").trim();      // YYYY-MM-DD
+  const spanDays = Number.isFinite(filters?.spanDays) ? Math.max(1, Math.min(3660, Math.round(filters.spanDays))) : null;
+  const recentDays = Number.isFinite(filters?.recentDays) ? Math.max(1, Math.min(3660, Math.round(filters.recentDays))) : null;
+
   const where = [];
   const params = [];
   let i = 1;
@@ -228,6 +233,23 @@ export async function getEventsFiltered(filters, limit = 400) {
 
   if (status === "open") where.push(`is_closed = FALSE`);
   if (status === "closed") where.push(`is_closed = TRUE`);
+
+  // ✅ Day filter:
+  // - date + spanDays: filtruje podle created_at v Europe/Prague (celý den)
+  // - recentDays: posledních N dnů (od teď)
+  if (date && /^\d{4}-\d{2}-\d{2}$/.test(date) && spanDays) {
+    where.push(
+      `(created_at AT TIME ZONE 'Europe/Prague') >= ($${i}::date)::timestamp
+       AND (created_at AT TIME ZONE 'Europe/Prague') <  (($${i}::date)::timestamp + make_interval(days => $${i + 1}))`
+    );
+    params.push(date);
+    params.push(spanDays);
+    i += 2;
+  } else if (recentDays) {
+    where.push(`created_at >= NOW() - make_interval(days => $${i})`);
+    params.push(recentDays);
+    i++;
+  }
 
   const sql =
     `
@@ -256,6 +278,11 @@ export async function getStatsFiltered(filters) {
   const city = String(filters?.city || "").trim();
   const status = String(filters?.status || "all").toLowerCase();
 
+  // day filter (server už posílá date/spanDays nebo recentDays)
+  const date = String(filters?.date || "").trim();      // YYYY-MM-DD
+  const spanDays = Number.isFinite(filters?.spanDays) ? Math.max(1, Math.min(3660, Math.round(filters.spanDays))) : null;
+  const recentDays = Number.isFinite(filters?.recentDays) ? Math.max(1, Math.min(3660, Math.round(filters.recentDays))) : null;
+
   const where = [`created_at >= NOW() - INTERVAL '30 days'`];
   const params = [];
   let i = 1;
@@ -274,6 +301,21 @@ export async function getStatsFiltered(filters) {
 
   if (status === "open") where.push(`is_closed = FALSE`);
   if (status === "closed") where.push(`is_closed = TRUE`);
+
+  // ✅ Day filter i pro statistiky (aby seděly s tabulkou/mapou)
+  if (date && /^\d{4}-\d{2}-\d{2}$/.test(date) && spanDays) {
+    where.push(
+      `(created_at AT TIME ZONE 'Europe/Prague') >= ($${i}::date)::timestamp
+       AND (created_at AT TIME ZONE 'Europe/Prague') <  (($${i}::date)::timestamp + make_interval(days => $${i + 1}))`
+    );
+    params.push(date);
+    params.push(spanDays);
+    i += 2;
+  } else if (recentDays) {
+    where.push(`created_at >= NOW() - make_interval(days => $${i})`);
+    params.push(recentDays);
+    i++;
+  }
 
   const whereSql = `WHERE ${where.join(" AND ")}`;
 
