@@ -59,10 +59,9 @@ export async function initDb() {
     );
   `);
 
-  // ✅ měsíční statistika měst (persistovaná)
   await pool.query(`
     CREATE TABLE IF NOT EXISTS city_monthly_stats (
-      month_key TEXT NOT NULL,          -- "YYYY-MM"
+      month_key TEXT NOT NULL,
       city TEXT NOT NULL,
       count INTEGER NOT NULL DEFAULT 0,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -70,7 +69,6 @@ export async function initDb() {
     );
   `);
 
-  // migrations if you started from older schema
   const adds = [
     ["events", "city_text", "TEXT"],
     ["events", "event_type", "TEXT"],
@@ -95,7 +93,6 @@ export async function initDb() {
     }
   }
 
-  // ensure defaults for new columns if migrated
   await pool.query(`
     UPDATE events
     SET is_closed = COALESCE(is_closed, FALSE),
@@ -104,7 +101,6 @@ export async function initDb() {
     WHERE is_closed IS NULL OR first_seen_at IS NULL OR last_seen_at IS NULL;
   `);
 
-  // best-effort backfill pub_ts from pub_date for older rows
   await pool.query(`
     UPDATE events
     SET pub_ts = CASE
@@ -112,9 +108,12 @@ export async function initDb() {
       ELSE pub_ts
     END
     WHERE pub_ts IS NULL AND pub_date IS NOT NULL AND pub_date <> '';
-  `).catch(() => {
-    // některé staré pub_date nemusí být castnutelné; nevadí
-  });
+  `).catch(() => { /* ignore */ });
+}
+
+export async function clearBadDurations() {
+  // vyčistí historické nesmysly (např. 652h)
+  await pool.query(`UPDATE events SET duration_min = NULL WHERE duration_min IS NOT NULL AND duration_min > 1440;`);
 }
 
 export async function upsertEvent(ev) {
@@ -209,7 +208,6 @@ export async function deleteCachedGeocode(placeText) {
 }
 
 export async function getEventsOutsideCz(limit = 200) {
-  // CZ bounding box: lon 12.09–18.87, lat 48.55–51.06
   const res = await pool.query(
     `
     SELECT id, city_text, place_text, lat, lon
@@ -230,7 +228,7 @@ export async function getEventsFiltered(filters, limit = 400) {
   const types = Array.isArray(filters?.types) ? filters.types : [];
   const city = String(filters?.city || "").trim();
   const status = String(filters?.status || "all").toLowerCase();
-  const day = String(filters?.day || "today").toLowerCase(); // today | yesterday | all
+  const day = String(filters?.day || "today").toLowerCase();
 
   const where = [];
   const params = [];
@@ -243,7 +241,6 @@ export async function getEventsFiltered(filters, limit = 400) {
   }
 
   if (city) {
-    // hledáme v city_text primárně, fallback i v place_text
     where.push(`(COALESCE(city_text,'') ILIKE $${i} OR COALESCE(place_text,'') ILIKE $${i})`);
     params.push(`%${city}%`);
     i++;
@@ -252,12 +249,11 @@ export async function getEventsFiltered(filters, limit = 400) {
   if (status === "open") where.push(`is_closed = FALSE`);
   if (status === "closed") where.push(`is_closed = TRUE`);
 
-  // ✅ denní filtr pro mapu+tabulku (Praha)
   if (day === "today") {
     where.push(`(COALESCE(pub_ts, created_at) AT TIME ZONE 'Europe/Prague')::date = (NOW() AT TIME ZONE 'Europe/Prague')::date`);
   } else if (day === "yesterday") {
     where.push(`(COALESCE(pub_ts, created_at) AT TIME ZONE 'Europe/Prague')::date = ((NOW() AT TIME ZONE 'Europe/Prague')::date - INTERVAL '1 day')::date`);
-  } // all -> nic
+  }
 
   const sql =
     `
@@ -266,7 +262,9 @@ export async function getEventsFiltered(filters, limit = 400) {
       place_text, city_text,
       status_text, event_type,
       description_raw,
-      start_time_iso, end_time_iso, duration_min, is_closed,
+      start_time_iso, end_time_iso,
+      CASE WHEN duration_min IS NOT NULL AND duration_min > 1440 THEN NULL ELSE duration_min END AS duration_min,
+      is_closed,
       lat, lon,
       first_seen_at, last_seen_at, created_at
     FROM events
@@ -281,12 +279,11 @@ export async function getEventsFiltered(filters, limit = 400) {
   return res.rows;
 }
 
-// --- MONTHLY CITY STATS (persist) ---
+// --- MONTHLY CITY STATS ---
 export async function recomputeMonthlyCityStats(monthKey) {
   const mk = String(monthKey || "").trim();
   if (!/^\d{4}-\d{2}$/.test(mk)) return { ok: false, error: "bad monthKey" };
 
-  // přepočet za daný měsíc (Praha) – idempotentní: nejdřív smažeme měsíc, pak vložíme vše znovu
   await pool.query("BEGIN");
   try {
     await pool.query(`DELETE FROM city_monthly_stats WHERE month_key=$1`, [mk]);
@@ -342,7 +339,7 @@ export async function getStatsFiltered(filters) {
   const types = Array.isArray(filters?.types) ? filters.types : [];
   const city = String(filters?.city || "").trim();
   const status = String(filters?.status || "all").toLowerCase();
-  const monthKey = String(filters?.month || "").trim(); // "YYYY-MM"
+  const monthKey = String(filters?.month || "").trim();
 
   const where = [`created_at >= NOW() - INTERVAL '30 days'`];
   const params = [];
@@ -402,14 +399,16 @@ export async function getStatsFiltered(filters) {
     `
     SELECT id, title, link, COALESCE(NULLIF(city_text,''), place_text) AS city, duration_min, start_time_iso, end_time_iso, created_at
     FROM events
-    ${whereSql} AND duration_min IS NOT NULL AND duration_min > 0
+    ${whereSql}
+      AND duration_min IS NOT NULL
+      AND duration_min > 0
+      AND duration_min <= 1440
     ORDER BY duration_min DESC
     LIMIT 10;
     `,
     params
   );
 
-  // ✅ měsíční města (persistované + vrácené celé)
   let monthlyCities = [];
   if (/^\d{4}-\d{2}$/.test(monthKey)) {
     await recomputeMonthlyCityStats(monthKey);
