@@ -17,7 +17,9 @@ import {
   getEventsOutsideCz,
   getEventFirstSeen,
   updateEventDuration,
-  updateEventTimes
+  updateEventTimes,
+  getEventTimes,
+  recalcDurationsSql
 } from "./db.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -120,6 +122,11 @@ function stripHtmlToText(html) {
     .trim();
 }
 
+/**
+ * Parsuje české datumy z detailu (text), vrací ISO.
+ * Pozn.: pro výpočet délky je OK, i když to není přesně "Europe/Prague",
+ * protože oba časy (start/end) jsou ve stejném systému.
+ */
 function parseCzDateToIsoFlexible(s) {
   if (!s) return null;
 
@@ -129,12 +136,12 @@ function parseCzDateToIsoFlexible(s) {
     .normalize("NFD")
     .replace(/\p{Diacritic}/gu, "");
 
-  // 1) 2. února 2026, 17:27  /  2. února 2026 17:27
   const months = {
     ledna: 1, unora: 2, brezna: 3, dubna: 4, kvetna: 5, cervna: 6,
     cervence: 7, srpna: 8, zari: 9, rijna: 10, listopadu: 11, prosince: 12
   };
 
+  // 1) 2. února 2026, 17:27  /  2. února 2026 17:27
   const m1 = norm.match(/(\d{1,2})\.?\s+([a-z]+)\s+(\d{4})(?:,)?\s*(\d{1,2}):(\d{2})/);
   if (m1) {
     const day = Number(m1[1]);
@@ -189,7 +196,6 @@ function parseTimesFromDescription(descRaw = "") {
       endText = line.split(":").slice(1).join(":").trim();
       isClosed = true;
     }
-    // RSS často umí jen: "stav: ukončená"
     if (n.startsWith("stav:") && n.includes("ukonc")) isClosed = true;
   }
 
@@ -200,14 +206,43 @@ function parseTimesFromDescription(descRaw = "") {
   };
 }
 
-async function computeDurationMin(id, startIso, endIso, createdAtFallback) {
+function isoFromPubDate(pubDateText) {
+  if (!pubDateText) return null;
+  try {
+    const d = new Date(pubDateText);
+    if (Number.isNaN(d.getTime())) return null;
+    return d.toISOString();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * ✅ OPRAVA: fallback pořadí pro start:
+ * 1) startIso (pokud existuje)
+ * 2) pubDateIso (RSS pubDate) – to je nejlepší “zahájení/ohlášení” v RSS světě
+ * 3) first_seen_at (DB)
+ * 4) createdAtFallback (pokud máme)
+ */
+async function computeDurationMin(id, startIso, endIso, pubDateIso, createdAtFallback) {
   if (!endIso) return null;
+
+  const endMs = new Date(endIso).getTime();
+  if (!Number.isFinite(endMs)) return null;
 
   let startMs = startIso ? new Date(startIso).getTime() : NaN;
 
+  if (!Number.isFinite(startMs) && pubDateIso) {
+    const pd = new Date(pubDateIso).getTime();
+    if (Number.isFinite(pd)) startMs = pd;
+  }
+
   if (!Number.isFinite(startMs)) {
     const firstSeen = await getEventFirstSeen(id);
-    if (firstSeen) startMs = new Date(firstSeen).getTime();
+    if (firstSeen) {
+      const fsMs = new Date(firstSeen).getTime();
+      if (Number.isFinite(fsMs)) startMs = fsMs;
+    }
   }
 
   if (!Number.isFinite(startMs) && createdAtFallback) {
@@ -215,10 +250,12 @@ async function computeDurationMin(id, startIso, endIso, createdAtFallback) {
     if (Number.isFinite(ca)) startMs = ca;
   }
 
-  const endMs = new Date(endIso).getTime();
-  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return null;
+  if (!Number.isFinite(startMs) || endMs <= startMs) return null;
 
-  return Math.round((endMs - startMs) / 60000);
+  const min = Math.round((endMs - startMs) / 60000);
+  if (!Number.isFinite(min) || min <= 0) return null;
+
+  return min;
 }
 
 function normalizePlaceQuery(placeText) {
@@ -294,7 +331,6 @@ async function fetchDetailTimes(link) {
 
     const html = await r.text();
     const text = stripHtmlToText(html);
-
     const lines = text.split("\n").map(x => x.trim()).filter(Boolean);
 
     let startIso = null;
@@ -371,19 +407,41 @@ function parseFilters(req) {
   return { types, city, status: normStatus, day: normDay, date, spanDays, recentDays };
 }
 
-// ✅ PRŮBĚŽNÉ DOPOČÍTÁVÁNÍ DÉLKY
-async function backfillDurations(rows, max = 40) {
+// ✅ přepočet duration: opravujeme i “nesmyslné” uložené hodnoty
+async function backfillDurations(rows, max = 80) {
   const candidates = rows
-    .filter(r => r?.is_closed && r?.end_time_iso && (r.duration_min == null))
-    .slice(0, Math.max(0, Math.min(max, 200)));
+    .filter(r => r?.is_closed && r?.end_time_iso)
+    .slice(0, Math.max(0, Math.min(max, 300)));
 
   let fixed = 0;
 
   for (const r of candidates) {
-    const dur = await computeDurationMin(r.id, r.start_time_iso, r.end_time_iso, r.created_at);
-    if (Number.isFinite(dur) && dur > 0) {
-      await updateEventDuration(r.id, dur);
-      r.duration_min = dur;
+    const pubIso = isoFromPubDate(r.pub_date) || null;
+
+    const computed = await computeDurationMin(
+      r.id,
+      r.start_time_iso,
+      r.end_time_iso,
+      pubIso,
+      r.created_at
+    );
+
+    // Pokud computed nedává smysl, necháme DB beze změny
+    if (!Number.isFinite(computed) || computed <= 0) continue;
+
+    const current = Number.isFinite(r.duration_min) ? Number(r.duration_min) : null;
+
+    // opravujeme když:
+    // - duration je null
+    // - nebo se liší “výrazně” (typicky starý bug -> všude stejná hodnota)
+    const shouldUpdate =
+      current == null ||
+      current <= 0 ||
+      Math.abs(current - computed) >= 3;
+
+    if (shouldUpdate) {
+      await updateEventDuration(r.id, computed);
+      r.duration_min = computed;
       fixed++;
     }
   }
@@ -394,7 +452,7 @@ async function backfillDurations(rows, max = 40) {
 // ✅ VARIANTA B: doplnění start/end z DETAILU (a pak i duration)
 async function backfillTimesFromDetail(rows, max = 12) {
   const candidates = rows
-    .filter(r => r?.is_closed && (!r.end_time_iso || !r.start_time_iso || r.duration_min == null) && r.link)
+    .filter(r => r?.is_closed && (!r.end_time_iso || !r.start_time_iso) && r.link)
     .slice(0, Math.max(0, Math.min(max, 30)));
 
   let fixed = 0;
@@ -413,14 +471,6 @@ async function backfillTimesFromDetail(rows, max = 12) {
       r.end_time_iso = newEnd;
       r.is_closed = newClosed;
       fixed++;
-    }
-
-    if (r.is_closed && r.end_time_iso && (r.duration_min == null)) {
-      const dur = await computeDurationMin(r.id, r.start_time_iso, r.end_time_iso, r.created_at);
-      if (Number.isFinite(dur) && dur > 0) {
-        await updateEventDuration(r.id, dur);
-        r.duration_min = dur;
-      }
     }
   }
 
@@ -508,6 +558,7 @@ app.post("/api/ingest", requireKey, async (req, res) => {
         .toLowerCase()
         .normalize("NFD")
         .replace(/\p{Diacritic}/gu, "");
+
       const isClosedByStatus =
         descNorm.includes("stav: ukonc") ||
         String(it.statusText || "").toLowerCase().includes("ukon");
@@ -516,6 +567,10 @@ app.post("/api/ingest", requireKey, async (req, res) => {
       let endIso = it.endTimeIso || timesFromRss.endIso || null;
       let isClosed = !!timesFromRss.isClosed || !!isClosedByStatus;
 
+      // pubDate ISO (RSS)
+      const pubIso = isoFromPubDate(it.pubDate) || null;
+
+      // ✅ VARIANTA B: detail fetch jen pokud je ukončeno a chybí start/end
       if (isClosed && (!endIso || !startIso) && detailFetched < MAX_DETAIL_FETCH) {
         const det = await fetchDetailTimes(it.link);
         if (det) {
@@ -526,10 +581,11 @@ app.post("/api/ingest", requireKey, async (req, res) => {
         detailFetched++;
       }
 
+      // ✅ duration počítáme jen když máme end (a start si umíme smysluplně odvodit)
       const durationMin =
         Number.isFinite(it.durationMin)
-          ? it.durationMin
-          : await computeDurationMin(it.id, startIso, endIso, null);
+          ? Math.round(it.durationMin)
+          : await computeDurationMin(it.id, startIso, endIso, pubIso, null);
 
       const placeText = it.placeText || null;
       const cityFromDesc = extractCityFromDescription(desc);
@@ -560,6 +616,7 @@ app.post("/api/ingest", requireKey, async (req, res) => {
       await upsertEvent(ev);
       accepted++;
 
+      // update times (když se něco objevilo)
       if (startIso || endIso || isClosed) {
         await updateEventTimes(ev.id, startIso, endIso, isClosed);
       }
@@ -593,7 +650,7 @@ app.post("/api/ingest", requireKey, async (req, res) => {
   }
 });
 
-// events (filters) + backfill coords + backfill duration + VARIANTA B times
+// events
 app.get("/api/events", async (req, res) => {
   const limit = Math.min(Number(req.query.limit || 400), 2000);
   const filters = parseFilters(req);
@@ -601,8 +658,10 @@ app.get("/api/events", async (req, res) => {
   const rows = await getEventsFiltered(filters, limit);
 
   const fixedCoords = await backfillCoords(rows, 8);
-  const fixedTimes = await backfillTimesFromDetail(rows, 12);
-  const fixedDur = await backfillDurations(rows, 120);
+  const fixedTimes = await backfillTimesFromDetail(rows, 14);
+
+  // ✅ klíč: přepočti duration i když už v DB nějaká je
+  const fixedDur = await backfillDurations(rows, 160);
 
   res.json({
     ok: true,
@@ -614,7 +673,7 @@ app.get("/api/events", async (req, res) => {
   });
 });
 
-// stats (filters)
+// stats
 app.get("/api/stats", async (req, res) => {
   const filters = parseFilters(req);
   const stats = await getStatsFiltered(filters);
@@ -789,7 +848,7 @@ app.get("/api/export.pdf", async (req, res) => {
   doc.end();
 });
 
-// ✅ Varianta B: oprava špatných bodů mimo ČR
+// ✅ admin: oprav špatné body mimo ČR
 app.post("/api/admin/regeocode", requireKey, async (req, res) => {
   try {
     const mode = String(req.body?.mode || "outside_cz");
@@ -838,6 +897,26 @@ app.post("/api/admin/regeocode", requireKey, async (req, res) => {
     console.error(e);
     res.status(500).json({ ok: false, error: "server error" });
   }
+});
+
+// ✅ admin: hromadný přepočet durations v DB (fixne i “10h48” co už je uložené)
+app.post("/api/admin/recalc-durations", requireKey, async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(Number(req.body?.limit || 2000), 20000));
+    const result = await recalcDurationsSql(limit);
+    res.json({ ok: true, updated: result.updated });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok: false, error: "server error" });
+  }
+});
+
+// debug: vrátí časy pro konkrétní id (aby ses mohl rychle ujistit)
+app.get("/api/debug/event-times/:id", async (req, res) => {
+  const id = String(req.params.id || "").trim();
+  if (!id) return res.status(400).json({ ok: false, error: "missing id" });
+  const row = await getEventTimes(id);
+  res.json({ ok: true, id, ...row });
 });
 
 app.get("/health", (req, res) => res.send("OK"));
