@@ -198,7 +198,7 @@ function renderChart(byDay) {
 }
 
 function getFiltersFromUi() {
-  const day = document.getElementById("daySelect").value.trim();      // ✅ nový filtr
+  const day = document.getElementById("daySelect").value.trim();
   const type = document.getElementById("typeSelect").value.trim();
   const city = document.getElementById("cityInput").value.trim();
   const status = document.getElementById("statusSelect").value.trim();
@@ -211,28 +211,37 @@ function getFiltersFromUi() {
   };
 }
 
-function buildQuery(filters) {
+// ✅ Pro /api/events a exporty chceme i "day"
+function buildQueryForEvents(filters) {
   const qs = new URLSearchParams();
-
-  // ✅ day vždy posíláme (default today => mapa jen dnešní)
   if (filters.day) qs.set("day", filters.day);
-
   if (filters.type) qs.set("type", filters.type);
   if (filters.city) qs.set("city", filters.city);
   if (filters.status && filters.status !== "all") qs.set("status", filters.status);
+  return qs.toString();
+}
 
+// ✅ Pro /api/stats nechceme "day" (aby se 30d statistika neresetovala)
+// Ale necháme typ/město/stav, protože to dává smysl.
+function buildQueryForStats(filters) {
+  const qs = new URLSearchParams();
+  if (filters.type) qs.set("type", filters.type);
+  if (filters.city) qs.set("city", filters.city);
+  if (filters.status && filters.status !== "all") qs.set("status", filters.status);
   return qs.toString();
 }
 
 async function loadAll() {
   const filters = getFiltersFromUi();
-  const q = buildQuery(filters);
+
+  const qEvents = buildQueryForEvents(filters);
+  const qStats = buildQueryForStats(filters);
 
   setStatus("načítám…", true);
 
   const [eventsRes, statsRes] = await Promise.all([
-    fetch(`/api/events?limit=500${q ? `&${q}` : ""}`),
-    fetch(`/api/stats${q ? `?${q}` : ""}`)
+    fetch(`/api/events?limit=500${qEvents ? `&${qEvents}` : ""}`),
+    fetch(`/api/stats${qStats ? `?${qStats}` : ""}`)
   ]);
 
   if (!eventsRes.ok || !statsRes.ok) {
@@ -258,7 +267,7 @@ async function loadAll() {
 }
 
 function resetFilters() {
-  document.getElementById("daySelect").value = "today";  // ✅ reset = dnes
+  document.getElementById("daySelect").value = "today";
   document.getElementById("typeSelect").value = "";
   document.getElementById("cityInput").value = "";
   document.getElementById("statusSelect").value = "all";
@@ -266,24 +275,21 @@ function resetFilters() {
 
 function exportWithFilters(kind) {
   const filters = getFiltersFromUi();
-  const q = buildQuery(filters);
+  const q = buildQueryForEvents(filters);
   const url = kind === "pdf"
     ? `/api/export.pdf${q ? `?${q}` : ""}`
     : `/api/export.csv${q ? `?${q}` : ""}`;
   window.open(url, "_blank");
 }
 
-// UI events
 document.getElementById("refreshBtn").addEventListener("click", loadAll);
 document.getElementById("applyBtn").addEventListener("click", loadAll);
 document.getElementById("resetBtn").addEventListener("click", () => { resetFilters(); loadAll(); });
 document.getElementById("exportCsvBtn").addEventListener("click", () => exportWithFilters("csv"));
 document.getElementById("exportPdfBtn").addEventListener("click", () => exportWithFilters("pdf"));
 
-// ✅ změna dnů okamžitě refresh
 document.getElementById("daySelect").addEventListener("change", loadAll);
 
-// map resize on responsive changes
 let resizeTimer = null;
 window.addEventListener("resize", () => {
   clearTimeout(resizeTimer);

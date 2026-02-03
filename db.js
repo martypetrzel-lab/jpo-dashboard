@@ -58,7 +58,6 @@ export async function initDb() {
     );
   `);
 
-  // migrations if you started from older schema
   const adds = [
     ["events", "city_text", "TEXT"],
     ["events", "event_type", "TEXT"],
@@ -82,7 +81,6 @@ export async function initDb() {
     }
   }
 
-  // ensure defaults for new columns if migrated
   await pool.query(`
     UPDATE events
     SET is_closed = COALESCE(is_closed, FALSE),
@@ -187,7 +185,6 @@ export async function getEventFirstSeen(id) {
 }
 
 export async function getEventsOutsideCz(limit = 200) {
-  // CZ bounding box: lon 12.09–18.87, lat 48.55–51.06
   const res = await pool.query(
     `
     SELECT id, city_text, place_text, lat, lon
@@ -203,16 +200,19 @@ export async function getEventsOutsideCz(limit = 200) {
   return res.rows;
 }
 
-// --- FILTERED EVENTS ---
+// --- FILTERED EVENTS (mapa/tabulka/export) ---
 export async function getEventsFiltered(filters, limit = 400) {
   const types = Array.isArray(filters?.types) ? filters.types : [];
   const city = String(filters?.city || "").trim();
   const status = String(filters?.status || "all").toLowerCase();
 
-  // day filter (server už posílá date/spanDays nebo recentDays)
-  const date = String(filters?.date || "").trim();      // YYYY-MM-DD
-  const spanDays = Number.isFinite(filters?.spanDays) ? Math.max(1, Math.min(3660, Math.round(filters.spanDays))) : null;
-  const recentDays = Number.isFinite(filters?.recentDays) ? Math.max(1, Math.min(3660, Math.round(filters.recentDays))) : null;
+  const date = String(filters?.date || "").trim(); // YYYY-MM-DD
+  const spanDays = Number.isFinite(filters?.spanDays)
+    ? Math.max(1, Math.min(3660, Math.round(filters.spanDays)))
+    : null;
+  const recentDays = Number.isFinite(filters?.recentDays)
+    ? Math.max(1, Math.min(3660, Math.round(filters.recentDays)))
+    : null;
 
   const where = [];
   const params = [];
@@ -225,7 +225,6 @@ export async function getEventsFiltered(filters, limit = 400) {
   }
 
   if (city) {
-    // hledáme v city_text primárně, fallback i v place_text
     where.push(`(COALESCE(city_text,'') ILIKE $${i} OR COALESCE(place_text,'') ILIKE $${i})`);
     params.push(`%${city}%`);
     i++;
@@ -234,9 +233,6 @@ export async function getEventsFiltered(filters, limit = 400) {
   if (status === "open") where.push(`is_closed = FALSE`);
   if (status === "closed") where.push(`is_closed = TRUE`);
 
-  // ✅ Day filter:
-  // - date + spanDays: filtruje podle created_at v Europe/Prague (celý den)
-  // - recentDays: posledních N dnů (od teď)
   if (date && /^\d{4}-\d{2}-\d{2}$/.test(date) && spanDays) {
     where.push(
       `(created_at AT TIME ZONE 'Europe/Prague') >= ($${i}::date)::timestamp
@@ -273,15 +269,12 @@ export async function getEventsFiltered(filters, limit = 400) {
   return res.rows;
 }
 
+// ✅ STATISTIKY: vždy posledních 30 dnů + filtry Typ/Město/Stav
+// ❌ ZÁMĚRNĚ ignorujeme filtr "Dny", aby se graf 30 dnů nikdy neresetoval na Dnes/Včera.
 export async function getStatsFiltered(filters) {
   const types = Array.isArray(filters?.types) ? filters.types : [];
   const city = String(filters?.city || "").trim();
   const status = String(filters?.status || "all").toLowerCase();
-
-  // day filter (server už posílá date/spanDays nebo recentDays)
-  const date = String(filters?.date || "").trim();      // YYYY-MM-DD
-  const spanDays = Number.isFinite(filters?.spanDays) ? Math.max(1, Math.min(3660, Math.round(filters.spanDays))) : null;
-  const recentDays = Number.isFinite(filters?.recentDays) ? Math.max(1, Math.min(3660, Math.round(filters.recentDays))) : null;
 
   const where = [`created_at >= NOW() - INTERVAL '30 days'`];
   const params = [];
@@ -301,21 +294,6 @@ export async function getStatsFiltered(filters) {
 
   if (status === "open") where.push(`is_closed = FALSE`);
   if (status === "closed") where.push(`is_closed = TRUE`);
-
-  // ✅ Day filter i pro statistiky (aby seděly s tabulkou/mapou)
-  if (date && /^\d{4}-\d{2}-\d{2}$/.test(date) && spanDays) {
-    where.push(
-      `(created_at AT TIME ZONE 'Europe/Prague') >= ($${i}::date)::timestamp
-       AND (created_at AT TIME ZONE 'Europe/Prague') <  (($${i}::date)::timestamp + make_interval(days => $${i + 1}))`
-    );
-    params.push(date);
-    params.push(spanDays);
-    i += 2;
-  } else if (recentDays) {
-    where.push(`created_at >= NOW() - make_interval(days => $${i})`);
-    params.push(recentDays);
-    i++;
-  }
 
   const whereSql = `WHERE ${where.join(" AND ")}`;
 
