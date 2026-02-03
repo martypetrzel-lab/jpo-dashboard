@@ -167,6 +167,56 @@ export async function updateEventTimes(id, startIso, endIso, isClosed) {
   );
 }
 
+export async function getEventTimes(id) {
+  const res = await pool.query(
+    `
+    SELECT id, pub_date, start_time_iso, end_time_iso, duration_min, is_closed, first_seen_at, created_at
+    FROM events
+    WHERE id = $1
+    `,
+    [id]
+  );
+  return res.rows[0] || null;
+}
+
+/**
+ * ✅ Hromadný přepočet duration v DB:
+ * - když máme start_time_iso i end_time_iso a end > start
+ * - přepíše duration_min (a tím opraví i staré bugy typu “všude 10h48”)
+ *
+ * limit slouží jen k tomu, ať neshodíš DB při mega tabulce.
+ */
+export async function recalcDurationsSql(limit = 5000) {
+  const res = await pool.query(
+    `
+    WITH candidates AS (
+      SELECT id
+      FROM events
+      WHERE is_closed = TRUE
+        AND start_time_iso IS NOT NULL
+        AND end_time_iso   IS NOT NULL
+      ORDER BY last_seen_at DESC
+      LIMIT $1
+    )
+    UPDATE events e
+    SET duration_min =
+      GREATEST(
+        1,
+        ROUND(
+          EXTRACT(EPOCH FROM ((e.end_time_iso)::timestamptz - (e.start_time_iso)::timestamptz)) / 60.0
+        )::int
+      )
+    FROM candidates c
+    WHERE e.id = c.id
+      AND (e.end_time_iso)::timestamptz > (e.start_time_iso)::timestamptz
+    `,
+    [limit]
+  );
+
+  // pg UPDATE vrací rowCount
+  return { updated: res.rowCount };
+}
+
 export async function getCachedGeocode(placeText) {
   const res = await pool.query(
     `SELECT lat, lon FROM geocode_cache WHERE place_text=$1`,
@@ -219,7 +269,7 @@ export async function getEventsFiltered(filters, limit = 400) {
   const city = String(filters?.city || "").trim();
   const status = String(filters?.status || "all").toLowerCase();
 
-  const date = String(filters?.date || "").trim();
+  const date = String(filters?.date || "").trim(); // YYYY-MM-DD
   const spanDays = Number.isFinite(filters?.spanDays)
     ? Math.max(1, Math.min(3660, Math.round(filters.spanDays)))
     : null;
