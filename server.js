@@ -10,6 +10,7 @@ import {
   upsertEvent,
   getEventsFiltered,
   getStatsFiltered,
+  getTopCitiesByMonth,
   getCachedGeocode,
   setCachedGeocode,
   updateEventCoords,
@@ -235,10 +236,13 @@ app.post("/api/ingest", requireKey, async (req, res) => {
 // events (filters)
 app.get("/api/events", async (req, res) => {
   const limit = Math.min(Number(req.query.limit || 400), 2000);
+
   const filters = {
     types: (String(req.query.type || "").trim() ? String(req.query.type).split(",").map(s => s.trim()).filter(Boolean) : []),
     city: String(req.query.city || "").trim(),
-    status: (["all", "open", "closed"].includes(String(req.query.status || "all").toLowerCase()) ? String(req.query.status || "all").toLowerCase() : "all")
+    status: (["all", "open", "closed"].includes(String(req.query.status || "all").toLowerCase()) ? String(req.query.status || "all").toLowerCase() : "all"),
+    // ✅ NOVÉ: day filtr (today/yesterday/all)
+    day: (["today", "yesterday", "all"].includes(String(req.query.day || "today").toLowerCase()) ? String(req.query.day || "today").toLowerCase() : "today")
   };
 
   const rows = await getEventsFiltered(filters, limit);
@@ -252,8 +256,14 @@ app.get("/api/stats", async (req, res) => {
     city: String(req.query.city || "").trim(),
     status: (["all", "open", "closed"].includes(String(req.query.status || "all").toLowerCase()) ? String(req.query.status || "all").toLowerCase() : "all")
   };
+
   const stats = await getStatsFiltered(filters);
-  res.json({ ok: true, filters, ...stats });
+
+  // ✅ NOVÉ: měsíční žebříček měst
+  const monthKey = String(req.query.month || "").trim(); // YYYY-MM (z <input type="month">)
+  const monthlyCities = monthKey ? await getTopCitiesByMonth(filters, monthKey) : [];
+
+  res.json({ ok: true, filters, ...stats, monthlyCities });
 });
 
 // --- GEOCODE (CZ ONLY) ---

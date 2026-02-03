@@ -237,11 +237,35 @@ export async function getEventsOutsideCz(limit = 200) {
   return res.rows;
 }
 
+/* =======================
+   ✅ NOVÉ: SQL filtr dne
+   - počítá podle Europe/Prague
+   - používá COALESCE(pub_ts, created_at), aby to sedělo na reálný čas události
+   ======================= */
+function dayFilterSql(day) {
+  const d = String(day || "today").toLowerCase();
+  if (d === "all") return "";
+
+  if (d === "yesterday") {
+    return `
+      AND (COALESCE(pub_ts, created_at) AT TIME ZONE 'Europe/Prague')::date
+          = ((now() AT TIME ZONE 'Europe/Prague')::date - 1)
+    `;
+  }
+
+  // default: today
+  return `
+    AND (COALESCE(pub_ts, created_at) AT TIME ZONE 'Europe/Prague')::date
+        = ((now() AT TIME ZONE 'Europe/Prague')::date)
+  `;
+}
+
 // --- FILTERED EVENTS ---
 export async function getEventsFiltered(filters, limit = 400) {
   const types = Array.isArray(filters?.types) ? filters.types : [];
   const city = String(filters?.city || "").trim();
   const status = String(filters?.status || "all").toLowerCase();
+  const day = String(filters?.day || "today").toLowerCase();
 
   const where = [];
   const params = [];
@@ -262,6 +286,9 @@ export async function getEventsFiltered(filters, limit = 400) {
   if (status === "open") where.push(`is_closed = FALSE`);
   if (status === "closed") where.push(`is_closed = TRUE`);
 
+  // ✅ denní filtr (pro mapu + tabulku)
+  where.push(`1=1 ${dayFilterSql(day)}`);
+
   const sql =
     `
     SELECT
@@ -279,6 +306,51 @@ export async function getEventsFiltered(filters, limit = 400) {
     `;
 
   params.push(limit);
+
+  const res = await pool.query(sql, params);
+  return res.rows;
+}
+
+/* =======================
+   ✅ NOVÉ: žebříček měst podle měsíce (YYYY-MM)
+   - ignoruje filtr "day" (je to měsíční statistika)
+   - respektuje typ + status (aby to sedělo s filtrem Typ/Stav)
+   - záměrně ignoruje city filtr, protože je to "všechna města"
+   ======================= */
+export async function getTopCitiesByMonth(filters, monthKey) {
+  const types = Array.isArray(filters?.types) ? filters.types : [];
+  const status = String(filters?.status || "all").toLowerCase();
+  const month = String(monthKey || "").trim(); // YYYY-MM
+
+  if (!month) return [];
+
+  const where = [];
+  const params = [];
+  let i = 1;
+
+  // měsíc podle Prague času
+  where.push(`to_char((COALESCE(pub_ts, created_at) AT TIME ZONE 'Europe/Prague'), 'YYYY-MM') = $${i}`);
+  params.push(month);
+  i++;
+
+  if (types.length) {
+    where.push(`event_type = ANY($${i}::text[])`);
+    params.push(types);
+    i++;
+  }
+
+  if (status === "open") where.push(`is_closed = FALSE`);
+  if (status === "closed") where.push(`is_closed = TRUE`);
+
+  const sql = `
+    SELECT COALESCE(NULLIF(city_text,''), NULLIF(place_text,''), '(neznámé)') AS city,
+           COUNT(*)::int AS count
+    FROM events
+    WHERE ${where.join(" AND ")}
+    GROUP BY city
+    ORDER BY count DESC
+    LIMIT 15;
+  `;
 
   const res = await pool.query(sql, params);
   return res.rows;
