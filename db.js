@@ -1,5 +1,7 @@
 import pg from "pg";
 
+export const MAX_DURATION_MIN = Number.isFinite(Number(process.env.MAX_DURATION_MIN)) ? Math.round(Number(process.env.MAX_DURATION_MIN)) : 720;
+
 export const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_URL?.includes("railway") ? { rejectUnauthorized: false } : false
@@ -26,7 +28,6 @@ export async function initDb() {
       link TEXT NOT NULL,
 
       pub_date TEXT,
-      pub_ts TIMESTAMPTZ,
 
       place_text TEXT,
       city_text TEXT,
@@ -61,7 +62,6 @@ export async function initDb() {
 
   // migrations if you started from older schema
   const adds = [
-    ["events", "pub_ts", "TIMESTAMPTZ"],
     ["events", "city_text", "TEXT"],
     ["events", "event_type", "TEXT"],
     ["events", "description_raw", "TEXT"],
@@ -94,36 +94,21 @@ export async function initDb() {
   `);
 }
 
-/**
- * ✅ DŮLEŽITÉ: vyčistí špatné délky (typicky 38 000 min, 652h, apod.)
- * - necháváme jen rozumný rozsah 1..720 min (max 12h)
- */
-export async function clearBadDurations() {
-  const res = await pool.query(`
-    UPDATE events
-    SET duration_min = NULL
-    WHERE duration_min IS NOT NULL
-      AND (duration_min < 0 OR duration_min > 720)
-  `);
-  return { cleared: res.rowCount };
-}
-
 export async function upsertEvent(ev) {
   await pool.query(
     `
     INSERT INTO events (
-      id, title, link, pub_date, pub_ts,
+      id, title, link, pub_date,
       place_text, city_text, status_text, event_type,
       description_raw,
       start_time_iso, end_time_iso, duration_min, is_closed,
       first_seen_at, last_seen_at
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14, NOW(), NOW())
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, NOW(), NOW())
     ON CONFLICT (id) DO UPDATE SET
       title = EXCLUDED.title,
       link = EXCLUDED.link,
       pub_date = EXCLUDED.pub_date,
-      pub_ts = COALESCE(EXCLUDED.pub_ts, events.pub_ts),
 
       place_text = COALESCE(EXCLUDED.place_text, events.place_text),
       city_text  = COALESCE(EXCLUDED.city_text,  events.city_text),
@@ -134,24 +119,8 @@ export async function upsertEvent(ev) {
 
       start_time_iso = COALESCE(EXCLUDED.start_time_iso, events.start_time_iso),
       end_time_iso   = COALESCE(EXCLUDED.end_time_iso,   events.end_time_iso),
-
-      -- ✅ DÉLKA: držíme rozumný rozsah, a pokud přechod open->closed, tak počítáme z first_seen_at -> pub_ts
-      duration_min = CASE
-        WHEN events.duration_min IS NOT NULL AND events.duration_min BETWEEN 1 AND 720 THEN events.duration_min
-        WHEN (events.is_closed = FALSE AND EXCLUDED.is_closed = TRUE)
-          AND events.first_seen_at IS NOT NULL
-          AND EXCLUDED.pub_ts IS NOT NULL
-          THEN (
-            CASE
-              WHEN EXTRACT(EPOCH FROM (EXCLUDED.pub_ts - events.first_seen_at))/60 BETWEEN 0 AND 720
-                THEN ROUND(EXTRACT(EPOCH FROM (EXCLUDED.pub_ts - events.first_seen_at))/60)::int
-              ELSE NULL
-            END
-          )
-        ELSE COALESCE(EXCLUDED.duration_min, events.duration_min)
-      END,
-
-      is_closed = (events.is_closed OR EXCLUDED.is_closed),
+      duration_min   = COALESCE(EXCLUDED.duration_min,   events.duration_min),
+      is_closed      = (events.is_closed OR EXCLUDED.is_closed),
 
       last_seen_at = NOW()
     `,
@@ -160,7 +129,6 @@ export async function upsertEvent(ev) {
       ev.title,
       ev.link,
       ev.pubDate || null,
-      ev.pubTs || null,
       ev.placeText || null,
       ev.cityText || null,
       ev.statusText || null,
@@ -237,35 +205,11 @@ export async function getEventsOutsideCz(limit = 200) {
   return res.rows;
 }
 
-/* =======================
-   ✅ NOVÉ: SQL filtr dne
-   - počítá podle Europe/Prague
-   - používá COALESCE(pub_ts, created_at), aby to sedělo na reálný čas události
-   ======================= */
-function dayFilterSql(day) {
-  const d = String(day || "today").toLowerCase();
-  if (d === "all") return "";
-
-  if (d === "yesterday") {
-    return `
-      AND (COALESCE(pub_ts, created_at) AT TIME ZONE 'Europe/Prague')::date
-          = ((now() AT TIME ZONE 'Europe/Prague')::date - 1)
-    `;
-  }
-
-  // default: today
-  return `
-    AND (COALESCE(pub_ts, created_at) AT TIME ZONE 'Europe/Prague')::date
-        = ((now() AT TIME ZONE 'Europe/Prague')::date)
-  `;
-}
-
 // --- FILTERED EVENTS ---
 export async function getEventsFiltered(filters, limit = 400) {
   const types = Array.isArray(filters?.types) ? filters.types : [];
   const city = String(filters?.city || "").trim();
   const status = String(filters?.status || "all").toLowerCase();
-  const day = String(filters?.day || "today").toLowerCase();
 
   const where = [];
   const params = [];
@@ -278,6 +222,7 @@ export async function getEventsFiltered(filters, limit = 400) {
   }
 
   if (city) {
+    // hledáme v city_text primárně, fallback i v place_text
     where.push(`(COALESCE(city_text,'') ILIKE $${i} OR COALESCE(place_text,'') ILIKE $${i})`);
     params.push(`%${city}%`);
     i++;
@@ -286,13 +231,10 @@ export async function getEventsFiltered(filters, limit = 400) {
   if (status === "open") where.push(`is_closed = FALSE`);
   if (status === "closed") where.push(`is_closed = TRUE`);
 
-  // ✅ denní filtr (pro mapu + tabulku)
-  where.push(`1=1 ${dayFilterSql(day)}`);
-
   const sql =
     `
     SELECT
-      id, title, link, pub_date, pub_ts,
+      id, title, link, pub_date,
       place_text, city_text,
       status_text, event_type,
       description_raw,
@@ -301,56 +243,11 @@ export async function getEventsFiltered(filters, limit = 400) {
       first_seen_at, last_seen_at, created_at
     FROM events
     ${where.length ? "WHERE " + where.join(" AND ") : ""}
-    ORDER BY COALESCE(pub_ts, created_at) DESC, created_at DESC
+    ORDER BY COALESCE(pub_date, created_at::text) DESC, created_at DESC
     LIMIT $${i}
     `;
 
   params.push(limit);
-
-  const res = await pool.query(sql, params);
-  return res.rows;
-}
-
-/* =======================
-   ✅ NOVÉ: žebříček měst podle měsíce (YYYY-MM)
-   - ignoruje filtr "day" (je to měsíční statistika)
-   - respektuje typ + status (aby to sedělo s filtrem Typ/Stav)
-   - záměrně ignoruje city filtr, protože je to "všechna města"
-   ======================= */
-export async function getTopCitiesByMonth(filters, monthKey) {
-  const types = Array.isArray(filters?.types) ? filters.types : [];
-  const status = String(filters?.status || "all").toLowerCase();
-  const month = String(monthKey || "").trim(); // YYYY-MM
-
-  if (!month) return [];
-
-  const where = [];
-  const params = [];
-  let i = 1;
-
-  // měsíc podle Prague času
-  where.push(`to_char((COALESCE(pub_ts, created_at) AT TIME ZONE 'Europe/Prague'), 'YYYY-MM') = $${i}`);
-  params.push(month);
-  i++;
-
-  if (types.length) {
-    where.push(`event_type = ANY($${i}::text[])`);
-    params.push(types);
-    i++;
-  }
-
-  if (status === "open") where.push(`is_closed = FALSE`);
-  if (status === "closed") where.push(`is_closed = TRUE`);
-
-  const sql = `
-    SELECT COALESCE(NULLIF(city_text,''), NULLIF(place_text,''), '(neznámé)') AS city,
-           COUNT(*)::int AS count
-    FROM events
-    WHERE ${where.join(" AND ")}
-    GROUP BY city
-    ORDER BY count DESC
-    LIMIT 15;
-  `;
 
   const res = await pool.query(sql, params);
   return res.rows;
@@ -427,15 +324,16 @@ export async function getStatsFiltered(filters) {
     params
   );
 
+  const maxIdx = params.length + 1;
   const longest = await pool.query(
     `
-    SELECT id, title, link, COALESCE(NULLIF(city_text,''), place_text) AS city, duration_min, created_at
+    SELECT id, title, link, COALESCE(NULLIF(city_text,''), place_text) AS city, duration_min, start_time_iso, end_time_iso, created_at
     FROM events
-    ${whereSql} AND duration_min IS NOT NULL AND duration_min > 0
+    ${whereSql} AND duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= $${maxIdx}
     ORDER BY duration_min DESC
     LIMIT 10;
     `,
-    params
+    [...params, MAX_DURATION_MIN]
   );
 
   return {
@@ -445,4 +343,19 @@ export async function getStatsFiltered(filters) {
     openVsClosed: openVsClosed.rows[0] || { open: 0, closed: 0 },
     longest: longest.rows
   };
+}
+
+// ✅ Oprava nesmyslných délek (NEmaže události, jen vynuluje duration_min)
+export async function clearBadDurations(maxMinutes = MAX_DURATION_MIN) {
+  const max = Number.isFinite(Number(maxMinutes)) ? Math.round(Number(maxMinutes)) : MAX_DURATION_MIN;
+  const res = await pool.query(
+    `
+    UPDATE events
+    SET duration_min = NULL
+    WHERE duration_min IS NOT NULL
+      AND (duration_min < 0 OR duration_min > $1)
+    `,
+    [max]
+  );
+  return { updated: res.rowCount, maxMinutes: max };
 }
