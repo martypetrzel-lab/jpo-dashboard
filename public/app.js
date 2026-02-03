@@ -21,7 +21,7 @@ function setStatus(text, ok = true) {
 }
 
 function initMap() {
-  map = L.map("map").setView([50.08, 14.43], 8);
+  map = L.map("map").setView([49.8, 15.3], 7);
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 18,
     attribution: "&copy; OpenStreetMap"
@@ -41,26 +41,34 @@ function formatDate(d) {
   }
 }
 
-// Pojistka i ve FE: pokud je to extrémně velké, bereme to jako sekundy.
-function normalizeDuration(min) {
-  if (!Number.isFinite(min)) return null;
-  let n = Math.round(min);
+/**
+ * ✅ FIX: někdy je duration omylem v sekundách, ale uložená do duration_min.
+ * Heuristika: pokud je číslo extrémně vysoké (např. 38996 min = 649 h),
+ * je to téměř jistě sekundy -> převedeme /60.
+ */
+function normalizeDurationMin(v) {
+  if (!Number.isFinite(v)) return null;
+  let n = Math.round(v);
   if (n <= 0) return null;
+
+  // 20 000 min = 333 h, to u JPO nedává smysl -> bereme jako sekundy
   if (n > 20000) n = Math.round(n / 60);
+
   return n;
 }
 
 function formatDuration(min) {
-  const v = normalizeDuration(min);
-  if (!Number.isFinite(v) || v <= 0) return "—";
-  const h = Math.floor(v / 60);
-  const m = v % 60;
+  const mNorm = normalizeDurationMin(min);
+  if (!Number.isFinite(mNorm) || mNorm <= 0) return "—";
+
+  const h = Math.floor(mNorm / 60);
+  const m = mNorm % 60;
   if (h <= 0) return `${m} min`;
   return `${h} h ${m} min`;
 }
 
 function escapeHtml(s) {
-  return String(s)
+  return String(s ?? "")
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
@@ -72,14 +80,15 @@ function renderTable(items) {
   tbody.innerHTML = "";
   for (const it of items) {
     const t = it.event_type || "other";
+    const state = it.is_closed ? "UKONČENO" : "AKTIVNÍ";
     const tr = document.createElement("tr");
     tr.innerHTML = `
-      <td>${formatDate(it.pub_date || it.created_at)}</td>
-      <td><span class="iconPill" title="${escapeHtml((TYPE[t]||TYPE.other).label)}">${typeEmoji(t)}</span></td>
+      <td>${escapeHtml(formatDate(it.pub_date || it.created_at))}</td>
+      <td><span class="iconPill" title="${escapeHtml((TYPE[t] || TYPE.other).label)}">${typeEmoji(t)}</span></td>
       <td>${escapeHtml(it.title || "")}</td>
-      <td>${escapeHtml(it.place_text || "")}</td>
-      <td>${escapeHtml(it.status_text || "")}</td>
-      <td>${formatDuration(it.duration_min)}</td>
+      <td>${escapeHtml(it.city_text || it.place_text || "")}</td>
+      <td>${escapeHtml(state)}</td>
+      <td>${escapeHtml(formatDuration(it.duration_min))}</td>
       <td>${it.link ? `<a href="${it.link}" target="_blank" rel="noopener">otevřít</a>` : ""}</td>
     `;
     tbody.appendChild(tr);
@@ -106,11 +115,12 @@ function renderMap(items) {
 
       const m = L.marker([it.lat, it.lon], { icon: makeMarkerIcon(emoji) });
 
+      const state = it.is_closed ? "UKONČENO" : "AKTIVNÍ";
       const html = `
         <div style="min-width:240px">
           <div style="font-weight:700;margin-bottom:6px">${emoji} ${escapeHtml(it.title || "")}</div>
-          <div><b>Místo:</b> ${escapeHtml(it.place_text || "")}</div>
-          <div><b>Stav:</b> ${escapeHtml(it.status_text || "")}</div>
+          <div><b>Stav:</b> ${escapeHtml(state)}</div>
+          <div><b>Město:</b> ${escapeHtml(it.city_text || it.place_text || "")}</div>
           <div><b>Čas:</b> ${escapeHtml(formatDate(it.pub_date || it.created_at))}</div>
           <div><b>Délka:</b> ${escapeHtml(formatDuration(it.duration_min))}</div>
           ${it.link ? `<div style="margin-top:8px"><a href="${it.link}" target="_blank" rel="noopener">Detail</a></div>` : ""}
@@ -125,6 +135,25 @@ function renderMap(items) {
   if (pts.length > 0) {
     const bounds = L.latLngBounds(pts);
     map.fitBounds(bounds.pad(0.2));
+  } else {
+    map.setView([49.8, 15.3], 7);
+  }
+
+  safeInvalidateMap();
+}
+
+function safeInvalidateMap() {
+  try {
+    if (!map) return;
+    setTimeout(() => {
+      try {
+        map.invalidateSize(true);
+      } catch {
+        /* ignore */
+      }
+    }, 80);
+  } catch {
+    /* ignore */
   }
 }
 
@@ -151,6 +180,7 @@ function renderLongest(rows) {
   rows.forEach((r, idx) => {
     const div = document.createElement("div");
     div.className = "row";
+    div.style.cursor = r.link ? "pointer" : "default";
     div.innerHTML = `
       <div class="left">
         <div class="meta">#${idx + 1}</div>
@@ -158,23 +188,16 @@ function renderLongest(rows) {
       </div>
       <div class="meta">${escapeHtml(formatDuration(r.duration_min))}</div>
     `;
-    div.addEventListener("click", () => {
-      if (r.link) window.open(r.link, "_blank", "noopener");
-    });
+    if (r.link) {
+      div.addEventListener("click", () => window.open(r.link, "_blank", "noopener"));
+    }
     wrap.appendChild(div);
   });
 }
 
-function renderBestCity(bestCity) {
-  const v = document.getElementById("bestCityValue");
-  const l = document.getElementById("bestCityLabel");
-  if (!bestCity) {
-    v.textContent = "—";
-    l.textContent = "Zatím žádná data";
-    return;
-  }
-  v.textContent = `${bestCity.count}×`;
-  l.textContent = bestCity.city;
+function renderCounts(openCount, closedCount) {
+  document.getElementById("openCount").textContent = String(openCount ?? "—");
+  document.getElementById("closedCount").textContent = String(closedCount ?? "—");
 }
 
 function renderChart(byDay) {
@@ -183,6 +206,7 @@ function renderChart(byDay) {
 
   const ctx = document.getElementById("chartByDay");
   if (chart) chart.destroy();
+
   chart = new Chart(ctx, {
     type: "line",
     data: { labels, datasets: [{ label: "Výjezdy", data }] },
@@ -197,12 +221,48 @@ function renderChart(byDay) {
   });
 }
 
+function getFiltersFromUi() {
+  const day = document.getElementById("daySelect").value.trim();
+  const type = document.getElementById("typeSelect").value.trim();
+  const city = document.getElementById("cityInput").value.trim();
+  const status = document.getElementById("statusSelect").value.trim();
+
+  return {
+    day: day || "today",
+    type: type || "",
+    city: city || "",
+    status: status || "all"
+  };
+}
+
+function buildQueryForEvents(filters) {
+  const qs = new URLSearchParams();
+  if (filters.day) qs.set("day", filters.day);
+  if (filters.type) qs.set("type", filters.type);
+  if (filters.city) qs.set("city", filters.city);
+  if (filters.status && filters.status !== "all") qs.set("status", filters.status);
+  return qs.toString();
+}
+
+function buildQueryForStats(filters) {
+  const qs = new URLSearchParams();
+  if (filters.type) qs.set("type", filters.type);
+  if (filters.city) qs.set("city", filters.city);
+  if (filters.status && filters.status !== "all") qs.set("status", filters.status);
+  return qs.toString();
+}
+
 async function loadAll() {
+  const filters = getFiltersFromUi();
+
+  const qEvents = buildQueryForEvents(filters);
+  const qStats = buildQueryForStats(filters);
+
   setStatus("načítám…", true);
 
   const [eventsRes, statsRes] = await Promise.all([
-    fetch("/api/events?limit=400"),
-    fetch("/api/stats")
+    fetch(`/api/events?limit=500${qEvents ? `&${qEvents}` : ""}`),
+    fetch(`/api/stats${qStats ? `?${qStats}` : ""}`)
   ]);
 
   if (!eventsRes.ok || !statsRes.ok) {
@@ -214,18 +274,49 @@ async function loadAll() {
   const statsJson = await statsRes.json();
 
   const items = (eventsJson.items || []);
+
   renderTable(items);
   renderMap(items);
 
   renderChart(statsJson.byDay || []);
-  renderBestCity(statsJson.bestCity || null);
+  renderCounts(statsJson.openVsClosed?.open, statsJson.openVsClosed?.closed);
   renderTopCities(statsJson.topCities || []);
   renderLongest(statsJson.longest || []);
 
-  setStatus(`OK • ${items.length} záznamů`, true);
+  const missing = items.filter(x => x.lat == null || x.lon == null).length;
+  setStatus(`OK • ${items.length} záznamů • bez souřadnic ${missing}`, true);
+}
+
+function resetFilters() {
+  document.getElementById("daySelect").value = "today";
+  document.getElementById("typeSelect").value = "";
+  document.getElementById("cityInput").value = "";
+  document.getElementById("statusSelect").value = "all";
+}
+
+function exportWithFilters(kind) {
+  const filters = getFiltersFromUi();
+  const q = buildQueryForEvents(filters);
+  const url = kind === "pdf"
+    ? `/api/export.pdf${q ? `?${q}` : ""}`
+    : `/api/export.csv${q ? `?${q}` : ""}`;
+  window.open(url, "_blank");
 }
 
 document.getElementById("refreshBtn").addEventListener("click", loadAll);
+document.getElementById("applyBtn").addEventListener("click", loadAll);
+document.getElementById("resetBtn").addEventListener("click", () => { resetFilters(); loadAll(); });
+document.getElementById("exportCsvBtn").addEventListener("click", () => exportWithFilters("csv"));
+document.getElementById("exportPdfBtn").addEventListener("click", () => exportWithFilters("pdf"));
+
+document.getElementById("daySelect").addEventListener("change", loadAll);
+
+let resizeTimer = null;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => safeInvalidateMap(), 120);
+});
+window.addEventListener("orientationchange", () => safeInvalidateMap());
 
 initMap();
 loadAll();
