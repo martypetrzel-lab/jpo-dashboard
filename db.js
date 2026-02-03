@@ -58,6 +58,7 @@ export async function initDb() {
     );
   `);
 
+  // migrations if you started from older schema
   const adds = [
     ["events", "city_text", "TEXT"],
     ["events", "event_type", "TEXT"],
@@ -81,6 +82,7 @@ export async function initDb() {
     }
   }
 
+  // ensure defaults for new columns if migrated
   await pool.query(`
     UPDATE events
     SET is_closed = COALESCE(is_closed, FALSE),
@@ -153,70 +155,6 @@ export async function updateEventDuration(id, durationMin) {
   ]);
 }
 
-export async function updateEventTimes(id, startIso, endIso, isClosed) {
-  await pool.query(
-    `
-    UPDATE events
-    SET
-      start_time_iso = COALESCE($2, start_time_iso),
-      end_time_iso   = COALESCE($3, end_time_iso),
-      is_closed      = (is_closed OR COALESCE($4, FALSE))
-    WHERE id = $1
-    `,
-    [id, startIso || null, endIso || null, !!isClosed]
-  );
-}
-
-export async function getEventTimes(id) {
-  const res = await pool.query(
-    `
-    SELECT id, pub_date, start_time_iso, end_time_iso, duration_min, is_closed, first_seen_at, created_at
-    FROM events
-    WHERE id = $1
-    `,
-    [id]
-  );
-  return res.rows[0] || null;
-}
-
-/**
- * ✅ Hromadný přepočet duration v DB:
- * - když máme start_time_iso i end_time_iso a end > start
- * - přepíše duration_min (a tím opraví i staré bugy typu “všude 10h48”)
- *
- * limit slouží jen k tomu, ať neshodíš DB při mega tabulce.
- */
-export async function recalcDurationsSql(limit = 5000) {
-  const res = await pool.query(
-    `
-    WITH candidates AS (
-      SELECT id
-      FROM events
-      WHERE is_closed = TRUE
-        AND start_time_iso IS NOT NULL
-        AND end_time_iso   IS NOT NULL
-      ORDER BY last_seen_at DESC
-      LIMIT $1
-    )
-    UPDATE events e
-    SET duration_min =
-      GREATEST(
-        1,
-        ROUND(
-          EXTRACT(EPOCH FROM ((e.end_time_iso)::timestamptz - (e.start_time_iso)::timestamptz)) / 60.0
-        )::int
-      )
-    FROM candidates c
-    WHERE e.id = c.id
-      AND (e.end_time_iso)::timestamptz > (e.start_time_iso)::timestamptz
-    `,
-    [limit]
-  );
-
-  // pg UPDATE vrací rowCount
-  return { updated: res.rowCount };
-}
-
 export async function getCachedGeocode(placeText) {
   const res = await pool.query(
     `SELECT lat, lon FROM geocode_cache WHERE place_text=$1`,
@@ -249,6 +187,7 @@ export async function getEventFirstSeen(id) {
 }
 
 export async function getEventsOutsideCz(limit = 200) {
+  // CZ bounding box: lon 12.09–18.87, lat 48.55–51.06
   const res = await pool.query(
     `
     SELECT id, city_text, place_text, lat, lon
@@ -264,18 +203,11 @@ export async function getEventsOutsideCz(limit = 200) {
   return res.rows;
 }
 
+// --- FILTERED EVENTS ---
 export async function getEventsFiltered(filters, limit = 400) {
   const types = Array.isArray(filters?.types) ? filters.types : [];
   const city = String(filters?.city || "").trim();
   const status = String(filters?.status || "all").toLowerCase();
-
-  const date = String(filters?.date || "").trim(); // YYYY-MM-DD
-  const spanDays = Number.isFinite(filters?.spanDays)
-    ? Math.max(1, Math.min(3660, Math.round(filters.spanDays)))
-    : null;
-  const recentDays = Number.isFinite(filters?.recentDays)
-    ? Math.max(1, Math.min(3660, Math.round(filters.recentDays)))
-    : null;
 
   const where = [];
   const params = [];
@@ -288,6 +220,7 @@ export async function getEventsFiltered(filters, limit = 400) {
   }
 
   if (city) {
+    // hledáme v city_text primárně, fallback i v place_text
     where.push(`(COALESCE(city_text,'') ILIKE $${i} OR COALESCE(place_text,'') ILIKE $${i})`);
     params.push(`%${city}%`);
     i++;
@@ -295,20 +228,6 @@ export async function getEventsFiltered(filters, limit = 400) {
 
   if (status === "open") where.push(`is_closed = FALSE`);
   if (status === "closed") where.push(`is_closed = TRUE`);
-
-  if (date && /^\d{4}-\d{2}-\d{2}$/.test(date) && spanDays) {
-    where.push(
-      `(created_at AT TIME ZONE 'Europe/Prague') >= ($${i}::date)::timestamp
-       AND (created_at AT TIME ZONE 'Europe/Prague') <  (($${i}::date)::timestamp + make_interval(days => $${i + 1}))`
-    );
-    params.push(date);
-    params.push(spanDays);
-    i += 2;
-  } else if (recentDays) {
-    where.push(`created_at >= NOW() - make_interval(days => $${i})`);
-    params.push(recentDays);
-    i++;
-  }
 
   const sql =
     `
