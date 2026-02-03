@@ -6,6 +6,7 @@ import { fileURLToPath } from "url";
 
 import {
   initDb,
+  clearBadDurations,
   upsertEvent,
   getEventsFiltered,
   getStatsFiltered,
@@ -155,61 +156,113 @@ function parseTimesFromDescription(descRaw = "") {
   };
 }
 
-async function computeDurationMin(id, startIso, endIso, createdAtFallback, pubTsIso) {
-  // Pozn.: HZS RSS často uvádí "ukončení" administrativně (klidně o měsíc později).
-  // Proto jako "konec" preferujeme RSS čas (pubDate / pub_ts) a "ukončení" použijeme
-  // jen pokud dává smysl (je blízko pubDate).
+// ---------------- ROUTES ----------------
 
-  const pubMs = pubTsIso ? new Date(pubTsIso).getTime() : NaN;
-
-  // pokud nemáme endIso, ale máme pubDate (typicky když se událost právě uzavřela),
-  // použijeme pubDate jako konec.
-  if (!endIso && Number.isFinite(pubMs)) {
-    endIso = new Date(pubMs).toISOString();
-  }
-
-  if (!endIso) return null;
-
-  let startMs = startIso ? new Date(startIso).getTime() : NaN;
-
-  if (!Number.isFinite(startMs)) {
-    const firstSeen = await getEventFirstSeen(id);
-    if (firstSeen) startMs = new Date(firstSeen).getTime();
-  }
-
-  if (!Number.isFinite(startMs) && createdAtFallback) {
-    const ca = new Date(createdAtFallback).getTime();
-    if (Number.isFinite(ca)) startMs = ca;
-  }
-
-  let endMs = new Date(endIso).getTime();
-  if (!Number.isFinite(endMs)) return null;
-
-  // pokud je endIso podezřele daleko od pubDate, ber pubDate
-  if (Number.isFinite(pubMs)) {
-    const diff = Math.abs(endMs - pubMs);
-    // víc než 6 hodin rozdíl = pravděpodobně administrativní/špatné datum
-    if (diff > 6 * 60 * 60 * 1000) {
-      endMs = pubMs;
+// ingest (data z ESP)
+app.post("/api/ingest", requireKey, async (req, res) => {
+  try {
+    const { source, items } = req.body || {};
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ ok: false, error: "items missing" });
     }
+
+    let accepted = 0;
+    let geocoded = 0;
+
+    for (const it of items) {
+      if (!it?.id || !it?.title || !it?.link) continue;
+
+      const eventType = it.eventType || classifyType(it.title);
+      const desc = it.descriptionRaw || it.descRaw || it.description || "";
+      const times = parseTimesFromDescription(desc);
+
+      // pubDate (RFC822) -> ISO
+      const pubTsIso = (() => {
+        if (!it.pubDate) return null;
+        const d = new Date(it.pubDate);
+        if (Number.isNaN(d.getTime())) return null;
+        return d.toISOString();
+      })();
+
+      const placeText = it.placeText || null;
+      const cityFromDesc = extractCityFromDescription(desc);
+      const cityFromTitle = extractCityFromTitle(it.title);
+
+      const cityText =
+        it.cityText ||
+        cityFromDesc ||
+        (!placeText ? cityFromTitle : (isDistrictPlace(placeText) ? cityFromTitle : placeText)) ||
+        null;
+
+      const ev = {
+        id: it.id,
+        title: it.title,
+        link: it.link,
+        pubDate: it.pubDate || null,
+        pubTs: pubTsIso,
+        placeText,
+        cityText,
+        statusText: it.statusText || null,
+        eventType,
+        descriptionRaw: desc || null,
+        startTimeIso: it.startTimeIso || times.startIso || null,
+        endTimeIso: it.endTimeIso || times.endIso || null,
+        durationMin: Number.isFinite(it.durationMin) ? it.durationMin : null,
+        isClosed: !!times.isClosed
+      };
+
+      await upsertEvent(ev);
+      accepted++;
+
+      // geocode
+      const geoQuery = ev.cityText || ev.placeText;
+      if (geoQuery) {
+        const g = await geocodePlace(geoQuery);
+        if (g) {
+          await updateEventCoords(ev.id, g.lat, g.lon);
+          geocoded++;
+        }
+      }
+    }
+
+    res.json({ ok: true, source: source || "unknown", accepted, geocoded });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok: false, error: "server error" });
   }
-  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return null;
+});
 
-  const durMin = Math.round((endMs - startMs) / 60000);
+// events (filters)
+app.get("/api/events", async (req, res) => {
+  const limit = Math.min(Number(req.query.limit || 400), 2000);
+  const filters = {
+    types: (String(req.query.type || "").trim() ? String(req.query.type).split(",").map(s => s.trim()).filter(Boolean) : []),
+    city: String(req.query.city || "").trim(),
+    status: (["all", "open", "closed"].includes(String(req.query.status || "all").toLowerCase()) ? String(req.query.status || "all").toLowerCase() : "all")
+  };
 
-  // sanity: reálné zásahy jsou v minutách/hodinách. Pokud je to mimo 12h, radši nic.
-  if (durMin < 0 || durMin > 12 * 60) return null;
+  const rows = await getEventsFiltered(filters, limit);
+  res.json({ ok: true, filters, items: rows });
+});
 
-  return durMin;
-}
+// stats (filters)
+app.get("/api/stats", async (req, res) => {
+  const filters = {
+    types: (String(req.query.type || "").trim() ? String(req.query.type).split(",").map(s => s.trim()).filter(Boolean) : []),
+    city: String(req.query.city || "").trim(),
+    status: (["all", "open", "closed"].includes(String(req.query.status || "all").toLowerCase()) ? String(req.query.status || "all").toLowerCase() : "all")
+  };
+  const stats = await getStatsFiltered(filters);
+  res.json({ ok: true, filters, ...stats });
+});
 
+// --- GEOCODE (CZ ONLY) ---
 function normalizePlaceQuery(placeText) {
   const raw = String(placeText || "").trim();
   if (!raw) return "";
   return raw.replace(/^okres\s+/i, "").replace(/^ok\.\s*/i, "").trim();
 }
 
-// ---------------- GEOCODE (CZ ONLY) ----------------
 async function geocodePlace(placeText) {
   if (!placeText || placeText.trim().length < 2) return null;
 
@@ -233,7 +286,6 @@ async function geocodePlace(placeText) {
     url.searchParams.set("format", "json");
     url.searchParams.set("limit", "3");
     url.searchParams.set("q", q);
-
     url.searchParams.set("countrycodes", "cz");
     url.searchParams.set("addressdetails", "1");
     url.searchParams.set("bounded", "1");
@@ -263,401 +315,18 @@ async function geocodePlace(placeText) {
   return null;
 }
 
-function parseFilters(req) {
-  const typeQ = String(req.query.type || "").trim();
-  const city = String(req.query.city || "").trim();
-  const status = String(req.query.status || "all").trim().toLowerCase();
-
-  const types = typeQ ? typeQ.split(",").map(s => s.trim()).filter(Boolean) : [];
-  const normStatus = ["all", "open", "closed"].includes(status) ? status : "all";
-
-  return { types, city, status: normStatus };
-}
-
-// ✅ PRŮBĚŽNÉ DOPOČÍTÁVÁNÍ DÉLKY (a uložení do DB)
-async function backfillDurations(rows, max = 40) {
-  const candidates = rows
-    .filter(r => r?.is_closed && (r?.end_time_iso || r?.pub_ts) && (r.duration_min == null))
-    .slice(0, Math.max(0, Math.min(max, 200)));
-
-  let fixed = 0;
-
-  for (const r of candidates) {
-    const dur = await computeDurationMin(r.id, r.start_time_iso, r.end_time_iso, r.created_at, r.pub_ts);
-    if (Number.isFinite(dur) && dur > 0) {
-      await updateEventDuration(r.id, dur);
-      r.duration_min = dur;
-      fixed++;
-    }
-  }
-
-  return fixed;
-}
-
-async function backfillCoords(rows, max = 8) {
-  const need = rows
-    .filter(r => ((r.city_text || r.place_text) && (r.lat == null || r.lon == null)))
-    .slice(0, Math.max(0, Math.min(max, 20)));
-
-  let fixed = 0;
-  for (const r of need) {
-    try {
-      const q = r.city_text || r.place_text;
-      const g = await geocodePlace(q);
-      if (g) {
-        await updateEventCoords(r.id, g.lat, g.lon);
-        r.lat = g.lat;
-        r.lon = g.lon;
-        fixed++;
-      }
-    } catch {
-      // ignore
-    }
-  }
-  return fixed;
-}
-
-// ---------------- PDF FONT (robust minimal) ----------------
-function findFontPath() {
-  const p = path.join(__dirname, "assets", "DejaVuSans.ttf");
-  if (fs.existsSync(p)) return p;
-  return null;
-}
-
-function tryApplyPdfFont(doc) {
-  const p = findFontPath();
-  if (!p) return { ok: false, fontPath: null, reason: "not_found" };
-  try {
-    doc.registerFont("CZ", p);
-    doc.font("CZ");
-    return { ok: true, fontPath: p, reason: "ok" };
-  } catch (e) {
-    return { ok: false, fontPath: p, reason: `load_failed_${e?.message || "unknown"}` };
-  }
-}
-
-function typeLabel(t) {
-  switch (t) {
-    case "fire": return "požár";
-    case "traffic": return "nehoda";
-    case "tech": return "technická";
-    case "rescue": return "záchrana";
-    case "false_alarm": return "planý poplach";
-    default: return "jiné";
-  }
-}
-
-// ---------------- ROUTES ----------------
-
-// ingest (data z ESP)
-app.post("/api/ingest", requireKey, async (req, res) => {
-  try {
-    const { source, items } = req.body || {};
-    if (!Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ ok: false, error: "items missing" });
-    }
-
-    let accepted = 0;
-    let updatedClosed = 0;
-    let geocoded = 0;
-
-    for (const it of items) {
-      if (!it?.id || !it?.title || !it?.link) continue;
-
-      const eventType = it.eventType || classifyType(it.title);
-      const desc = it.descriptionRaw || it.descRaw || it.description || "";
-      const times = parseTimesFromDescription(desc);
-
-      // pubDate (RFC822) -> ISO (uložíme jako timestamptz v DB)
-      const pubTsIso = (() => {
-        if (!it.pubDate) return null;
-        const d = new Date(it.pubDate);
-        if (Number.isNaN(d.getTime())) return null;
-        return d.toISOString();
-      })();
-
-      const durationMin =
-        Number.isFinite(it.durationMin)
-          ? it.durationMin
-          : await computeDurationMin(
-              it.id,
-              it.startTimeIso || times.startIso,
-              it.endTimeIso || times.endIso,
-              null,
-              pubTsIso
-            );
-
-      const placeText = it.placeText || null;
-      const cityFromDesc = extractCityFromDescription(desc);
-      const cityFromTitle = extractCityFromTitle(it.title);
-
-      const cityText =
-        it.cityText ||
-        cityFromDesc ||
-        (!placeText ? cityFromTitle : (isDistrictPlace(placeText) ? cityFromTitle : placeText)) ||
-        null;
-
-      const ev = {
-        id: it.id,
-        title: it.title,
-        link: it.link,
-        pubDate: it.pubDate || null,
-        pubTs: pubTsIso,
-        placeText,
-        cityText,
-        statusText: it.statusText || null,
-        eventType,
-        descriptionRaw: desc || null,
-        startTimeIso: it.startTimeIso || times.startIso || null,
-        endTimeIso: it.endTimeIso || times.endIso || null,
-        durationMin,
-        isClosed: !!times.isClosed
-      };
-
-      await upsertEvent(ev);
-      accepted++;
-
-      if (ev.isClosed) updatedClosed++;
-
-      const geoQuery = ev.cityText || ev.placeText;
-      if (geoQuery) {
-        const g = await geocodePlace(geoQuery);
-        if (g) {
-          await updateEventCoords(ev.id, g.lat, g.lon);
-          geocoded++;
-        }
-      }
-    }
-
-    res.json({
-      ok: true,
-      source: source || "unknown",
-      accepted,
-      closed_seen_in_batch: updatedClosed,
-      geocoded
-    });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ ok: false, error: "server error" });
-  }
-});
-
-// events (filters) + backfill coords + backfill duration
-app.get("/api/events", async (req, res) => {
-  const limit = Math.min(Number(req.query.limit || 400), 2000);
-  const filters = parseFilters(req);
-
-  const rows = await getEventsFiltered(filters, limit);
-
-  const fixedCoords = await backfillCoords(rows, 8);
-  const fixedDur = await backfillDurations(rows, 80);
-
-  res.json({ ok: true, filters, backfilled_coords: fixedCoords, backfilled_durations: fixedDur, items: rows });
-});
-
-// stats (filters)
-app.get("/api/stats", async (req, res) => {
-  const filters = parseFilters(req);
-  const stats = await getStatsFiltered(filters);
-  res.json({ ok: true, filters, ...stats });
-});
-
-// export CSV (nejdřív backfill duration, aby export měl vše)
-app.get("/api/export.csv", async (req, res) => {
-  const filters = parseFilters(req);
-  const limit = Math.min(Number(req.query.limit || 2000), 5000);
-  const rows = await getEventsFiltered(filters, limit);
-
-  await backfillDurations(rows, 500);
-
-  res.setHeader("Content-Type", "text/csv; charset=utf-8");
-  res.setHeader("Content-Disposition", `attachment; filename="jpo_vyjezdy_export.csv"`);
-
-  const csvEscape = (v) => {
-    const s = String(v ?? "");
-    if (/[",\n\r;]/.test(s)) return `"${s.replaceAll('"', '""')}"`;
-    return s;
-  };
-
-  const formatDateForCsv = (v) => {
-    if (!v) return "";
-    const d = new Date(v);
-    if (Number.isNaN(d.getTime())) return String(v);
-    return d.toISOString();
-  };
-
-  const header = [
-    "time_iso",
-    "state",
-    "type",
-    "title",
-    "city",
-    "place_text",
-    "status_text",
-    "duration_min",
-    "link"
-  ].join(";");
-
-  const lines = rows.map(r => {
-    const timeIso = formatDateForCsv(r.pub_ts || r.pub_date || r.created_at);
-    const state = r.is_closed ? "UKONCENO" : "AKTIVNI";
-    const typ = typeLabel(r.event_type || "other");
-    return [
-      csvEscape(timeIso),
-      csvEscape(state),
-      csvEscape(typ),
-      csvEscape(r.title || ""),
-      csvEscape(r.city_text || ""),
-      csvEscape(r.place_text || ""),
-      csvEscape(r.status_text || ""),
-      csvEscape(Number.isFinite(r.duration_min) ? r.duration_min : ""),
-      csvEscape(r.link || "")
-    ].join(";");
-  });
-
-  res.send([header, ...lines].join("\n"));
-});
-
-// export PDF (backfill duration + jednoduché stránkování podle výšky řádku)
-app.get("/api/export.pdf", async (req, res) => {
-  const filters = parseFilters(req);
-  const limit = Math.min(Number(req.query.limit || 800), 2000);
-  const rows = await getEventsFiltered(filters, limit);
-
-  await backfillDurations(rows, 500);
-
-  res.setHeader("Content-Type", "application/pdf");
-  res.setHeader("Content-Disposition", `attachment; filename="jpo_vyjezdy_export.pdf"`);
-
-  const doc = new PDFDocument({ size: "A4", layout: "landscape", margin: 24 });
-  doc.pipe(res);
-
-  const font = tryApplyPdfFont(doc);
-
-  const now = new Date();
-  doc.fontSize(18).fillColor("#000").text("JPO výjezdy – export");
-  doc.moveDown(0.2);
-  doc.fontSize(10).fillColor("#333").text(`Vygenerováno: ${now.toLocaleString("cs-CZ")}`);
-  doc.moveDown(0.4);
-
-  if (!font.ok) {
-    doc.fontSize(9).fillColor("#a33").text(`Pozn.: font nelze použít (${font.reason})`);
-    doc.moveDown(0.3);
-  }
-
-  const col = { time: 88, state: 62, type: 78, city: 170, dur: 70, title: 330 };
-  const startX = doc.x;
-  let y = doc.y;
-  const tableWidth = col.time + col.state + col.type + col.city + col.dur + col.title;
-
-  function drawHeader() {
-    doc.fontSize(10).fillColor("#000");
-    doc.text("Čas", startX, y, { width: col.time });
-    doc.text("Stav", startX + col.time, y, { width: col.state });
-    doc.text("Typ", startX + col.time + col.state, y, { width: col.type });
-    doc.text("Město", startX + col.time + col.state + col.type, y, { width: col.city });
-    doc.text("Délka", startX + col.time + col.state + col.type + col.city, y, { width: col.dur });
-    doc.text("Název", startX + col.time + col.state + col.type + col.city + col.dur, y, { width: col.title });
-    y += 14;
-    doc.moveTo(startX, y).lineTo(startX + tableWidth, y).strokeColor("#999").stroke();
-    y += 6;
-  }
-
-  function rowHeight(title) {
-    const base = 14;
-    const extra = Math.max(0, Math.ceil((String(title || "").length - 60) / 55)) * 10;
-    return base + extra;
-  }
-
-  function formatTsForPdf(v) {
-    if (!v) return "";
-    const d = new Date(v);
-    if (Number.isNaN(d.getTime())) return String(v);
-    return d.toLocaleString("cs-CZ");
-  }
-
-  function formatDur(min) {
-    if (!Number.isFinite(min) || min <= 0) return "—";
-    const h = Math.floor(min / 60);
-    const m = min % 60;
-    if (h <= 0) return `${m} min`;
-    return `${h} h ${m} min`;
-  }
-
-  drawHeader();
-
-  doc.fontSize(9).fillColor("#000");
-  for (const r of rows) {
-    const h = rowHeight(r.title);
-    const bottomLimit = doc.page.height - doc.page.margins.bottom;
-
-    if (y + h > bottomLimit) {
-      doc.addPage();
-      y = doc.y;
-      drawHeader();
-      doc.fontSize(9).fillColor("#000");
-    }
-
-    const timeStr = formatTsForPdf(r.pub_ts || r.pub_date || r.created_at);
-    const stateStr = r.is_closed ? "UKONČENO" : "AKTIVNÍ";
-    const typeStr = typeLabel(r.event_type || "other");
-    const cityStr = r.city_text || r.place_text || "";
-    const durStr = formatDur(r.duration_min);
-
-    doc.text(timeStr, startX, y, { width: col.time });
-    doc.text(stateStr, startX + col.time, y, { width: col.state });
-    doc.text(typeStr, startX + col.time + col.state, y, { width: col.type });
-    doc.text(cityStr, startX + col.time + col.state + col.type, y, { width: col.city });
-    doc.text(durStr, startX + col.time + col.state + col.type + col.city, y, { width: col.dur });
-    doc.text(r.title || "", startX + col.time + col.state + col.type + col.city + col.dur, y, { width: col.title });
-
-    y += h;
-    doc.moveTo(startX, y).lineTo(startX + tableWidth, y).strokeColor("#e0e0e0").stroke();
-    y += 3;
-  }
-
-  doc.end();
-});
-
-// maintenance: clear bad coords outside CZ box (manual button on UI)
-app.post("/api/maintenance/clear-outside-cz", requireKey, async (req, res) => {
-  try {
-    const bad = await getEventsOutsideCz(200);
-    let cleared = 0;
-
-    for (const ev of bad) {
-      await clearEventCoords(ev.id);
-      cleared++;
-    }
-    res.json({ ok: true, cleared });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ ok: false, error: "server error" });
-  }
-});
-
-// maintenance: clear cached geocodes for out-of-cz events (manual button on UI)
-app.post("/api/maintenance/clear-cache-outside-cz", requireKey, async (req, res) => {
-  try {
-    const bad = await getEventsOutsideCz(200);
-    let cacheDeleted = 0;
-
-    for (const ev of bad) {
-      const q = (ev.city_text && String(ev.city_text).trim()) ? ev.city_text : ev.place_text;
-      if (!q) continue;
-
-      await deleteCachedGeocode(q);
-      cacheDeleted++;
-    }
-    res.json({ ok: true, cache_deleted: cacheDeleted });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ ok: false, error: "server error" });
-  }
-});
-
+// health
 app.get("/health", (req, res) => res.send("OK"));
 
 const port = process.env.PORT || 3000;
+
+// ✅ init + jednorázové vyčištění špatných délek (řeší 652h apod.)
 await initDb();
+try {
+  const r = await clearBadDurations();
+  console.log("[db] clearBadDurations:", r);
+} catch (e) {
+  console.warn("[db] clearBadDurations failed:", e?.message || e);
+}
+
 app.listen(port, () => console.log(`listening on ${port}`));

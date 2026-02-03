@@ -1,10 +1,8 @@
 import pg from "pg";
 
-const { Pool } = pg;
-
-const pool = new Pool({
+export const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.PGSSLMODE === "disable" ? false : { rejectUnauthorized: false }
+  ssl: process.env.DATABASE_URL?.includes("railway") ? { rejectUnauthorized: false } : false
 });
 
 async function colExists(table, col) {
@@ -63,6 +61,7 @@ export async function initDb() {
 
   // migrations if you started from older schema
   const adds = [
+    ["events", "pub_ts", "TIMESTAMPTZ"],
     ["events", "city_text", "TEXT"],
     ["events", "event_type", "TEXT"],
     ["events", "description_raw", "TEXT"],
@@ -70,7 +69,6 @@ export async function initDb() {
     ["events", "end_time_iso", "TEXT"],
     ["events", "duration_min", "INTEGER"],
     ["events", "is_closed", "BOOLEAN"],
-    ["events", "pub_ts", "TIMESTAMPTZ"],
     ["events", "first_seen_at", "TIMESTAMPTZ"],
     ["events", "last_seen_at", "TIMESTAMPTZ"],
     ["events", "lat", "DOUBLE PRECISION"],
@@ -91,10 +89,23 @@ export async function initDb() {
     UPDATE events
     SET is_closed = COALESCE(is_closed, FALSE),
         first_seen_at = COALESCE(first_seen_at, created_at, NOW()),
-        last_seen_at = COALESCE(last_seen_at, NOW()),
-        pub_ts = COALESCE(pub_ts, NULL)
-    WHERE is_closed IS NULL OR first_seen_at IS NULL OR last_seen_at IS NULL OR pub_ts IS NULL;
+        last_seen_at = COALESCE(last_seen_at, NOW())
+    WHERE is_closed IS NULL OR first_seen_at IS NULL OR last_seen_at IS NULL;
   `);
+}
+
+/**
+ * ✅ DŮLEŽITÉ: vyčistí špatné délky (typicky 38 000 min, 652h, apod.)
+ * - necháváme jen rozumný rozsah 1..720 min (max 12h)
+ */
+export async function clearBadDurations() {
+  const res = await pool.query(`
+    UPDATE events
+    SET duration_min = NULL
+    WHERE duration_min IS NOT NULL
+      AND (duration_min < 0 OR duration_min > 720)
+  `);
+  return { cleared: res.rowCount };
 }
 
 export async function upsertEvent(ev) {
@@ -124,8 +135,7 @@ export async function upsertEvent(ev) {
       start_time_iso = COALESCE(EXCLUDED.start_time_iso, events.start_time_iso),
       end_time_iso   = COALESCE(EXCLUDED.end_time_iso,   events.end_time_iso),
 
-      -- DÉLKA: nikdy nepřepisuj už rozumnou hodnotu. Pokud se událost právě uzavřela,
-      -- dopočítej délku z FIRST_SEEN -> PUB_TS (RSS update čas). Tím obejdeme "administrativní" ukončení.
+      -- ✅ DÉLKA: držíme rozumný rozsah, a pokud přechod open->closed, tak počítáme z first_seen_at -> pub_ts
       duration_min = CASE
         WHEN events.duration_min IS NOT NULL AND events.duration_min BETWEEN 1 AND 720 THEN events.duration_min
         WHEN (events.is_closed = FALSE AND EXCLUDED.is_closed = TRUE)
@@ -141,7 +151,7 @@ export async function upsertEvent(ev) {
         ELSE COALESCE(EXCLUDED.duration_min, events.duration_min)
       END,
 
-      is_closed      = (events.is_closed OR EXCLUDED.is_closed),
+      is_closed = (events.is_closed OR EXCLUDED.is_closed),
 
       last_seen_at = NOW()
     `,
@@ -244,7 +254,6 @@ export async function getEventsFiltered(filters, limit = 400) {
   }
 
   if (city) {
-    // hledáme v city_text primárně, fallback i v place_text
     where.push(`(COALESCE(city_text,'') ILIKE $${i} OR COALESCE(place_text,'') ILIKE $${i})`);
     params.push(`%${city}%`);
     i++;
@@ -348,7 +357,7 @@ export async function getStatsFiltered(filters) {
 
   const longest = await pool.query(
     `
-    SELECT id, title, link, COALESCE(NULLIF(city_text,''), place_text) AS city, duration_min, start_time_iso, end_time_iso, created_at
+    SELECT id, title, link, COALESCE(NULLIF(city_text,''), place_text) AS city, duration_min, created_at
     FROM events
     ${whereSql} AND duration_min IS NOT NULL AND duration_min > 0
     ORDER BY duration_min DESC
