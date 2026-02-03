@@ -18,13 +18,15 @@ async function colExists(table, col) {
   return res.rowCount > 0;
 }
 
-// Heuristika: pokud je duration_min > 20 000, je to téměř jistě uložené v sekundách.
-// Přepočet: sekundy -> minuty.
+/**
+ * ✅ FIX: duration_min musí být v minutách.
+ * Pokud je hodnota extrémně velká, bereme ji jako sekundy a převedeme /60.
+ */
 function normalizeDurationMin(v) {
   if (!Number.isFinite(v)) return null;
-  const n = Math.round(v);
+  let n = Math.round(v);
   if (n <= 0) return null;
-  if (n > 20000) return Math.round(n / 60);
+  if (n > 20000) n = Math.round(n / 60);
   return n;
 }
 
@@ -34,8 +36,12 @@ export async function initDb() {
       id TEXT PRIMARY KEY,
       title TEXT NOT NULL,
       link TEXT NOT NULL,
+
       pub_date TEXT,
+
       place_text TEXT,
+      city_text TEXT,
+
       status_text TEXT,
       event_type TEXT,
 
@@ -51,7 +57,6 @@ export async function initDb() {
 
       first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       last_seen_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
@@ -65,8 +70,8 @@ export async function initDb() {
     );
   `);
 
-  // migrations if you started from older schema
   const adds = [
+    ["events", "city_text", "TEXT"],
     ["events", "event_type", "TEXT"],
     ["events", "description_raw", "TEXT"],
     ["events", "start_time_iso", "TEXT"],
@@ -74,7 +79,9 @@ export async function initDb() {
     ["events", "duration_min", "INTEGER"],
     ["events", "is_closed", "BOOLEAN"],
     ["events", "first_seen_at", "TIMESTAMPTZ"],
-    ["events", "last_seen_at", "TIMESTAMPTZ"]
+    ["events", "last_seen_at", "TIMESTAMPTZ"],
+    ["events", "lat", "DOUBLE PRECISION"],
+    ["events", "lon", "DOUBLE PRECISION"]
   ];
 
   for (const [t, c, typ] of adds) {
@@ -86,7 +93,6 @@ export async function initDb() {
     }
   }
 
-  // ensure defaults for new columns if migrated
   await pool.query(`
     UPDATE events
     SET is_closed = COALESCE(is_closed, FALSE),
@@ -95,7 +101,7 @@ export async function initDb() {
     WHERE is_closed IS NULL OR first_seen_at IS NULL OR last_seen_at IS NULL;
   `);
 
-  // Jednorázová oprava historických špatných hodnot (sekundy uložené do duration_min)
+  // ✅ Jednorázová oprava historických špatných hodnot (sekundy uložené do duration_min)
   await pool.query(`
     UPDATE events
     SET duration_min = ROUND(duration_min / 60.0)
@@ -109,24 +115,28 @@ export async function upsertEvent(ev) {
   await pool.query(
     `
     INSERT INTO events (
-      id, title, link, pub_date, place_text, status_text, event_type,
+      id, title, link, pub_date,
+      place_text, city_text, status_text, event_type,
       description_raw,
       start_time_iso, end_time_iso, duration_min, is_closed,
       first_seen_at, last_seen_at
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, NOW(), NOW())
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, NOW(), NOW())
     ON CONFLICT (id) DO UPDATE SET
       title = EXCLUDED.title,
       link = EXCLUDED.link,
       pub_date = EXCLUDED.pub_date,
-      place_text = EXCLUDED.place_text,
-      status_text = EXCLUDED.status_text,
-      event_type = EXCLUDED.event_type,
+
+      place_text = COALESCE(EXCLUDED.place_text, events.place_text),
+      city_text  = COALESCE(EXCLUDED.city_text,  events.city_text),
+
+      status_text = COALESCE(EXCLUDED.status_text, events.status_text),
+      event_type  = COALESCE(EXCLUDED.event_type, events.event_type),
       description_raw = COALESCE(EXCLUDED.description_raw, events.description_raw),
 
       start_time_iso = COALESCE(EXCLUDED.start_time_iso, events.start_time_iso),
-      end_time_iso   = COALESCE(EXCLUDED.end_time_iso, events.end_time_iso),
-      duration_min   = COALESCE(EXCLUDED.duration_min, events.duration_min),
+      end_time_iso   = COALESCE(EXCLUDED.end_time_iso,   events.end_time_iso),
+      duration_min   = COALESCE(EXCLUDED.duration_min,   events.duration_min),
       is_closed      = (events.is_closed OR EXCLUDED.is_closed),
 
       last_seen_at = NOW()
@@ -137,6 +147,7 @@ export async function upsertEvent(ev) {
       ev.link,
       ev.pubDate || null,
       ev.placeText || null,
+      ev.cityText || null,
       ev.statusText || null,
       ev.eventType || null,
       ev.descriptionRaw || null,
@@ -152,73 +163,13 @@ export async function updateEventCoords(id, lat, lon) {
   await pool.query(`UPDATE events SET lat=$2, lon=$3 WHERE id=$1`, [id, lat, lon]);
 }
 
-export async function getEvents(limit = 300) {
-  // Normalizace i při čtení (pojistka)
-  const res = await pool.query(
-    `
-    SELECT
-      *,
-      CASE
-        WHEN duration_min IS NULL THEN NULL
-        WHEN duration_min > 20000 THEN ROUND(duration_min / 60.0)
-        ELSE duration_min
-      END AS duration_min
-    FROM events
-    ORDER BY created_at DESC
-    LIMIT $1
-    `,
-    [limit]
-  );
-  return res.rows;
+export async function clearEventCoords(id) {
+  await pool.query(`UPDATE events SET lat=NULL, lon=NULL WHERE id=$1`, [id]);
 }
 
-export async function getStats() {
-  const byDay = await pool.query(`
-    SELECT to_char(created_at::date, 'YYYY-MM-DD') AS day, COUNT(*)::int AS count
-    FROM events
-    WHERE created_at >= NOW() - INTERVAL '30 days'
-    GROUP BY day
-    ORDER BY day ASC;
-  `);
-
-  const topCities = await pool.query(`
-    SELECT COALESCE(place_text,'(neznamé)') AS city, COUNT(*)::int AS count
-    FROM events
-    GROUP BY city
-    ORDER BY count DESC
-    LIMIT 10;
-  `);
-
-  const bestCity = topCities.rows[0] || null;
-
-  const longest = await pool.query(`
-    SELECT
-      id, title, link, place_text, status_text,
-      CASE
-        WHEN duration_min IS NULL THEN NULL
-        WHEN duration_min > 20000 THEN ROUND(duration_min / 60.0)
-        ELSE duration_min
-      END AS duration_min,
-      start_time_iso, end_time_iso, created_at
-    FROM events
-    WHERE duration_min IS NOT NULL AND duration_min > 0
-    ORDER BY duration_min DESC
-    LIMIT 10;
-  `);
-
-  const openCount = await pool.query(`
-    SELECT COUNT(*)::int AS count
-    FROM events
-    WHERE is_closed = FALSE
-  `);
-
-  return {
-    byDay: byDay.rows,
-    bestCity,
-    topCities: topCities.rows,
-    longest: longest.rows,
-    openCount: openCount.rows[0]?.count ?? 0
-  };
+export async function updateEventDuration(id, durationMin) {
+  const dur = normalizeDurationMin(durationMin);
+  await pool.query(`UPDATE events SET duration_min=$2 WHERE id=$1`, [id, dur]);
 }
 
 export async function getCachedGeocode(placeText) {
@@ -243,7 +194,200 @@ export async function setCachedGeocode(placeText, lat, lon) {
   );
 }
 
+export async function deleteCachedGeocode(placeText) {
+  await pool.query(`DELETE FROM geocode_cache WHERE place_text=$1`, [placeText]);
+}
+
 export async function getEventFirstSeen(id) {
   const res = await pool.query(`SELECT first_seen_at FROM events WHERE id=$1`, [id]);
   return res.rows[0]?.first_seen_at || null;
+}
+
+export async function getEventsOutsideCz(limit = 200) {
+  const res = await pool.query(
+    `
+    SELECT id, city_text, place_text, lat, lon
+    FROM events
+    WHERE lat IS NOT NULL AND lon IS NOT NULL AND (
+      lat < 48.55 OR lat > 51.06 OR lon < 12.09 OR lon > 18.87
+    )
+    ORDER BY last_seen_at DESC
+    LIMIT $1
+    `,
+    [limit]
+  );
+  return res.rows;
+}
+
+// --- FILTERED EVENTS (mapa/tabulka/export) ---
+export async function getEventsFiltered(filters, limit = 400) {
+  const types = Array.isArray(filters?.types) ? filters.types : [];
+  const city = String(filters?.city || "").trim();
+  const status = String(filters?.status || "all").toLowerCase();
+
+  const date = String(filters?.date || "").trim(); // YYYY-MM-DD
+  const spanDays = Number.isFinite(filters?.spanDays)
+    ? Math.max(1, Math.min(3660, Math.round(filters.spanDays)))
+    : null;
+  const recentDays = Number.isFinite(filters?.recentDays)
+    ? Math.max(1, Math.min(3660, Math.round(filters.recentDays)))
+    : null;
+
+  const where = [];
+  const params = [];
+  let i = 1;
+
+  if (types.length) {
+    where.push(`event_type = ANY($${i}::text[])`);
+    params.push(types);
+    i++;
+  }
+
+  if (city) {
+    where.push(`(COALESCE(city_text,'') ILIKE $${i} OR COALESCE(place_text,'') ILIKE $${i})`);
+    params.push(`%${city}%`);
+    i++;
+  }
+
+  if (status === "open") where.push(`is_closed = FALSE`);
+  if (status === "closed") where.push(`is_closed = TRUE`);
+
+  if (date && /^\d{4}-\d{2}-\d{2}$/.test(date) && spanDays) {
+    where.push(
+      `(created_at AT TIME ZONE 'Europe/Prague') >= ($${i}::date)::timestamp
+       AND (created_at AT TIME ZONE 'Europe/Prague') <  (($${i}::date)::timestamp + make_interval(days => $${i + 1}))`
+    );
+    params.push(date);
+    params.push(spanDays);
+    i += 2;
+  } else if (recentDays) {
+    where.push(`created_at >= NOW() - make_interval(days => $${i})`);
+    params.push(recentDays);
+    i++;
+  }
+
+  const sql =
+    `
+    SELECT
+      id, title, link, pub_date,
+      place_text, city_text,
+      status_text, event_type,
+      description_raw,
+      start_time_iso, end_time_iso,
+      CASE
+        WHEN duration_min IS NULL THEN NULL
+        WHEN duration_min > 20000 THEN ROUND(duration_min / 60.0)
+        ELSE duration_min
+      END AS duration_min,
+      is_closed,
+      lat, lon,
+      first_seen_at, last_seen_at, created_at
+    FROM events
+    ${where.length ? "WHERE " + where.join(" AND ") : ""}
+    ORDER BY COALESCE(pub_date, created_at::text) DESC, created_at DESC
+    LIMIT $${i}
+    `;
+
+  params.push(limit);
+
+  const res = await pool.query(sql, params);
+  return res.rows;
+}
+
+// ✅ STATISTIKY: vždy posledních 30 dnů + filtry Typ/Město/Stav
+export async function getStatsFiltered(filters) {
+  const types = Array.isArray(filters?.types) ? filters.types : [];
+  const city = String(filters?.city || "").trim();
+  const status = String(filters?.status || "all").toLowerCase();
+
+  const where = [`created_at >= NOW() - INTERVAL '30 days'`];
+  const params = [];
+  let i = 1;
+
+  if (types.length) {
+    where.push(`event_type = ANY($${i}::text[])`);
+    params.push(types);
+    i++;
+  }
+
+  if (city) {
+    where.push(`(COALESCE(city_text,'') ILIKE $${i} OR COALESCE(place_text,'') ILIKE $${i})`);
+    params.push(`%${city}%`);
+    i++;
+  }
+
+  if (status === "open") where.push(`is_closed = FALSE`);
+  if (status === "closed") where.push(`is_closed = TRUE`);
+
+  const whereSql = `WHERE ${where.join(" AND ")}`;
+
+  const byDay = await pool.query(
+    `
+    SELECT to_char(created_at::date, 'YYYY-MM-DD') AS day, COUNT(*)::int AS count
+    FROM events
+    ${whereSql}
+    GROUP BY day
+    ORDER BY day ASC;
+    `,
+    params
+  );
+
+  const byType = await pool.query(
+    `
+    SELECT COALESCE(event_type,'other') AS type, COUNT(*)::int AS count
+    FROM events
+    ${whereSql}
+    GROUP BY type
+    ORDER BY count DESC;
+    `,
+    params
+  );
+
+  const topCities = await pool.query(
+    `
+    SELECT COALESCE(NULLIF(city_text,''), NULLIF(place_text,''), '(neznámé)') AS city, COUNT(*)::int AS count
+    FROM events
+    ${whereSql}
+    GROUP BY city
+    ORDER BY count DESC
+    LIMIT 15;
+    `,
+    params
+  );
+
+  const openVsClosed = await pool.query(
+    `
+    SELECT
+      SUM(CASE WHEN is_closed THEN 1 ELSE 0 END)::int AS closed,
+      SUM(CASE WHEN NOT is_closed THEN 1 ELSE 0 END)::int AS open
+    FROM events
+    ${whereSql}
+    `,
+    params
+  );
+
+  const longest = await pool.query(
+    `
+    SELECT id, title, link, COALESCE(NULLIF(city_text,''), place_text) AS city,
+      CASE
+        WHEN duration_min IS NULL THEN NULL
+        WHEN duration_min > 20000 THEN ROUND(duration_min / 60.0)
+        ELSE duration_min
+      END AS duration_min,
+      start_time_iso, end_time_iso, created_at
+    FROM events
+    ${whereSql} AND duration_min IS NOT NULL AND duration_min > 0
+    ORDER BY duration_min DESC
+    LIMIT 10;
+    `,
+    params
+  );
+
+  return {
+    byDay: byDay.rows,
+    byType: byType.rows,
+    topCities: topCities.rows,
+    openVsClosed: openVsClosed.rows[0] || { open: 0, closed: 0 },
+    longest: longest.rows
+  };
 }
