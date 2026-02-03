@@ -58,6 +58,7 @@ export async function initDb() {
     );
   `);
 
+  // migrations if you started from older schema
   const adds = [
     ["events", "city_text", "TEXT"],
     ["events", "event_type", "TEXT"],
@@ -81,6 +82,7 @@ export async function initDb() {
     }
   }
 
+  // ensure defaults for new columns if migrated
   await pool.query(`
     UPDATE events
     SET is_closed = COALESCE(is_closed, FALSE),
@@ -206,25 +208,10 @@ export async function getEventsFiltered(filters, limit = 400) {
   const types = Array.isArray(filters?.types) ? filters.types : [];
   const city = String(filters?.city || "").trim();
   const status = String(filters?.status || "all").toLowerCase();
-  const day = String(filters?.day || "today").trim().toLowerCase();
 
   const where = [];
   const params = [];
   let i = 1;
-
-  // ✅ Day filter (map + tabulka): default "today"
-  // Supported: today | yesterday | all | YYYY-MM-DD
-  if (day && day !== "all") {
-    if (day === "today") {
-      where.push(`(created_at AT TIME ZONE 'Europe/Prague')::date = (NOW() AT TIME ZONE 'Europe/Prague')::date`);
-    } else if (day === "yesterday") {
-      where.push(`(created_at AT TIME ZONE 'Europe/Prague')::date = ((NOW() AT TIME ZONE 'Europe/Prague')::date - 1)`);
-    } else if (/^\d{4}-\d{2}-\d{2}$/.test(day)) {
-      where.push(`(created_at AT TIME ZONE 'Europe/Prague')::date = $${i}::date`);
-      params.push(day);
-      i++;
-    }
-  }
 
   if (types.length) {
     where.push(`event_type = ANY($${i}::text[])`);
@@ -233,6 +220,7 @@ export async function getEventsFiltered(filters, limit = 400) {
   }
 
   if (city) {
+    // hledáme v city_text primárně, fallback i v place_text
     where.push(`(COALESCE(city_text,'') ILIKE $${i} OR COALESCE(place_text,'') ILIKE $${i})`);
     params.push(`%${city}%`);
     i++;
@@ -334,24 +322,26 @@ export async function getStatsFiltered(filters) {
     params
   );
 
+  const longest = await pool.query(
+    `
+    SELECT id, title, link, COALESCE(NULLIF(city_text,''), place_text) AS city, duration_min, start_time_iso, end_time_iso, created_at
+    FROM events
+    ${whereSql} AND duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= 720
+    ORDER BY duration_min DESC
+    LIMIT 10;
+    `,
+    params
+  );
+
+  const oc = openVsClosed.rows[0] || { open: 0, closed: 0 };
+
+  // Frontend (app.js) expects: openCount, closedCount, byDay, topCities, longest
   return {
     byDay: byDay.rows,
     byType: byType.rows,
     topCities: topCities.rows,
-    openVsClosed: openVsClosed.rows[0] || { open: 0, closed: 0 }
+    longest: longest.rows,
+    openCount: oc.open || 0,
+    closedCount: oc.closed || 0
   };
-}
-
-export async function clearBadDurations(maxMinutes = 720) {
-  const max = Number.isFinite(Number(maxMinutes)) ? Math.round(Number(maxMinutes)) : 720;
-  const res = await pool.query(
-    `
-    UPDATE events
-    SET duration_min = NULL
-    WHERE duration_min IS NOT NULL
-      AND (duration_min < 0 OR duration_min > $1)
-    `,
-    [max]
-  );
-  return { updated: res.rowCount, maxMinutes: max };
 }
