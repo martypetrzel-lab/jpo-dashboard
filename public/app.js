@@ -57,9 +57,30 @@ function normalizeDurationMin(v) {
   return n;
 }
 
-function formatDuration(min) {
-  const mNorm = normalizeDurationMin(min);
+/**
+ * ✅ OPRAVA NESMYSLŮ:
+ * Délku zobrazíme jen pokud to dává smysl vůči časům.
+ * - pokud je zásah ukončený, ale chybí start/end, raději zobrazíme "—"
+ * - tím se zbavíš "10 hodin" vzniklých z fallbacků typu first_seen_at
+ */
+function formatDurationForEvent(it) {
+  if (!it) return "—";
+
+  const raw = Number(it.duration_min);
+  const mNorm = normalizeDurationMin(raw);
   if (!Number.isFinite(mNorm) || mNorm <= 0) return "—";
+
+  const isClosed = !!it.is_closed;
+  const hasStart = !!it.start_time_iso;
+  const hasEnd = !!it.end_time_iso;
+
+  // pokud je ukončené, ale nemáme časové hranice, nezobrazujeme délku
+  // (to je hlavní fix proti nesmyslům)
+  if (isClosed && !(hasStart && hasEnd)) return "—";
+
+  // extra ochrana: pokud je duration extrémní (např. > 6 hodin), a časové údaje nejsou komplet,
+  // tak to raději skryjeme. (typicky "ukončeno" bez startu)
+  if (mNorm > 360 && !(hasStart && hasEnd)) return "—";
 
   const h = Math.floor(mNorm / 60);
   const m = mNorm % 60;
@@ -88,7 +109,7 @@ function renderTable(items) {
       <td>${escapeHtml(it.title || "")}</td>
       <td>${escapeHtml(it.city_text || it.place_text || "")}</td>
       <td>${escapeHtml(state)}</td>
-      <td>${escapeHtml(formatDuration(it.duration_min))}</td>
+      <td>${escapeHtml(formatDurationForEvent(it))}</td>
       <td>${it.link ? `<a href="${it.link}" target="_blank" rel="noopener">otevřít</a>` : ""}</td>
     `;
     tbody.appendChild(tr);
@@ -122,7 +143,7 @@ function renderMap(items) {
           <div><b>Stav:</b> ${escapeHtml(state)}</div>
           <div><b>Město:</b> ${escapeHtml(it.city_text || it.place_text || "")}</div>
           <div><b>Čas:</b> ${escapeHtml(formatDate(it.pub_date || it.created_at))}</div>
-          <div><b>Délka:</b> ${escapeHtml(formatDuration(it.duration_min))}</div>
+          <div><b>Délka:</b> ${escapeHtml(formatDurationForEvent(it))}</div>
           ${it.link ? `<div style="margin-top:8px"><a href="${it.link}" target="_blank" rel="noopener">Detail</a></div>` : ""}
         </div>
       `;
@@ -186,7 +207,7 @@ function renderLongest(rows) {
         <div class="meta">#${idx + 1}</div>
         <div class="name">${escapeHtml(r.title || "")}</div>
       </div>
-      <div class="meta">${escapeHtml(formatDuration(r.duration_min))}</div>
+      <div class="meta">${escapeHtml(formatDurationForEvent(r))}</div>
     `;
     if (r.link) {
       div.addEventListener("click", () => window.open(r.link, "_blank", "noopener"));
@@ -252,6 +273,12 @@ function buildQueryForStats(filters) {
   return qs.toString();
 }
 
+// ✅ mobil-friendly limit (500 na mobilu často způsobí “nekonečné načítání”)
+function getSafeLimit() {
+  const isMobile = window.matchMedia && window.matchMedia("(max-width: 820px)").matches;
+  return isMobile ? 200 : 500;
+}
+
 async function loadAll() {
   const filters = getFiltersFromUi();
 
@@ -260,8 +287,10 @@ async function loadAll() {
 
   setStatus("načítám…", true);
 
+  const limit = getSafeLimit();
+
   const [eventsRes, statsRes] = await Promise.all([
-    fetch(`/api/events?limit=500${qEvents ? `&${qEvents}` : ""}`),
+    fetch(`/api/events?limit=${limit}${qEvents ? `&${qEvents}` : ""}`),
     fetch(`/api/stats${qStats ? `?${qStats}` : ""}`)
   ]);
 
