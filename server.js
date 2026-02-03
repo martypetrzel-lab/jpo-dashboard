@@ -16,7 +16,8 @@ import {
   deleteCachedGeocode,
   getEventsOutsideCz,
   getEventFirstSeen,
-  updateEventDuration
+  updateEventDuration,
+  clearExtremeDurations
 } from "./db.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -24,14 +25,19 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
-app.use(express.static("public"));
+
+// statika – ať funguje jak při "public/", tak i když je FE v rootu
+const publicDir = path.join(__dirname, "public");
+if (fs.existsSync(publicDir)) app.use(express.static(publicDir));
+app.use(express.static(__dirname));
 
 const API_KEY = process.env.API_KEY || "";
 const GEOCODE_UA = process.env.GEOCODE_USER_AGENT || "jpo-dashboard/1.7 (contact: missing)";
 
 // ---------------- AUTH ----------------
+// PODPORA: X-API-Key header i ?apikey=... v URL
 function requireKey(req, res, next) {
-  const key = req.header("X-API-Key") || "";
+  const key = String(req.header("X-API-Key") || req.query.apikey || "").trim();
   if (!API_KEY) return res.status(500).json({ ok: false, error: "API_KEY not set on server" });
   if (key !== API_KEY) return res.status(401).json({ ok: false, error: "unauthorized" });
   next();
@@ -241,10 +247,18 @@ function parseFilters(req) {
   const city = String(req.query.city || "").trim();
   const status = String(req.query.status || "all").trim().toLowerCase();
 
+  // den: today | yesterday | all
+  const day = String(req.query.day || "all").trim().toLowerCase();
+  const normDay = ["today", "yesterday", "all"].includes(day) ? day : "all";
+
+  // měsíc: YYYY-MM (pro žebříček měst)
+  const month = String(req.query.month || "").trim();
+  const normMonth = /^\d{4}-\d{2}$/.test(month) ? month : "";
+
   const types = typeQ ? typeQ.split(",").map(s => s.trim()).filter(Boolean) : [];
   const normStatus = ["all", "open", "closed"].includes(status) ? status : "all";
 
-  return { types, city, status: normStatus };
+  return { types, city, status: normStatus, day: normDay, month: normMonth };
 }
 
 // ✅ PRŮBĚŽNÉ DOPOČÍTÁVÁNÍ DÉLKY (a uložení do DB)
@@ -290,24 +304,11 @@ async function backfillCoords(rows, max = 8) {
   return fixed;
 }
 
-// ---------------- PDF FONT (robust minimal) ----------------
+// ---------------- PDF FONT ----------------
 function findFontPath() {
-  // Railway / local může mít assets jinde podle struktury projektu
-  // Zkus několik běžných cest (preferujeme tu, kterou už máš v repu).
-  const candidates = [
-    path.join(__dirname, "assets", "DejaVuSans.ttf"),
-    path.join(__dirname, "public", "assets", "DejaVuSans.ttf"),
-    path.join(process.cwd(), "assets", "DejaVuSans.ttf"),
-    path.join(process.cwd(), "public", "assets", "DejaVuSans.ttf"),
-  ];
-
-  for (const p of candidates) {
-    try {
-      if (fs.existsSync(p)) return p;
-    } catch {
-      // ignore
-    }
-  }
+  // ✅ přesně dle tvé cesty
+  const p = path.join(__dirname, "assets", "DejaVuSans.ttf");
+  if (fs.existsSync(p)) return p;
   return null;
 }
 
@@ -414,27 +415,39 @@ app.post("/api/ingest", requireKey, async (req, res) => {
   }
 });
 
-// events (filters) + backfill coords + backfill duration
+// ✅ EVENTS: map + tabulka -> podle dne (today/yesterday/all)
 app.get("/api/events", async (req, res) => {
-  const limit = Math.min(Number(req.query.limit || 400), 2000);
+  const limit = Math.min(Number(req.query.limit || 500), 2000);
   const filters = parseFilters(req);
 
   const rows = await getEventsFiltered(filters, limit);
 
   const fixedCoords = await backfillCoords(rows, 8);
-  const fixedDur = await backfillDurations(rows, 80);
+  const fixedDur = await backfillDurations(rows, 120);
 
   res.json({ ok: true, filters, backfilled_coords: fixedCoords, backfilled_durations: fixedDur, items: rows });
 });
 
-// stats (filters)
+// ✅ STATS: vždy 30 dní (graf + aktivní/ukončené + nejdelší) + žebříček měst za měsíc
 app.get("/api/stats", async (req, res) => {
   const filters = parseFilters(req);
   const stats = await getStatsFiltered(filters);
   res.json({ ok: true, filters, ...stats });
 });
 
-// export CSV (nejdřív backfill duration, aby export měl vše)
+// ✅ ADMIN: vynulovat extrémní délky (NEmazat události)
+app.get("/api/admin/clear-extreme-durations", requireKey, async (req, res) => {
+  try {
+    const maxMinutes = Math.max(1, Math.min(Number(req.query.maxMinutes || 720), 43200));
+    const changed = await clearExtremeDurations(maxMinutes);
+    res.json({ ok: true, maxMinutes, changed });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok: false, error: "server error" });
+  }
+});
+
+// export CSV (aby fungoval Excel -> BOM)
 app.get("/api/export.csv", async (req, res) => {
   const filters = parseFilters(req);
   const limit = Math.min(Number(req.query.limit || 2000), 5000);
@@ -472,14 +485,14 @@ app.get("/api/export.csv", async (req, res) => {
 
   const lines = rows.map(r => {
     const timeIso = formatDateForCsv(r.pub_date || r.created_at);
-    const state = r.is_closed ? "UKONCENO" : "AKTIVNI";
+    const state = r.is_closed ? "UKONČENO" : "AKTIVNÍ";
     const typ = typeLabel(r.event_type || "other");
     return [
       csvEscape(timeIso),
       csvEscape(state),
       csvEscape(typ),
       csvEscape(r.title || ""),
-      csvEscape(r.city_text || ""),
+      csvEscape(r.city_text || r.place_text || ""),
       csvEscape(r.place_text || ""),
       csvEscape(r.status_text || ""),
       csvEscape(Number.isFinite(r.duration_min) ? r.duration_min : ""),
@@ -487,10 +500,11 @@ app.get("/api/export.csv", async (req, res) => {
     ].join(";");
   });
 
-  res.send([header, ...lines].join("\n"));
+  // BOM na začátek (Excel)
+  res.send("\ufeff" + [header, ...lines].join("\n"));
 });
 
-// export PDF (backfill duration + jednoduché stránkování podle výšky řádku)
+// ✅ export PDF: DejaVuSans + CZ diakritika
 app.get("/api/export.pdf", async (req, res) => {
   const filters = parseFilters(req);
   const limit = Math.min(Number(req.query.limit || 800), 2000);
@@ -510,14 +524,14 @@ app.get("/api/export.pdf", async (req, res) => {
   doc.fontSize(18).fillColor("#000").text("JPO výjezdy – export");
   doc.moveDown(0.2);
   doc.fontSize(10).fillColor("#333").text(`Vygenerováno: ${now.toLocaleString("cs-CZ")}`);
-  doc.moveDown(0.4);
+  doc.moveDown(0.35);
 
   if (!font.ok) {
     doc.fontSize(9).fillColor("#a33").text(`Pozn.: font nelze použít (${font.reason})`);
-    doc.moveDown(0.3);
+    doc.moveDown(0.25);
   }
 
-  const col = { time: 88, state: 62, type: 78, city: 170, dur: 70, title: 330 };
+  const col = { time: 95, state: 70, type: 78, city: 200, dur: 78, title: 330 };
   const startX = doc.x;
   let y = doc.y;
   const tableWidth = col.time + col.state + col.type + col.city + col.dur + col.title;
@@ -536,6 +550,14 @@ app.get("/api/export.pdf", async (req, res) => {
     if (font.ok) doc.font("CZ");
   }
 
+  function formatDuration(min) {
+    if (!Number.isFinite(min) || min <= 0) return "—";
+    const h = Math.floor(min / 60);
+    const m = min % 60;
+    if (h <= 0) return `${m} min`;
+    return `${h} h ${m} min`;
+  }
+
   function rowHeightFor(rowObj) {
     doc.fontSize(9);
     const d = new Date(rowObj.pub_date || rowObj.created_at);
@@ -543,7 +565,7 @@ app.get("/api/export.pdf", async (req, res) => {
     const state = rowObj.is_closed ? "UKONČENO" : "AKTIVNÍ";
     const typ = typeLabel(rowObj.event_type || "other");
     const city = String(rowObj.city_text || rowObj.place_text || "");
-    const dur = Number.isFinite(rowObj.duration_min) ? `${rowObj.duration_min} min` : "—";
+    const dur = formatDuration(rowObj.duration_min);
     const ttl = String(rowObj.title || "");
     const opts = { align: "left", lineBreak: true };
 
@@ -565,7 +587,7 @@ app.get("/api/export.pdf", async (req, res) => {
     const state = rowObj.is_closed ? "UKONČENO" : "AKTIVNÍ";
     const typ = typeLabel(rowObj.event_type || "other");
     const city = String(rowObj.city_text || rowObj.place_text || "");
-    const dur = Number.isFinite(rowObj.duration_min) ? `${rowObj.duration_min} min` : "—";
+    const dur = formatDuration(rowObj.duration_min);
     const ttl = String(rowObj.title || "");
     const opts = { align: "left", lineBreak: true };
 
@@ -596,7 +618,7 @@ app.get("/api/export.pdf", async (req, res) => {
   doc.end();
 });
 
-// ✅ Varianta B: oprava špatných bodů mimo ČR (purge cache + re-geocode)
+// ✅ Varianta: oprava bodů mimo ČR (purge cache + re-geocode)
 app.post("/api/admin/regeocode", requireKey, async (req, res) => {
   try {
     const mode = String(req.body?.mode || "outside_cz");

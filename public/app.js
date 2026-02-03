@@ -65,8 +65,8 @@ function renderTable(items) {
     const state = it.is_closed ? "UKONČENO" : "AKTIVNÍ";
     const tr = document.createElement("tr");
     tr.innerHTML = `
-      <td>${escapeHtml(formatDate(it.pub_ts || it.pub_date || it.created_at))}</td>
-      <td><span class="iconPill" title="${escapeHtml((TYPE[t] || TYPE.other).label)}">${typeEmoji(t)}</span></td>
+      <td>${escapeHtml(formatDate(it.pub_date || it.created_at))}</td>
+      <td><span class="iconPill" title="${escapeHtml((TYPE[t]||TYPE.other).label)}">${typeEmoji(t)}</span></td>
       <td>${escapeHtml(it.title || "")}</td>
       <td>${escapeHtml(it.city_text || it.place_text || "")}</td>
       <td>${escapeHtml(state)}</td>
@@ -103,7 +103,7 @@ function renderMap(items) {
           <div style="font-weight:700;margin-bottom:6px">${emoji} ${escapeHtml(it.title || "")}</div>
           <div><b>Stav:</b> ${escapeHtml(state)}</div>
           <div><b>Město:</b> ${escapeHtml(it.city_text || it.place_text || "")}</div>
-          <div><b>Čas:</b> ${escapeHtml(formatDate(it.pub_ts || it.pub_date || it.created_at))}</div>
+          <div><b>Čas:</b> ${escapeHtml(formatDate(it.pub_date || it.created_at))}</div>
           <div><b>Délka:</b> ${escapeHtml(formatDuration(it.duration_min))}</div>
           ${it.link ? `<div style="margin-top:8px"><a href="${it.link}" target="_blank" rel="noopener">Detail</a></div>` : ""}
         </div>
@@ -197,63 +197,59 @@ function renderChart(byDay) {
   });
 }
 
-function pragueMonthKeyNow() {
-  try {
-    const fmt = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Prague", year: "numeric", month: "2-digit" });
-    return fmt.format(new Date()); // YYYY-MM
-  } catch {
-    const d = new Date();
-    const y = d.getUTCFullYear();
-    const m = String(d.getUTCMonth() + 1).padStart(2, "0");
-    return `${y}-${m}`;
-  }
-}
-
-function ensureDefaultMonth() {
-  const el = document.getElementById("monthInput");
-  if (!el.value) el.value = pragueMonthKeyNow();
+function defaultMonthValue() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  return `${y}-${m}`;
 }
 
 function getFiltersFromUi() {
-  ensureDefaultMonth();
-
-  const day = document.getElementById("daySelect").value.trim();
+  const day = (document.getElementById("daySelect")?.value || "today").trim();
   const type = document.getElementById("typeSelect").value.trim();
   const city = document.getElementById("cityInput").value.trim();
   const status = document.getElementById("statusSelect").value.trim();
-  const month = document.getElementById("monthInput").value.trim();
+  const month = (document.getElementById("monthInput")?.value || "").trim();
 
   return {
     day: day || "today",
     type: type || "",
     city: city || "",
     status: status || "all",
-    month: month || pragueMonthKeyNow()
+    month: month || ""
   };
 }
 
-function buildQuery(filters) {
+function buildQueryForEvents(filters) {
   const qs = new URLSearchParams();
+  if (filters.day) qs.set("day", filters.day);
+  if (filters.type) qs.set("type", filters.type);
+  if (filters.city) qs.set("city", filters.city);
+  if (filters.status && filters.status !== "all") qs.set("status", filters.status);
+  return qs.toString();
+}
 
-  if (filters.day && filters.day !== "today") qs.set("day", filters.day);
-
+function buildQueryForStats(filters) {
+  // ✅ sem neposíláme day (stats = 30 dní), ale posíláme month (žebříček)
+  const qs = new URLSearchParams();
   if (filters.type) qs.set("type", filters.type);
   if (filters.city) qs.set("city", filters.city);
   if (filters.status && filters.status !== "all") qs.set("status", filters.status);
   if (filters.month) qs.set("month", filters.month);
-
   return qs.toString();
 }
 
 async function loadAll() {
   const filters = getFiltersFromUi();
-  const q = buildQuery(filters);
+
+  const qEvents = buildQueryForEvents(filters);
+  const qStats = buildQueryForStats(filters);
 
   setStatus("načítám…", true);
 
   const [eventsRes, statsRes] = await Promise.all([
-    fetch(`/api/events?limit=800${q ? `&${q}` : ""}`),
-    fetch(`/api/stats${q ? `?${q}` : ""}`)
+    fetch(`/api/events?limit=500${qEvents ? `&${qEvents}` : ""}`),
+    fetch(`/api/stats${qStats ? `?${qStats}` : ""}`)
   ]);
 
   if (!eventsRes.ok || !statsRes.ok) {
@@ -272,27 +268,40 @@ async function loadAll() {
   renderChart(statsJson.byDay || []);
   renderCounts(statsJson.openCount, statsJson.closedCount);
 
-  // města: měsíční statistika (všechna města)
-  renderTopCities(statsJson.monthlyCities || []);
-
+  // ✅ žebříček měst – preferuje monthlyCities, fallback pokud by někde byl starý topCities
+  renderTopCities(statsJson.monthlyCities || statsJson.topCities || []);
   renderLongest(statsJson.longest || []);
 
   const missing = items.filter(x => x.lat == null || x.lon == null).length;
-  const dayLabel = filters.day === "yesterday" ? "včera" : (filters.day === "all" ? "vše" : "dnes");
-  setStatus(`OK • ${items.length} záznamů • den: ${dayLabel} • bez souřadnic ${missing}`, true);
+
+  const dayLabel =
+    filters.day === "today" ? "dnes" :
+    filters.day === "yesterday" ? "včera" : "vše";
+
+  const monthLabel = filters.month || "—";
+
+  setStatus(`OK • ${items.length} záznamů • den ${dayLabel} • měsíc ${monthLabel} • bez souřadnic ${missing}`, true);
 }
 
 function resetFilters() {
-  document.getElementById("daySelect").value = "today";
+  if (document.getElementById("daySelect")) document.getElementById("daySelect").value = "today";
   document.getElementById("typeSelect").value = "";
   document.getElementById("cityInput").value = "";
   document.getElementById("statusSelect").value = "all";
-  document.getElementById("monthInput").value = pragueMonthKeyNow();
+  if (document.getElementById("monthInput")) document.getElementById("monthInput").value = defaultMonthValue();
 }
 
 function exportWithFilters(kind) {
   const filters = getFiltersFromUi();
-  const q = buildQuery(filters);
+
+  // export = map+tabulka logika, takže day patří do exportu (ať exportuje to co vidíš)
+  const qs = new URLSearchParams();
+  if (filters.day) qs.set("day", filters.day);
+  if (filters.type) qs.set("type", filters.type);
+  if (filters.city) qs.set("city", filters.city);
+  if (filters.status && filters.status !== "all") qs.set("status", filters.status);
+
+  const q = qs.toString();
   const url = kind === "pdf"
     ? `/api/export.pdf${q ? `?${q}` : ""}`
     : `/api/export.csv${q ? `?${q}` : ""}`;
@@ -315,5 +324,9 @@ window.addEventListener("resize", () => {
 window.addEventListener("orientationchange", () => safeInvalidateMap());
 
 initMap();
-resetFilters(); // ✅ default: dnes + aktuální měsíc
+
+// init defaults
+if (document.getElementById("monthInput") && !document.getElementById("monthInput").value) {
+  document.getElementById("monthInput").value = defaultMonthValue();
+}
 loadAll();

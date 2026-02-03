@@ -155,6 +155,19 @@ export async function updateEventDuration(id, durationMin) {
   ]);
 }
 
+export async function clearExtremeDurations(maxMinutes = 720) {
+  const res = await pool.query(
+    `
+    UPDATE events
+    SET duration_min = NULL
+    WHERE duration_min IS NOT NULL
+      AND (duration_min < 0 OR duration_min > $1)
+    `,
+    [maxMinutes]
+  );
+  return res.rowCount || 0;
+}
+
 export async function getCachedGeocode(placeText) {
   const res = await pool.query(
     `SELECT lat, lon FROM geocode_cache WHERE place_text=$1`,
@@ -204,10 +217,12 @@ export async function getEventsOutsideCz(limit = 200) {
 }
 
 // --- FILTERED EVENTS ---
+// ✅ day: today / yesterday / all (počítáno v Europe/Prague podle created_at)
 export async function getEventsFiltered(filters, limit = 400) {
   const types = Array.isArray(filters?.types) ? filters.types : [];
   const city = String(filters?.city || "").trim();
   const status = String(filters?.status || "all").toLowerCase();
+  const day = String(filters?.day || "all").toLowerCase();
 
   const where = [];
   const params = [];
@@ -229,6 +244,13 @@ export async function getEventsFiltered(filters, limit = 400) {
   if (status === "open") where.push(`is_closed = FALSE`);
   if (status === "closed") where.push(`is_closed = TRUE`);
 
+  // ✅ filtr dne (jen mapa+tabulka)
+  if (day === "today") {
+    where.push(`(created_at AT TIME ZONE 'Europe/Prague')::date = (NOW() AT TIME ZONE 'Europe/Prague')::date`);
+  } else if (day === "yesterday") {
+    where.push(`(created_at AT TIME ZONE 'Europe/Prague')::date = ((NOW() AT TIME ZONE 'Europe/Prague')::date - 1)`);
+  }
+
   const sql =
     `
     SELECT
@@ -241,7 +263,7 @@ export async function getEventsFiltered(filters, limit = 400) {
       first_seen_at, last_seen_at, created_at
     FROM events
     ${where.length ? "WHERE " + where.join(" AND ") : ""}
-    ORDER BY COALESCE(pub_date, created_at::text) DESC, created_at DESC
+    ORDER BY created_at DESC
     LIMIT $${i}
     `;
 
@@ -251,64 +273,46 @@ export async function getEventsFiltered(filters, limit = 400) {
   return res.rows;
 }
 
+// ---------------- STATS ----------------
+// ✅ 30 dní graf + aktivní/ukončené + nejdelší (podle filtrů)
+// ✅ žebříček měst je za monthKey (YYYY-MM) a ignoruje city filter (protože "všechna města")
 export async function getStatsFiltered(filters) {
   const types = Array.isArray(filters?.types) ? filters.types : [];
   const city = String(filters?.city || "").trim();
   const status = String(filters?.status || "all").toLowerCase();
+  const monthKey = String(filters?.month || "").trim(); // YYYY-MM
 
-  const where = [`created_at >= NOW() - INTERVAL '30 days'`];
-  const params = [];
+  // --- 30 dní, respektuje i city filter (statistiky podle filtrů)
+  const where30 = [`created_at >= NOW() - INTERVAL '30 days'`];
+  const params30 = [];
   let i = 1;
 
   if (types.length) {
-    where.push(`event_type = ANY($${i}::text[])`);
-    params.push(types);
+    where30.push(`event_type = ANY($${i}::text[])`);
+    params30.push(types);
     i++;
   }
 
   if (city) {
-    where.push(`(COALESCE(city_text,'') ILIKE $${i} OR COALESCE(place_text,'') ILIKE $${i})`);
-    params.push(`%${city}%`);
+    where30.push(`(COALESCE(city_text,'') ILIKE $${i} OR COALESCE(place_text,'') ILIKE $${i})`);
+    params30.push(`%${city}%`);
     i++;
   }
 
-  if (status === "open") where.push(`is_closed = FALSE`);
-  if (status === "closed") where.push(`is_closed = TRUE`);
+  if (status === "open") where30.push(`is_closed = FALSE`);
+  if (status === "closed") where30.push(`is_closed = TRUE`);
 
-  const whereSql = `WHERE ${where.join(" AND ")}`;
+  const where30Sql = `WHERE ${where30.join(" AND ")}`;
 
   const byDay = await pool.query(
     `
-    SELECT to_char(created_at::date, 'YYYY-MM-DD') AS day, COUNT(*)::int AS count
+    SELECT to_char((created_at AT TIME ZONE 'Europe/Prague')::date, 'YYYY-MM-DD') AS day, COUNT(*)::int AS count
     FROM events
-    ${whereSql}
+    ${where30Sql}
     GROUP BY day
     ORDER BY day ASC;
     `,
-    params
-  );
-
-  const byType = await pool.query(
-    `
-    SELECT COALESCE(event_type,'other') AS type, COUNT(*)::int AS count
-    FROM events
-    ${whereSql}
-    GROUP BY type
-    ORDER BY count DESC;
-    `,
-    params
-  );
-
-  const topCities = await pool.query(
-    `
-    SELECT COALESCE(NULLIF(city_text,''), NULLIF(place_text,''), '(neznámé)') AS city, COUNT(*)::int AS count
-    FROM events
-    ${whereSql}
-    GROUP BY city
-    ORDER BY count DESC
-    LIMIT 15;
-    `,
-    params
+    params30
   );
 
   const openVsClosed = await pool.query(
@@ -317,31 +321,71 @@ export async function getStatsFiltered(filters) {
       SUM(CASE WHEN is_closed THEN 1 ELSE 0 END)::int AS closed,
       SUM(CASE WHEN NOT is_closed THEN 1 ELSE 0 END)::int AS open
     FROM events
-    ${whereSql}
+    ${where30Sql}
     `,
-    params
+    params30
   );
 
   const longest = await pool.query(
     `
-    SELECT id, title, link, COALESCE(NULLIF(city_text,''), place_text) AS city, duration_min, start_time_iso, end_time_iso, created_at
+    SELECT id, title, link,
+           COALESCE(NULLIF(city_text,''), place_text) AS city,
+           duration_min, start_time_iso, end_time_iso, created_at
     FROM events
-    ${whereSql} AND duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= 720
+    ${where30Sql} AND duration_min IS NOT NULL AND duration_min > 0
     ORDER BY duration_min DESC
     LIMIT 10;
     `,
-    params
+    params30
   );
 
-  const oc = openVsClosed.rows[0] || { open: 0, closed: 0 };
+  // --- Žebříček měst: monthKey (YYYY-MM) + typ/status, ale NE city filter (jinak by to bylo nesmyslné)
+  let monthlyCities = [];
+  if (/^\d{4}-\d{2}$/.test(monthKey)) {
+    const whereM = [];
+    const paramsM = [];
+    let j = 1;
 
-  // Frontend (app.js) expects: openCount, closedCount, byDay, topCities, longest
+    // rozsah měsíce v Europe/Prague
+    whereM.push(`
+      (created_at AT TIME ZONE 'Europe/Prague')::date >= to_date($${j}, 'YYYY-MM-DD')
+      AND (created_at AT TIME ZONE 'Europe/Prague')::date <  (to_date($${j}, 'YYYY-MM-DD') + INTERVAL '1 month')
+    `);
+    paramsM.push(`${monthKey}-01`);
+    j++;
+
+    if (types.length) {
+      whereM.push(`event_type = ANY($${j}::text[])`);
+      paramsM.push(types);
+      j++;
+    }
+
+    if (status === "open") whereM.push(`is_closed = FALSE`);
+    if (status === "closed") whereM.push(`is_closed = TRUE`);
+
+    const whereMSql = `WHERE ${whereM.join(" AND ")}`;
+
+    const top = await pool.query(
+      `
+      SELECT COALESCE(NULLIF(city_text,''), NULLIF(place_text,''), '(neznámé)') AS city,
+             COUNT(*)::int AS count
+      FROM events
+      ${whereMSql}
+      GROUP BY city
+      ORDER BY count DESC
+      LIMIT 15;
+      `,
+      paramsM
+    );
+
+    monthlyCities = top.rows;
+  }
+
   return {
     byDay: byDay.rows,
-    byType: byType.rows,
-    topCities: topCities.rows,
+    openCount: openVsClosed.rows[0]?.open ?? 0,
+    closedCount: openVsClosed.rows[0]?.closed ?? 0,
     longest: longest.rows,
-    openCount: oc.open || 0,
-    closedCount: oc.closed || 0
+    monthlyCities
   };
 }
