@@ -26,13 +26,11 @@
   <section class="filters">
     <div class="filtersRow">
       <div class="field">
-        <label for="daySelect">Dny</label>
+        <label for="daySelect">Den (mapa + tabulka)</label>
         <select id="daySelect">
-          <option value="today" selected>Dnes</option>
-          <option value="yesterday">Včera</option>
-          <option value="3d">Poslední 3 dny</option>
-          <option value="7d">Posledních 7 dní</option>
-          <option value="all">Vše</option>
+          <option value="today" selected>dnes</option>
+          <option value="yesterday">včera</option>
+          <option value="all">vše</option>
         </select>
       </div>
 
@@ -61,6 +59,11 @@
           <option value="open">aktivní</option>
           <option value="closed">ukončené</option>
         </select>
+      </div>
+
+      <div class="field">
+        <label for="monthInput">Měsíc (statistika měst)</label>
+        <input id="monthInput" type="month" />
       </div>
 
       <div class="field buttons">
@@ -127,7 +130,7 @@
     <section class="card">
       <div class="cardHeader">
         <h2>Žebříček měst</h2>
-        <div class="hint">Top 15 (30 dní)</div>
+        <div class="hint">Měsíc podle filtru (všechna města)</div>
       </div>
       <div class="list" id="topCities"></div>
     </section>

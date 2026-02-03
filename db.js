@@ -26,6 +26,7 @@ export async function initDb() {
       link TEXT NOT NULL,
 
       pub_date TEXT,
+      pub_ts TIMESTAMPTZ,
 
       place_text TEXT,
       city_text TEXT,
@@ -58,6 +59,18 @@ export async function initDb() {
     );
   `);
 
+  // ✅ měsíční statistika měst (persistovaná)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS city_monthly_stats (
+      month_key TEXT NOT NULL,          -- "YYYY-MM"
+      city TEXT NOT NULL,
+      count INTEGER NOT NULL DEFAULT 0,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (month_key, city)
+    );
+  `);
+
+  // migrations if you started from older schema
   const adds = [
     ["events", "city_text", "TEXT"],
     ["events", "event_type", "TEXT"],
@@ -69,7 +82,8 @@ export async function initDb() {
     ["events", "first_seen_at", "TIMESTAMPTZ"],
     ["events", "last_seen_at", "TIMESTAMPTZ"],
     ["events", "lat", "DOUBLE PRECISION"],
-    ["events", "lon", "DOUBLE PRECISION"]
+    ["events", "lon", "DOUBLE PRECISION"],
+    ["events", "pub_ts", "TIMESTAMPTZ"]
   ];
 
   for (const [t, c, typ] of adds) {
@@ -81,6 +95,7 @@ export async function initDb() {
     }
   }
 
+  // ensure defaults for new columns if migrated
   await pool.query(`
     UPDATE events
     SET is_closed = COALESCE(is_closed, FALSE),
@@ -88,23 +103,36 @@ export async function initDb() {
         last_seen_at = COALESCE(last_seen_at, NOW())
     WHERE is_closed IS NULL OR first_seen_at IS NULL OR last_seen_at IS NULL;
   `);
+
+  // best-effort backfill pub_ts from pub_date for older rows
+  await pool.query(`
+    UPDATE events
+    SET pub_ts = CASE
+      WHEN pub_ts IS NULL AND pub_date IS NOT NULL AND pub_date <> '' THEN (pub_date::timestamptz)
+      ELSE pub_ts
+    END
+    WHERE pub_ts IS NULL AND pub_date IS NOT NULL AND pub_date <> '';
+  `).catch(() => {
+    // některé staré pub_date nemusí být castnutelné; nevadí
+  });
 }
 
 export async function upsertEvent(ev) {
   await pool.query(
     `
     INSERT INTO events (
-      id, title, link, pub_date,
+      id, title, link, pub_date, pub_ts,
       place_text, city_text, status_text, event_type,
       description_raw,
       start_time_iso, end_time_iso, duration_min, is_closed,
       first_seen_at, last_seen_at
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, NOW(), NOW())
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14, NOW(), NOW())
     ON CONFLICT (id) DO UPDATE SET
       title = EXCLUDED.title,
       link = EXCLUDED.link,
       pub_date = EXCLUDED.pub_date,
+      pub_ts   = COALESCE(EXCLUDED.pub_ts, events.pub_ts),
 
       place_text = COALESCE(EXCLUDED.place_text, events.place_text),
       city_text  = COALESCE(EXCLUDED.city_text,  events.city_text),
@@ -125,6 +153,7 @@ export async function upsertEvent(ev) {
       ev.title,
       ev.link,
       ev.pubDate || null,
+      ev.pubTs || null,
       ev.placeText || null,
       ev.cityText || null,
       ev.statusText || null,
@@ -153,70 +182,6 @@ export async function updateEventDuration(id, durationMin) {
   ]);
 }
 
-export async function updateEventTimes(id, startIso, endIso, isClosed) {
-  await pool.query(
-    `
-    UPDATE events
-    SET
-      start_time_iso = COALESCE($2, start_time_iso),
-      end_time_iso   = COALESCE($3, end_time_iso),
-      is_closed      = (is_closed OR COALESCE($4, FALSE))
-    WHERE id = $1
-    `,
-    [id, startIso || null, endIso || null, !!isClosed]
-  );
-}
-
-export async function getEventTimes(id) {
-  const res = await pool.query(
-    `
-    SELECT id, pub_date, start_time_iso, end_time_iso, duration_min, is_closed, first_seen_at, created_at
-    FROM events
-    WHERE id = $1
-    `,
-    [id]
-  );
-  return res.rows[0] || null;
-}
-
-/**
- * ✅ Hromadný přepočet duration v DB:
- * - když máme start_time_iso i end_time_iso a end > start
- * - přepíše duration_min (a tím opraví i staré bugy typu “všude 10h48”)
- *
- * limit slouží jen k tomu, ať neshodíš DB při mega tabulce.
- */
-export async function recalcDurationsSql(limit = 5000) {
-  const res = await pool.query(
-    `
-    WITH candidates AS (
-      SELECT id
-      FROM events
-      WHERE is_closed = TRUE
-        AND start_time_iso IS NOT NULL
-        AND end_time_iso   IS NOT NULL
-      ORDER BY last_seen_at DESC
-      LIMIT $1
-    )
-    UPDATE events e
-    SET duration_min =
-      GREATEST(
-        1,
-        ROUND(
-          EXTRACT(EPOCH FROM ((e.end_time_iso)::timestamptz - (e.start_time_iso)::timestamptz)) / 60.0
-        )::int
-      )
-    FROM candidates c
-    WHERE e.id = c.id
-      AND (e.end_time_iso)::timestamptz > (e.start_time_iso)::timestamptz
-    `,
-    [limit]
-  );
-
-  // pg UPDATE vrací rowCount
-  return { updated: res.rowCount };
-}
-
 export async function getCachedGeocode(placeText) {
   const res = await pool.query(
     `SELECT lat, lon FROM geocode_cache WHERE place_text=$1`,
@@ -243,12 +208,8 @@ export async function deleteCachedGeocode(placeText) {
   await pool.query(`DELETE FROM geocode_cache WHERE place_text=$1`, [placeText]);
 }
 
-export async function getEventFirstSeen(id) {
-  const res = await pool.query(`SELECT first_seen_at FROM events WHERE id=$1`, [id]);
-  return res.rows[0]?.first_seen_at || null;
-}
-
 export async function getEventsOutsideCz(limit = 200) {
+  // CZ bounding box: lon 12.09–18.87, lat 48.55–51.06
   const res = await pool.query(
     `
     SELECT id, city_text, place_text, lat, lon
@@ -264,18 +225,12 @@ export async function getEventsOutsideCz(limit = 200) {
   return res.rows;
 }
 
+// --- FILTERED EVENTS ---
 export async function getEventsFiltered(filters, limit = 400) {
   const types = Array.isArray(filters?.types) ? filters.types : [];
   const city = String(filters?.city || "").trim();
   const status = String(filters?.status || "all").toLowerCase();
-
-  const date = String(filters?.date || "").trim(); // YYYY-MM-DD
-  const spanDays = Number.isFinite(filters?.spanDays)
-    ? Math.max(1, Math.min(3660, Math.round(filters.spanDays)))
-    : null;
-  const recentDays = Number.isFinite(filters?.recentDays)
-    ? Math.max(1, Math.min(3660, Math.round(filters.recentDays)))
-    : null;
+  const day = String(filters?.day || "today").toLowerCase(); // today | yesterday | all
 
   const where = [];
   const params = [];
@@ -288,6 +243,7 @@ export async function getEventsFiltered(filters, limit = 400) {
   }
 
   if (city) {
+    // hledáme v city_text primárně, fallback i v place_text
     where.push(`(COALESCE(city_text,'') ILIKE $${i} OR COALESCE(place_text,'') ILIKE $${i})`);
     params.push(`%${city}%`);
     i++;
@@ -296,24 +252,17 @@ export async function getEventsFiltered(filters, limit = 400) {
   if (status === "open") where.push(`is_closed = FALSE`);
   if (status === "closed") where.push(`is_closed = TRUE`);
 
-  if (date && /^\d{4}-\d{2}-\d{2}$/.test(date) && spanDays) {
-    where.push(
-      `(created_at AT TIME ZONE 'Europe/Prague') >= ($${i}::date)::timestamp
-       AND (created_at AT TIME ZONE 'Europe/Prague') <  (($${i}::date)::timestamp + make_interval(days => $${i + 1}))`
-    );
-    params.push(date);
-    params.push(spanDays);
-    i += 2;
-  } else if (recentDays) {
-    where.push(`created_at >= NOW() - make_interval(days => $${i})`);
-    params.push(recentDays);
-    i++;
-  }
+  // ✅ denní filtr pro mapu+tabulku (Praha)
+  if (day === "today") {
+    where.push(`(COALESCE(pub_ts, created_at) AT TIME ZONE 'Europe/Prague')::date = (NOW() AT TIME ZONE 'Europe/Prague')::date`);
+  } else if (day === "yesterday") {
+    where.push(`(COALESCE(pub_ts, created_at) AT TIME ZONE 'Europe/Prague')::date = ((NOW() AT TIME ZONE 'Europe/Prague')::date - INTERVAL '1 day')::date`);
+  } // all -> nic
 
   const sql =
     `
     SELECT
-      id, title, link, pub_date,
+      id, title, link, pub_date, pub_ts,
       place_text, city_text,
       status_text, event_type,
       description_raw,
@@ -322,7 +271,7 @@ export async function getEventsFiltered(filters, limit = 400) {
       first_seen_at, last_seen_at, created_at
     FROM events
     ${where.length ? "WHERE " + where.join(" AND ") : ""}
-    ORDER BY COALESCE(pub_date, created_at::text) DESC, created_at DESC
+    ORDER BY COALESCE(pub_ts, created_at) DESC, created_at DESC
     LIMIT $${i}
     `;
 
@@ -332,10 +281,68 @@ export async function getEventsFiltered(filters, limit = 400) {
   return res.rows;
 }
 
+// --- MONTHLY CITY STATS (persist) ---
+export async function recomputeMonthlyCityStats(monthKey) {
+  const mk = String(monthKey || "").trim();
+  if (!/^\d{4}-\d{2}$/.test(mk)) return { ok: false, error: "bad monthKey" };
+
+  // přepočet za daný měsíc (Praha) – idempotentní: nejdřív smažeme měsíc, pak vložíme vše znovu
+  await pool.query("BEGIN");
+  try {
+    await pool.query(`DELETE FROM city_monthly_stats WHERE month_key=$1`, [mk]);
+
+    await pool.query(
+      `
+      WITH bounds AS (
+        SELECT
+          to_date($1 || '-01', 'YYYY-MM-DD')::date AS d0,
+          (to_date($1 || '-01', 'YYYY-MM-DD')::date + INTERVAL '1 month')::date AS d1
+      ),
+      agg AS (
+        SELECT
+          COALESCE(NULLIF(city_text,''), NULLIF(place_text,''), '(neznámé)') AS city,
+          COUNT(*)::int AS count
+        FROM events, bounds
+        WHERE
+          (COALESCE(pub_ts, created_at) AT TIME ZONE 'Europe/Prague')::date >= bounds.d0
+          AND (COALESCE(pub_ts, created_at) AT TIME ZONE 'Europe/Prague')::date < bounds.d1
+        GROUP BY city
+      )
+      INSERT INTO city_monthly_stats (month_key, city, count, updated_at)
+      SELECT $1, city, count, NOW()
+      FROM agg
+      `,
+      [mk]
+    );
+
+    await pool.query("COMMIT");
+    return { ok: true };
+  } catch (e) {
+    await pool.query("ROLLBACK");
+    return { ok: false, error: e?.message || "recompute_failed" };
+  }
+}
+
+export async function getMonthlyCityStats(monthKey) {
+  const mk = String(monthKey || "").trim();
+  if (!/^\d{4}-\d{2}$/.test(mk)) return [];
+  const res = await pool.query(
+    `
+    SELECT city, count
+    FROM city_monthly_stats
+    WHERE month_key=$1
+    ORDER BY count DESC, city ASC
+    `,
+    [mk]
+  );
+  return res.rows;
+}
+
 export async function getStatsFiltered(filters) {
   const types = Array.isArray(filters?.types) ? filters.types : [];
   const city = String(filters?.city || "").trim();
   const status = String(filters?.status || "all").toLowerCase();
+  const monthKey = String(filters?.month || "").trim(); // "YYYY-MM"
 
   const where = [`created_at >= NOW() - INTERVAL '30 days'`];
   const params = [];
@@ -380,18 +387,6 @@ export async function getStatsFiltered(filters) {
     params
   );
 
-  const topCities = await pool.query(
-    `
-    SELECT COALESCE(NULLIF(city_text,''), NULLIF(place_text,''), '(neznámé)') AS city, COUNT(*)::int AS count
-    FROM events
-    ${whereSql}
-    GROUP BY city
-    ORDER BY count DESC
-    LIMIT 15;
-    `,
-    params
-  );
-
   const openVsClosed = await pool.query(
     `
     SELECT
@@ -414,11 +409,18 @@ export async function getStatsFiltered(filters) {
     params
   );
 
+  // ✅ měsíční města (persistované + vrácené celé)
+  let monthlyCities = [];
+  if (/^\d{4}-\d{2}$/.test(monthKey)) {
+    await recomputeMonthlyCityStats(monthKey);
+    monthlyCities = await getMonthlyCityStats(monthKey);
+  }
+
   return {
     byDay: byDay.rows,
     byType: byType.rows,
-    topCities: topCities.rows,
     openVsClosed: openVsClosed.rows[0] || { open: 0, closed: 0 },
-    longest: longest.rows
+    longest: longest.rows,
+    monthlyCities
   };
 }
