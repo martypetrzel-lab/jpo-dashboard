@@ -15,7 +15,8 @@ import {
   clearEventCoords,
   deleteCachedGeocode,
   getEventsOutsideCz,
-  updateEventDuration
+  updateEventDuration,
+  clearBadDurations
 } from "./db.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -115,7 +116,8 @@ function parseCzDateToIso(s) {
   const month = months[monName];
   if (!month) return null;
 
-  // v RSS bývá čas lokální (CZ), ale my to ukládáme konzistentně jako UTC ISO
+  // Pozn.: používáme konzistentní UTC konverzi pro start/end,
+  // pro DÉLKU je důležité, že se chovají stejně.
   const dt = new Date(Date.UTC(year, month - 1, day, hh, mm, 0));
   if (Number.isNaN(dt.getTime())) return null;
   return dt.toISOString();
@@ -167,7 +169,7 @@ function parseRfc2822ToIso(s) {
 }
 
 // ✅ Délku počítáme POUZE z operačních časů (vyhlášení/ohlášení -> ukončení).
-// ŽÁDNÉ fallbacky na created_at / first_seen (to nafukuje na stovky hodin).
+// Navíc tvrdě odmítáme extrémy (RSS občas ujede o měsíc).
 async function computeDurationMin(startIso, endIso) {
   if (!startIso || !endIso) return null;
 
@@ -178,10 +180,7 @@ async function computeDurationMin(startIso, endIso) {
 
   const diffMin = Math.round((endMs - startMs) / 60000);
   if (diffMin <= 0) return null;
-
-  // hard-guard: pokud feed ujede (např. špatný měsíc), nechceme 648h v UI
-  if (diffMin > 24 * 60) return null; // > 24h ignorujeme
-
+  if (diffMin > 24 * 60) return null; // > 24h = nesmysl -> nepočítat
   return diffMin;
 }
 
@@ -272,22 +271,25 @@ function parseFilters(req) {
   return { types, city, status: normStatus, day: normDay, month: normMonth };
 }
 
-// ✅ PRŮBĚŽNÉ DOPOČÍTÁVÁNÍ DÉLKY (a uložení do DB)
-async function backfillDurations(rows, max = 40) {
+// ✅ Opraví/maže nesmyslné duration:
+// - když je duration_min NULL -> dopočítá (pokud má start+end a <=24h)
+// - když je duration_min > 24h -> smaže a zkusí dopočítat (většinou nebude z čeho)
+async function backfillDurations(rows, max = 200) {
   const candidates = rows
-    .filter(r => r?.is_closed && r?.end_time_iso && (r.duration_min == null))
-    .slice(0, Math.max(0, Math.min(max, 200)));
+    .filter(r => r?.is_closed && r?.end_time_iso && (r.duration_min == null || r.duration_min > 24 * 60))
+    .slice(0, Math.max(0, Math.min(max, 2000)));
 
   let fixed = 0;
 
   for (const r of candidates) {
     const dur = await computeDurationMin(r.start_time_iso, r.end_time_iso);
+
     if (Number.isFinite(dur) && dur > 0) {
       await updateEventDuration(r.id, dur);
       r.duration_min = dur;
       fixed++;
     } else {
-      // pokud už tam je špatná extrémní hodnota, smažeme ji (aby UI neukazovalo 648h)
+      // smažeme špatné hodnoty (aby UI nikdy neukazovalo stovky hodin)
       if (Number.isFinite(r.duration_min) && r.duration_min > 24 * 60) {
         await updateEventDuration(r.id, null);
         r.duration_min = null;
@@ -322,7 +324,7 @@ async function backfillCoords(rows, max = 8) {
   return fixed;
 }
 
-// ---------------- PDF FONT (robust minimal) ----------------
+// ---------------- PDF FONT ----------------
 function findFontPath() {
   const p = path.join(__dirname, "assets", "DejaVuSans.ttf");
   if (fs.existsSync(p)) return p;
@@ -376,10 +378,8 @@ app.post("/api/ingest", requireKey, async (req, res) => {
       const startIso = it.startTimeIso || times.startIso || null;
       const endIso = it.endTimeIso || times.endIso || null;
 
-      const durationMin =
-        Number.isFinite(it.durationMin)
-          ? it.durationMin
-          : await computeDurationMin(startIso, endIso);
+      // ✅ nikdy nevěříme durationMin z klienta; počítáme jen z start+end a jen do 24h
+      const durationMin = await computeDurationMin(startIso, endIso);
 
       const placeText = it.placeText || null;
       const cityFromDesc = extractCityFromDescription(desc);
@@ -448,7 +448,7 @@ app.get("/api/events", async (req, res) => {
   const rows = await getEventsFiltered(filters, limit);
 
   const fixedCoords = await backfillCoords(rows, 10);
-  const fixedDur = await backfillDurations(rows, 120);
+  const fixedDur = await backfillDurations(rows, 500);
 
   res.json({ ok: true, filters, backfilled_coords: fixedCoords, backfilled_durations: fixedDur, items: rows });
 });
@@ -470,7 +470,7 @@ app.get("/api/stats", async (req, res) => {
   });
 });
 
-// export CSV (nejdřív backfill duration, aby export měl vše)
+// export CSV
 app.get("/api/export.csv", async (req, res) => {
   const filters = parseFilters(req);
   const limit = Math.min(Number(req.query.limit || 2000), 20000);
@@ -526,7 +526,7 @@ app.get("/api/export.csv", async (req, res) => {
   res.send([header, ...lines].join("\n"));
 });
 
-// export PDF (backfill duration + jednoduché stránkování podle výšky řádku)
+// export PDF
 app.get("/api/export.pdf", async (req, res) => {
   const filters = parseFilters(req);
   const limit = Math.min(Number(req.query.limit || 800), 5000);
@@ -632,7 +632,7 @@ app.get("/api/export.pdf", async (req, res) => {
   doc.end();
 });
 
-// ✅ Varianta B: oprava špatných bodů mimo ČR (purge cache + re-geocode)
+// admin re-geocode
 app.post("/api/admin/regeocode", requireKey, async (req, res) => {
   try {
     const mode = String(req.body?.mode || "outside_cz");
@@ -686,5 +686,9 @@ app.post("/api/admin/regeocode", requireKey, async (req, res) => {
 app.get("/health", (req, res) => res.send("OK"));
 
 const port = process.env.PORT || 3000;
+
 await initDb();
+// ✅ jednorázový “sanitizer” při startu – smaže nesmysly z minulosti
+await clearBadDurations();
+
 app.listen(port, () => console.log(`listening on ${port}`));
