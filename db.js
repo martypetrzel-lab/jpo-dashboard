@@ -18,18 +18,6 @@ async function colExists(table, col) {
   return res.rowCount > 0;
 }
 
-/**
- * ✅ FIX: duration_min musí být v minutách.
- * Pokud je hodnota extrémně velká, bereme ji jako sekundy a převedeme /60.
- */
-function normalizeDurationMin(v) {
-  if (!Number.isFinite(v)) return null;
-  let n = Math.round(v);
-  if (n <= 0) return null;
-  if (n > 20000) n = Math.round(n / 60);
-  return n;
-}
-
 export async function initDb() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS events (
@@ -100,18 +88,9 @@ export async function initDb() {
         last_seen_at = COALESCE(last_seen_at, NOW())
     WHERE is_closed IS NULL OR first_seen_at IS NULL OR last_seen_at IS NULL;
   `);
-
-  // ✅ Jednorázová oprava historických špatných hodnot (sekundy uložené do duration_min)
-  await pool.query(`
-    UPDATE events
-    SET duration_min = ROUND(duration_min / 60.0)
-    WHERE duration_min IS NOT NULL AND duration_min > 20000;
-  `);
 }
 
 export async function upsertEvent(ev) {
-  const dur = normalizeDurationMin(ev.durationMin);
-
   await pool.query(
     `
     INSERT INTO events (
@@ -153,7 +132,7 @@ export async function upsertEvent(ev) {
       ev.descriptionRaw || null,
       ev.startTimeIso || null,
       ev.endTimeIso || null,
-      dur,
+      Number.isFinite(ev.durationMin) ? Math.round(ev.durationMin) : null,
       !!ev.isClosed
     ]
   );
@@ -168,8 +147,24 @@ export async function clearEventCoords(id) {
 }
 
 export async function updateEventDuration(id, durationMin) {
-  const dur = normalizeDurationMin(durationMin);
-  await pool.query(`UPDATE events SET duration_min=$2 WHERE id=$1`, [id, dur]);
+  await pool.query(`UPDATE events SET duration_min=$2 WHERE id=$1`, [
+    id,
+    Number.isFinite(durationMin) ? Math.round(durationMin) : null
+  ]);
+}
+
+export async function updateEventTimes(id, startIso, endIso, isClosed) {
+  await pool.query(
+    `
+    UPDATE events
+    SET
+      start_time_iso = COALESCE($2, start_time_iso),
+      end_time_iso   = COALESCE($3, end_time_iso),
+      is_closed      = (is_closed OR COALESCE($4, FALSE))
+    WHERE id = $1
+    `,
+    [id, startIso || null, endIso || null, !!isClosed]
+  );
 }
 
 export async function getCachedGeocode(placeText) {
@@ -219,13 +214,12 @@ export async function getEventsOutsideCz(limit = 200) {
   return res.rows;
 }
 
-// --- FILTERED EVENTS (mapa/tabulka/export) ---
 export async function getEventsFiltered(filters, limit = 400) {
   const types = Array.isArray(filters?.types) ? filters.types : [];
   const city = String(filters?.city || "").trim();
   const status = String(filters?.status || "all").toLowerCase();
 
-  const date = String(filters?.date || "").trim(); // YYYY-MM-DD
+  const date = String(filters?.date || "").trim();
   const spanDays = Number.isFinite(filters?.spanDays)
     ? Math.max(1, Math.min(3660, Math.round(filters.spanDays)))
     : null;
@@ -273,13 +267,7 @@ export async function getEventsFiltered(filters, limit = 400) {
       place_text, city_text,
       status_text, event_type,
       description_raw,
-      start_time_iso, end_time_iso,
-      CASE
-        WHEN duration_min IS NULL THEN NULL
-        WHEN duration_min > 20000 THEN ROUND(duration_min / 60.0)
-        ELSE duration_min
-      END AS duration_min,
-      is_closed,
+      start_time_iso, end_time_iso, duration_min, is_closed,
       lat, lon,
       first_seen_at, last_seen_at, created_at
     FROM events
@@ -294,7 +282,6 @@ export async function getEventsFiltered(filters, limit = 400) {
   return res.rows;
 }
 
-// ✅ STATISTIKY: vždy posledních 30 dnů + filtry Typ/Město/Stav
 export async function getStatsFiltered(filters) {
   const types = Array.isArray(filters?.types) ? filters.types : [];
   const city = String(filters?.city || "").trim();
@@ -368,13 +355,7 @@ export async function getStatsFiltered(filters) {
 
   const longest = await pool.query(
     `
-    SELECT id, title, link, COALESCE(NULLIF(city_text,''), place_text) AS city,
-      CASE
-        WHEN duration_min IS NULL THEN NULL
-        WHEN duration_min > 20000 THEN ROUND(duration_min / 60.0)
-        ELSE duration_min
-      END AS duration_min,
-      start_time_iso, end_time_iso, created_at
+    SELECT id, title, link, COALESCE(NULLIF(city_text,''), place_text) AS city, duration_min, start_time_iso, end_time_iso, created_at
     FROM events
     ${whereSql} AND duration_min IS NOT NULL AND duration_min > 0
     ORDER BY duration_min DESC
