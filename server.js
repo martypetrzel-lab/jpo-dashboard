@@ -3,6 +3,7 @@ import PDFDocument from "pdfkit";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { pool } from "./db.js";
 
 import {
   initDb,
@@ -666,4 +667,31 @@ app.get("/health", (req, res) => res.send("OK"));
 
 const port = process.env.PORT || 3000;
 await initDb();
+// ===============================
+// ADMIN: smazání extrémních délek
+// ===============================
+app.post("/api/admin/delete-extreme-durations", requireKey, async (req, res) => {
+  try {
+    const MAX_MINUTES = Number(req.body?.maxMinutes || 720); // default 12h
+
+    const result = await pool.query(
+      `
+      DELETE FROM events
+      WHERE duration_min IS NOT NULL
+        AND duration_min > $1
+      `,
+      [MAX_MINUTES]
+    );
+
+    res.json({
+      ok: true,
+      maxMinutes: MAX_MINUTES,
+      deleted: result.rowCount
+    });
+  } catch (err) {
+    console.error("delete-extreme-durations error:", err);
+    res.status(500).json({ ok: false, error: "server error" });
+  }
+});
+
 app.listen(port, () => console.log(`listening on ${port}`));
