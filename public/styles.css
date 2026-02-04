@@ -69,7 +69,7 @@ body {
 
 .filtersRow {
   display: grid;
-  grid-template-columns: 160px 160px 1fr 160px 200px 220px 260px;
+  grid-template-columns: 170px 160px 1fr 160px 220px 260px;
   gap: 10px;
   align-items: end;
 }
@@ -234,8 +234,8 @@ a:hover { text-decoration: underline; }
 .leaflet-div-icon { background: transparent; border: none; }
 
 /* ---------- RESPONSIVE ---------- */
-@media (max-width: 1260px) {
-  .filtersRow { grid-template-columns: 160px 160px 1fr 160px 200px 1fr 1fr; }
+@media (max-width: 1100px) {
+  .filtersRow { grid-template-columns: 170px 160px 1fr 160px 1fr 1fr; }
 }
 
 @media (max-width: 980px) {
