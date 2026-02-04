@@ -1,332 +1,327 @@
-let map, markersLayer, chart;
+// Frontend logic (Leaflet + Chart.js)
 
-const TYPE = {
-  fire: { emoji: "🔥", label: "požár" },
-  traffic: { emoji: "🚗", label: "nehoda" },
-  tech: { emoji: "🛠️", label: "technická" },
-  rescue: { emoji: "🧍", label: "záchrana" },
-  false_alarm: { emoji: "🚨", label: "planý poplach" },
-  other: { emoji: "❓", label: "jiné" }
+const API = "";
+
+const el = (id) => document.getElementById(id);
+
+const state = {
+  map: null,
+  markersLayer: null,
+  chart: null
 };
 
-function typeEmoji(t) {
-  return (TYPE[t] || TYPE.other).emoji;
+function fmtDateCz(pubDate) {
+  if (!pubDate) return "";
+  // pubDate je RFC2822 string, zobrazíme "d. m. yyyy hh:mm:ss"
+  const d = new Date(pubDate);
+  if (isNaN(d.getTime())) return String(pubDate);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getDate()}. ${d.getMonth() + 1}. ${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-function setStatus(text, ok = true) {
-  const pill = document.getElementById("statusPill");
-  pill.textContent = text;
-  pill.style.background = ok ? "rgba(60, 180, 120, 0.20)" : "rgba(220, 80, 80, 0.20)";
-  pill.style.borderColor = ok ? "rgba(60, 180, 120, 0.35)" : "rgba(220, 80, 80, 0.35)";
+function fmtDuration(min) {
+  if (min == null) return "—";
+  const m = Number(min);
+  if (!Number.isFinite(m) || m <= 0) return "—";
+  if (m < 60) return `${m} min`;
+  const h = Math.floor(m / 60);
+  const mm = m % 60;
+  return `${h} h ${mm} min`;
+}
+
+function iconForType(t) {
+  const map = {
+    fire: "🔥",
+    traffic: "🚑",
+    tech: "🛠️",
+    rescue: "🧑‍🚒",
+    false_alarm: "🧯",
+    other: "❓"
+  };
+  return map[t] || "❓";
+}
+
+function buildQuery() {
+  const day = el("daySelect").value;
+  const type = el("typeSelect").value;
+  const city = el("cityInput").value.trim();
+  const status = el("statusSelect").value;
+  const month = el("monthInput").value;
+
+  const p = new URLSearchParams();
+  // day: default today - FE pro today neposílá -> server default = today
+  if (day && day !== "today") p.set("day", day);
+  if (type && type !== "all") p.set("type", type);
+  if (city) p.set("city", city);
+  if (status && status !== "all") p.set("status", status);
+  if (month) p.set("month", month);
+
+  return p.toString();
+}
+
+async function apiGetJson(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return await r.json();
 }
 
 function initMap() {
-  map = L.map("map").setView([49.8, 15.3], 7);
+  const map = L.map("map", { zoomControl: true }).setView([49.8, 15.5], 7);
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    maxZoom: 18,
-    attribution: "&copy; OpenStreetMap"
+    attribution: "Leaflet | © OpenStreetMap"
   }).addTo(map);
 
-  markersLayer = L.layerGroup().addTo(map);
+  const layer = L.layerGroup().addTo(map);
+
+  state.map = map;
+  state.markersLayer = layer;
 }
 
-function formatDate(d) {
-  if (!d) return "";
-  try {
-    const dt = new Date(d);
-    if (isNaN(dt.getTime())) return d;
-    return dt.toLocaleString("cs-CZ");
-  } catch {
-    return d;
+function setMarkers(rows) {
+  state.markersLayer.clearLayers();
+
+  const valid = rows.filter((r) => Number.isFinite(r.lat) && Number.isFinite(r.lon));
+  for (const r of valid) {
+    const ico = iconForType(r.event_type);
+    const html = `<div style="font-size:18px;line-height:18px">${ico}</div>`;
+    const marker = L.marker([r.lat, r.lon], {
+      icon: L.divIcon({ className: "marker-ico", html, iconSize: [20, 20], iconAnchor: [10, 10] })
+    });
+
+    const status = r.is_closed ? "UKONČENO" : "AKTIVNÍ";
+    const city = r.city_text || r.place_text || "";
+    const dur = fmtDuration(r.duration_min);
+
+    marker.bindPopup(
+      `<div class="popup">
+        <div class="popup-title">${r.title || ""}</div>
+        <div class="popup-meta"><b>${status}</b> • ${city} • ${dur}</div>
+        <div class="popup-time">${fmtDateCz(r.pub_date)}</div>
+        <div class="popup-link"><a href="${r.link}" target="_blank" rel="noopener">Otevřít detail</a></div>
+      </div>`
+    );
+
+    marker.addTo(state.markersLayer);
   }
 }
 
-function formatDuration(min) {
-  if (!Number.isFinite(min) || min <= 0) return "—";
-  const h = Math.floor(min / 60);
-  const m = min % 60;
-  if (h <= 0) return `${m} min`;
-  return `${h} h ${m} min`;
-}
-
-function escapeHtml(s) {
-  return String(s ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
-}
-
-function renderTable(items) {
-  const tbody = document.getElementById("eventsTbody");
+function renderTable(rows) {
+  const tbody = el("eventsTbody");
   tbody.innerHTML = "";
-  for (const it of items) {
-    const t = it.event_type || "other";
-    const state = it.is_closed ? "UKONČENO" : "AKTIVNÍ";
+
+  for (const r of rows) {
     const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td>${escapeHtml(formatDate(it.pub_date || it.created_at))}</td>
-      <td><span class="iconPill" title="${escapeHtml((TYPE[t]||TYPE.other).label)}">${typeEmoji(t)}</span></td>
-      <td>${escapeHtml(it.title || "")}</td>
-      <td>${escapeHtml(it.city_text || it.place_text || "")}</td>
-      <td>${escapeHtml(state)}</td>
-      <td>${escapeHtml(formatDuration(it.duration_min))}</td>
-      <td>${it.link ? `<a href="${it.link}" target="_blank" rel="noopener">otevřít</a>` : ""}</td>
-    `;
+
+    const tdTime = document.createElement("td");
+    tdTime.textContent = fmtDateCz(r.pub_date);
+
+    const tdType = document.createElement("td");
+    tdType.innerHTML = `<span class="type-pill">${iconForType(r.event_type)}</span>`;
+
+    const tdTitle = document.createElement("td");
+    tdTitle.textContent = r.title || "";
+
+    const tdCity = document.createElement("td");
+    tdCity.textContent = r.city_text || r.place_text || "";
+
+    const tdStatus = document.createElement("td");
+    tdStatus.textContent = r.is_closed ? "UKONČENO" : "AKTIVNÍ";
+
+    const tdDur = document.createElement("td");
+    tdDur.textContent = fmtDuration(r.duration_min);
+
+    const tdLink = document.createElement("td");
+    const a = document.createElement("a");
+    a.href = r.link;
+    a.target = "_blank";
+    a.rel = "noopener";
+    a.textContent = "otevřít";
+    tdLink.appendChild(a);
+
+    tr.appendChild(tdTime);
+    tr.appendChild(tdType);
+    tr.appendChild(tdTitle);
+    tr.appendChild(tdCity);
+    tr.appendChild(tdStatus);
+    tr.appendChild(tdDur);
+    tr.appendChild(tdLink);
+
     tbody.appendChild(tr);
   }
 }
 
-function makeMarkerIcon(emoji) {
-  return L.divIcon({
-    className: "leaflet-div-icon",
-    html: `<div style="transform:translate(-50%,-50%);font-size:22px;">${emoji}</div>`,
-    iconSize: [22, 22],
-    iconAnchor: [11, 11]
-  });
-}
-
-function renderMap(items) {
-  markersLayer.clearLayers();
-
-  const pts = [];
-  for (const it of items) {
-    if (typeof it.lat === "number" && typeof it.lon === "number") {
-      const t = it.event_type || "other";
-      const emoji = typeEmoji(t);
-
-      const m = L.marker([it.lat, it.lon], { icon: makeMarkerIcon(emoji) });
-
-      const state = it.is_closed ? "UKONČENO" : "AKTIVNÍ";
-      const html = `
-        <div style="min-width:240px">
-          <div style="font-weight:700;margin-bottom:6px">${emoji} ${escapeHtml(it.title || "")}</div>
-          <div><b>Stav:</b> ${escapeHtml(state)}</div>
-          <div><b>Město:</b> ${escapeHtml(it.city_text || it.place_text || "")}</div>
-          <div><b>Čas:</b> ${escapeHtml(formatDate(it.pub_date || it.created_at))}</div>
-          <div><b>Délka:</b> ${escapeHtml(formatDuration(it.duration_min))}</div>
-          ${it.link ? `<div style="margin-top:8px"><a href="${it.link}" target="_blank" rel="noopener">Detail</a></div>` : ""}
-        </div>
-      `;
-      m.bindPopup(html);
-      m.addTo(markersLayer);
-      pts.push([it.lat, it.lon]);
-    }
-  }
-
-  if (pts.length > 0) {
-    const bounds = L.latLngBounds(pts);
-    map.fitBounds(bounds.pad(0.2));
-  } else {
-    map.setView([49.8, 15.3], 7);
-  }
-
-  safeInvalidateMap();
-}
-
-function safeInvalidateMap() {
-  try {
-    if (!map) return;
-    setTimeout(() => {
-      try { map.invalidateSize(true); } catch { /* ignore */ }
-    }, 80);
-  } catch { /* ignore */ }
-}
-
-function renderTopCities(rows) {
-  const wrap = document.getElementById("topCities");
-  wrap.innerHTML = "";
-  rows.forEach((r, idx) => {
-    const div = document.createElement("div");
-    div.className = "row";
-    div.innerHTML = `
-      <div class="left">
-        <div class="meta">#${idx + 1}</div>
-        <div class="name">${escapeHtml(r.city)}</div>
-      </div>
-      <div class="meta">${r.count}×</div>
-    `;
-    wrap.appendChild(div);
-  });
-}
-
 function renderLongest(rows) {
-  const wrap = document.getElementById("longestList");
-  wrap.innerHTML = "";
+  const list = el("longestList");
+  list.innerHTML = "";
+
+  if (!rows || !rows.length) {
+    list.innerHTML = `<div class="empty">—</div>`;
+    return;
+  }
+
   rows.forEach((r, idx) => {
     const div = document.createElement("div");
-    div.className = "row";
-    div.style.cursor = r.link ? "pointer" : "default";
+    div.className = "rank-item";
     div.innerHTML = `
-      <div class="left">
-        <div class="meta">#${idx + 1}</div>
-        <div class="name">${escapeHtml(r.title || "")}</div>
+      <div class="rank-left">
+        <span class="rank-num">#${idx + 1}</span>
+        <span class="rank-title">${(r.title || "").slice(0, 38)}${(r.title || "").length > 38 ? "..." : ""}</span>
       </div>
-      <div class="meta">${escapeHtml(formatDuration(r.duration_min))}</div>
+      <div class="rank-right">${fmtDuration(r.duration_min)}</div>
     `;
-    if (r.link) {
-      div.addEventListener("click", () => window.open(r.link, "_blank", "noopener"));
-    }
-    wrap.appendChild(div);
+    list.appendChild(div);
   });
 }
 
-function renderCounts(openCount, closedCount) {
-  document.getElementById("openCount").textContent = String(openCount ?? "—");
-  document.getElementById("closedCount").textContent = String(closedCount ?? "—");
+function renderMonthlyCities(rows) {
+  const box = el("citiesList");
+  box.innerHTML = "";
+
+  if (!rows || !rows.length) {
+    box.innerHTML = `<div class="empty">—</div>`;
+    return;
+  }
+
+  rows.forEach((r, idx) => {
+    const div = document.createElement("div");
+    div.className = "city-item";
+    div.innerHTML = `
+      <div class="city-left">
+        <span class="rank-num">#${idx + 1}</span>
+        <span class="city-name">${r.city || ""}</span>
+      </div>
+      <div class="city-right">${r.count}</div>
+    `;
+    box.appendChild(div);
+  });
+}
+
+function renderOpenClosed(openCount, closedCount) {
+  el("openCount").textContent = Number.isFinite(openCount) ? String(openCount) : "—";
+  el("closedCount").textContent = Number.isFinite(closedCount) ? String(closedCount) : "—";
 }
 
 function renderChart(byDay) {
-  const labels = byDay.map(x => x.day);
-  const data = byDay.map(x => x.count);
+  const ctx = el("chart").getContext("2d");
+  const labels = (byDay || []).map((x) => x.day);
+  const data = (byDay || []).map((x) => x.count);
 
-  const ctx = document.getElementById("chartByDay");
-  if (chart) chart.destroy();
+  if (state.chart) {
+    state.chart.data.labels = labels;
+    state.chart.data.datasets[0].data = data;
+    state.chart.update();
+    return;
+  }
 
-  chart = new Chart(ctx, {
+  state.chart = new Chart(ctx, {
     type: "line",
-    data: { labels, datasets: [{ label: "Výjezdy", data }] },
+    data: {
+      labels,
+      datasets: [
+        {
+          label: "Počet výjezdů",
+          data,
+          tension: 0.2
+        }
+      ]
+    },
     options: {
       responsive: true,
-      plugins: { legend: { display: false } },
+      plugins: {
+        legend: { display: false }
+      },
       scales: {
-        x: { ticks: { maxRotation: 0, autoSkip: true } },
-        y: { beginAtZero: true }
+        x: { ticks: { color: "#9aa4b2" }, grid: { color: "rgba(255,255,255,0.06)" } },
+        y: { ticks: { color: "#9aa4b2" }, grid: { color: "rgba(255,255,255,0.06)" } }
       }
     }
   });
 }
 
-function defaultMonthValue() {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  return `${y}-${m}`;
+async function loadEvents() {
+  const q = buildQuery();
+  const url = q ? `${API}/api/events?${q}` : `${API}/api/events`;
+  const json = await apiGetJson(url);
+  return json.rows || [];
 }
 
-function getFiltersFromUi() {
-  const day = (document.getElementById("daySelect")?.value || "today").trim();
-  const type = document.getElementById("typeSelect").value.trim();
-  const city = document.getElementById("cityInput").value.trim();
-  const status = document.getElementById("statusSelect").value.trim();
-  const month = (document.getElementById("monthInput")?.value || "").trim();
-
-  return {
-    day: day || "today",
-    type: type || "",
-    city: city || "",
-    status: status || "all",
-    month: month || ""
-  };
-}
-
-function buildQueryForEvents(filters) {
-  const qs = new URLSearchParams();
-  if (filters.day) qs.set("day", filters.day);
-  if (filters.type) qs.set("type", filters.type);
-  if (filters.city) qs.set("city", filters.city);
-  if (filters.status && filters.status !== "all") qs.set("status", filters.status);
-  return qs.toString();
-}
-
-function buildQueryForStats(filters) {
-  // ✅ sem neposíláme day (stats = 30 dní), ale posíláme month (žebříček)
-  const qs = new URLSearchParams();
-  if (filters.type) qs.set("type", filters.type);
-  if (filters.city) qs.set("city", filters.city);
-  if (filters.status && filters.status !== "all") qs.set("status", filters.status);
-  if (filters.month) qs.set("month", filters.month);
-  return qs.toString();
+async function loadStats() {
+  const q = buildQuery();
+  const url = q ? `${API}/api/stats?${q}` : `${API}/api/stats`;
+  const json = await apiGetJson(url);
+  return json;
 }
 
 async function loadAll() {
-  const filters = getFiltersFromUi();
+  try {
+    el("statusPill").textContent = "Načítám...";
+    const [rows, statsJson] = await Promise.all([loadEvents(), loadStats()]);
 
-  const qEvents = buildQueryForEvents(filters);
-  const qStats = buildQueryForStats(filters);
+    // Map
+    setMarkers(rows);
 
-  setStatus("načítám…", true);
+    // Table (poslední výjezdy)
+    renderTable(rows);
 
-  const [eventsRes, statsRes] = await Promise.all([
-    fetch(`/api/events?limit=500${qEvents ? `&${qEvents}` : ""}`),
-    fetch(`/api/stats${qStats ? `?${qStats}` : ""}`)
-  ]);
+    // Stats
+    renderChart(statsJson.byDay || []);
+    renderOpenClosed(statsJson.openCount, statsJson.closedCount);
+    renderMonthlyCities(statsJson.monthlyCities || []);
+    renderLongest(statsJson.longest || []);
 
-  if (!eventsRes.ok || !statsRes.ok) {
-    setStatus("chyba API", false);
-    return;
+    // Status pill
+    const w = statsJson?.filters?.day || "today";
+    const total = rows.length;
+    const noCoords = rows.filter((r) => !(Number.isFinite(r.lat) && Number.isFinite(r.lon))).length;
+    el("statusPill").textContent = `OK • ${total} záznamů • den: ${w} • bez souřadnic: ${noCoords}`;
+  } catch (e) {
+    console.error(e);
+    el("statusPill").textContent = "Chyba načítání";
   }
-
-  const eventsJson = await eventsRes.json();
-  const statsJson = await statsRes.json();
-
-  const items = (eventsJson.items || []);
-
-  renderTable(items);
-  renderMap(items);
-
-  renderChart(statsJson.byDay || []);
-  renderCounts(statsJson.openCount, statsJson.closedCount);
-
-  // ✅ žebříček měst – preferuje monthlyCities, fallback pokud by někde byl starý topCities
-  renderTopCities(statsJson.monthlyCities || statsJson.topCities || []);
-  renderLongest(statsJson.longest || []);
-
-  const missing = items.filter(x => x.lat == null || x.lon == null).length;
-
-  const dayLabel =
-    filters.day === "today" ? "dnes" :
-    filters.day === "yesterday" ? "včera" : "vše";
-
-  const monthLabel = filters.month || "—";
-
-  setStatus(`OK • ${items.length} záznamů • den ${dayLabel} • měsíc ${monthLabel} • bez souřadnic ${missing}`, true);
 }
 
 function resetFilters() {
-  if (document.getElementById("daySelect")) document.getElementById("daySelect").value = "today";
-  document.getElementById("typeSelect").value = "";
-  document.getElementById("cityInput").value = "";
-  document.getElementById("statusSelect").value = "all";
-  if (document.getElementById("monthInput")) document.getElementById("monthInput").value = defaultMonthValue();
+  el("daySelect").value = "today";
+  el("typeSelect").value = "all";
+  el("cityInput").value = "";
+  el("statusSelect").value = "all";
+
+  // month default = current month
+  const d = new Date();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  el("monthInput").value = `${d.getFullYear()}-${m}`;
 }
 
-function exportWithFilters(kind) {
-  const filters = getFiltersFromUi();
-
-  // export = map+tabulka logika, takže day patří do exportu (ať exportuje to co vidíš)
-  const qs = new URLSearchParams();
-  if (filters.day) qs.set("day", filters.day);
-  if (filters.type) qs.set("type", filters.type);
-  if (filters.city) qs.set("city", filters.city);
-  if (filters.status && filters.status !== "all") qs.set("status", filters.status);
-
-  const q = qs.toString();
-  const url = kind === "pdf"
-    ? `/api/export.pdf${q ? `?${q}` : ""}`
-    : `/api/export.csv${q ? `?${q}` : ""}`;
+// Export buttons
+el("csvBtn").addEventListener("click", () => {
+  const q = buildQuery();
+  const url = q ? `${API}/api/export.csv?${q}` : `${API}/api/export.csv`;
   window.open(url, "_blank");
-}
-
-// UI events
-document.getElementById("refreshBtn").addEventListener("click", loadAll);
-document.getElementById("applyBtn").addEventListener("click", loadAll);
-document.getElementById("resetBtn").addEventListener("click", () => { resetFilters(); loadAll(); });
-document.getElementById("exportCsvBtn").addEventListener("click", () => exportWithFilters("csv"));
-document.getElementById("exportPdfBtn").addEventListener("click", () => exportWithFilters("pdf"));
-
-// map resize on responsive changes
-let resizeTimer = null;
-window.addEventListener("resize", () => {
-  clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(() => safeInvalidateMap(), 120);
 });
-window.addEventListener("orientationchange", () => safeInvalidateMap());
 
+el("pdfBtn").addEventListener("click", () => {
+  const q = buildQuery();
+  const url = q ? `${API}/api/export.pdf?${q}` : `${API}/api/export.pdf`;
+  window.open(url, "_blank");
+});
+
+// Controls
+el("refreshBtn").addEventListener("click", loadAll);
+el("applyBtn").addEventListener("click", loadAll);
+el("resetBtn").addEventListener("click", () => {
+  resetFilters();
+  loadAll();
+});
+
+// Init
 initMap();
-
-// init defaults
-if (document.getElementById("monthInput") && !document.getElementById("monthInput").value) {
-  document.getElementById("monthInput").value = defaultMonthValue();
-}
+resetFilters();
 loadAll();
+
+// ✅ Auto-refresh celé stránky po 5 minutách
+// (uživatel chtěl, aby se dashboard sám obnovoval)
+setInterval(() => {
+  try {
+    window.location.reload();
+  } catch (e) {}
+}, 5 * 60 * 1000);
