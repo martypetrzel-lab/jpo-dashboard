@@ -178,23 +178,30 @@ export async function updateEventDuration(id, durationMin) {
   await pool.query(`UPDATE events SET duration_min=$2 WHERE id=$1`, [id, dur]);
 }
 
-// Ukončené zásahy bez dopočítané délky (zpětný přepočet)
-// Podmínky:
-// - mají end_time_iso (ukončení známé)
-// - duration_min je NULL
-// - jsou v historii (stav ukončený/closed)
+// ✅ OPRAVA: ukončené zásahy bez dopočítané délky (zpětný přepočet)
+// - používáme správné sloupce status_text / city_text
 export async function getClosedEventsMissingDuration(limit = 200) {
   const lim = Math.max(1, Math.min(2000, Number(limit) || 200));
   const res = await pool.query(
     `
-    SELECT id, title, city, pub_date, start_time_iso, end_time_iso, status
+    SELECT
+      id,
+      title,
+      link,
+      pub_date,
+      city_text,
+      place_text,
+      status_text,
+      start_time_iso,
+      end_time_iso,
+      duration_min,
+      is_closed,
+      created_at
     FROM events
     WHERE duration_min IS NULL
       AND end_time_iso IS NOT NULL
-      AND (
-        status ILIKE '%ukon%' OR status ILIKE '%closed%' OR status ILIKE '%ukonč%'
-      )
-    ORDER BY COALESCE(end_time_iso, pub_date) DESC
+      AND is_closed = TRUE
+    ORDER BY COALESCE(NULLIF(end_time_iso,'' )::timestamptz, NULLIF(pub_date,'' )::timestamptz, created_at) DESC
     LIMIT $1
     `,
     [lim]
@@ -420,9 +427,6 @@ export async function getStatsFiltered(filters) {
     params
   );
 
-  // ✅ Nejdelší zásahy:
-  // - ukončené: jen když máme smysluplnou duration_min (<= MAX_DURATION_MINUTES)
-  // - aktivní: "živá" délka (od start_time_iso / first_seen_at / created_at do NOW), také zastropovaná
   const longest = await pool.query(
     `
     SELECT

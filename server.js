@@ -3,6 +3,7 @@ import PDFDocument from "pdfkit";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { XMLParser } from "fast-xml-parser";
 
 import {
   initDb,
@@ -28,7 +29,12 @@ app.use(express.json({ limit: "2mb" }));
 app.use(express.static("public"));
 
 const API_KEY = process.env.API_KEY || "";
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
 const GEOCODE_UA = process.env.GEOCODE_USER_AGENT || "jpo-dashboard/1.7 (contact: missing)";
+
+// RSS pro kontrolu ukončení (server-side)
+const RSS_URL = process.env.RSS_URL || "";
+const RSS_POLL_MS = Math.max(30_000, Number(process.env.RSS_POLL_MS || 5 * 60 * 1000)); // default 5 min
 
 // ✅ sanity limit pro délku zásahu (default 3 dny)
 const MAX_DURATION_MINUTES = Math.max(60, Number(process.env.DURATION_MAX_MINUTES || 4320)); // 3 dny
@@ -39,6 +45,13 @@ function requireKey(req, res, next) {
   const key = req.header("X-API-Key") || "";
   if (!API_KEY) return res.status(500).json({ ok: false, error: "API_KEY not set on server" });
   if (key !== API_KEY) return res.status(401).json({ ok: false, error: "unauthorized" });
+  next();
+}
+
+function requireAdminPassword(req, res, next) {
+  if (!ADMIN_PASSWORD) return res.status(500).json({ ok: false, error: "ADMIN_PASSWORD not set on server" });
+  const pw = req.header("X-Admin-Password") || "";
+  if (pw !== ADMIN_PASSWORD) return res.status(401).json({ ok: false, error: "unauthorized" });
   next();
 }
 
@@ -92,6 +105,21 @@ function extractCityFromDescription(descRaw = "") {
     if (line.length < 2) continue;
 
     return line;
+  }
+  return null;
+}
+
+function extractStatusFromDescription(descRaw = "") {
+  const norm = String(descRaw)
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+
+  const lines = norm.split("\n").map(l => l.trim()).filter(Boolean);
+  for (const line of lines) {
+    const n = line.toLowerCase().trim();
+    if (n.startsWith("stav:")) return line.split(":").slice(1).join(":").trim() || null;
   }
   return null;
 }
@@ -181,11 +209,9 @@ async function computeDurationMin(id, startIso, endIso, createdAtFallback) {
   const endMs = new Date(endIso).getTime();
 
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return null;
-
   if (endMs > nowMs + FUTURE_END_TOLERANCE_MS) return null;
 
   const dur = Math.round((endMs - startMs) / 60000);
-
   if (!Number.isFinite(dur) || dur <= 0) return null;
   if (dur > MAX_DURATION_MINUTES) return null;
 
@@ -253,11 +279,10 @@ async function geocodePlace(placeText) {
 }
 
 function parseFilters(req) {
+  const day = String(req.query.day || "today").trim().toLowerCase();
   const typeQ = String(req.query.type || "").trim();
   const city = String(req.query.city || "").trim();
   const status = String(req.query.status || "all").trim().toLowerCase();
-
-  const day = String(req.query.day || "today").trim().toLowerCase();
   const month = String(req.query.month || "").trim();
 
   const types = typeQ ? typeQ.split(",").map(s => s.trim()).filter(Boolean) : [];
@@ -268,7 +293,7 @@ function parseFilters(req) {
   return { types, city, status: normStatus, day: normDay, month: normMonth };
 }
 
-// ✅ dopočítávání délky (uložení do DB)
+// ✅ dopočítávání délky (uložení do DB) – jen pro řádky, co zrovna posíláme ven
 async function backfillDurations(rows, max = 40) {
   const candidates = rows
     .filter(r => r?.is_closed && r?.end_time_iso && (r.duration_min == null))
@@ -288,26 +313,18 @@ async function backfillDurations(rows, max = 40) {
   return fixed;
 }
 
-// ✅ Zpětné dopočítání délky zásahu i mimo aktuální filtr (např. historie)
-// Běží periodicky na serveru a doplňuje duration_min pro ukončené zásahy,
-// které už mají známé ukončení (end_time_iso).
-async function durationMaintenance(limit = 200) {
-  try {
-    const missing = await getClosedEventsMissingDuration(Math.max(1, Math.min(limit, 500)));
-    let fixed = 0;
-    for (const r of missing) {
-      const dur = await computeDurationMin(r.id, r.start_time_iso, r.end_time_iso, r.created_at);
-      if (Number.isFinite(dur) && dur > 0) {
-        await updateEventDuration(r.id, dur);
-        fixed++;
-      }
+// ✅ Zpětné dopočítání délky zásahu i mimo aktuální filtr (historie)
+async function durationMaintenance(limit = 300) {
+  const missing = await getClosedEventsMissingDuration(Math.max(1, Math.min(limit, 500)));
+  let fixed = 0;
+  for (const r of missing) {
+    const dur = await computeDurationMin(r.id, r.start_time_iso, r.end_time_iso, r.created_at);
+    if (Number.isFinite(dur) && dur > 0) {
+      await updateEventDuration(r.id, dur);
+      fixed++;
     }
-    if (fixed > 0) {
-      console.log(`[dur-maint] fixed=${fixed} checked=${missing.length}`);
-    }
-  } catch (e) {
-    console.warn("[dur-maint] failed", e?.message || e);
   }
+  return { checked: missing.length, fixed };
 }
 
 async function backfillCoords(rows, max = 8) {
@@ -331,6 +348,104 @@ async function backfillCoords(rows, max = 8) {
     }
   }
   return fixed;
+}
+
+// ---------------- RSS MAINTENANCE ----------------
+const rssParser = new XMLParser({
+  ignoreAttributes: false,
+  attributeNamePrefix: "",
+  allowBooleanAttributes: true,
+  parseTagValue: true,
+  trimValues: true
+});
+
+function arrify(v) {
+  if (!v) return [];
+  return Array.isArray(v) ? v : [v];
+}
+
+async function rssMaintenanceOnce() {
+  if (!RSS_URL) return { ok: false, reason: "RSS_URL not set", processed: 0, closed_found: 0 };
+
+  let xml = "";
+  try {
+    const r = await fetch(RSS_URL, { headers: { "User-Agent": "jpo-dashboard-rss/1.0" } });
+    if (!r.ok) return { ok: false, reason: `RSS HTTP ${r.status}`, processed: 0, closed_found: 0 };
+    xml = await r.text();
+  } catch (e) {
+    return { ok: false, reason: `RSS fetch failed: ${e?.message || e}`, processed: 0, closed_found: 0 };
+  }
+
+  let parsed;
+  try {
+    parsed = rssParser.parse(xml);
+  } catch (e) {
+    return { ok: false, reason: `RSS parse failed: ${e?.message || e}`, processed: 0, closed_found: 0 };
+  }
+
+  const channel = parsed?.rss?.channel;
+  const items = arrify(channel?.item);
+
+  let processed = 0;
+  let closedFound = 0;
+
+  for (const it of items) {
+    const title = String(it?.title || "").trim();
+    const link = String(it?.link || "").trim();
+    const guid = String(it?.guid || "").trim();
+    const desc = String(it?.description || "").trim();
+    const pubDate = String(it?.pubDate || "").trim();
+
+    if (!title || !link) continue;
+
+    const id = guid || link;
+
+    const eventType = classifyType(title);
+    const times = parseTimesFromDescription(desc);
+
+    const startIso = times.startIso || null;
+    const endIso = times.endIso || null;
+    const isClosed = !!times.isClosed;
+
+    let durationMin = null;
+    if (isClosed && endIso) {
+      durationMin = await computeDurationMin(id, startIso, endIso, null);
+    }
+
+    const placeText = null;
+    const cityFromDesc = extractCityFromDescription(desc);
+    const cityFromTitle = extractCityFromTitle(title);
+
+    const cityText =
+      cityFromDesc ||
+      (!placeText ? cityFromTitle : (isDistrictPlace(placeText) ? cityFromTitle : placeText)) ||
+      null;
+
+    const statusText = extractStatusFromDescription(desc);
+
+    const ev = {
+      id,
+      title,
+      link,
+      pubDate: pubDate || null,
+      placeText,
+      cityText,
+      statusText: statusText || null,
+      eventType,
+      descriptionRaw: desc || null,
+      startTimeIso: startIso,
+      endTimeIso: endIso,
+      durationMin,
+      isClosed
+    };
+
+    await upsertEvent(ev);
+    processed++;
+
+    if (ev.isClosed) closedFound++;
+  }
+
+  return { ok: true, processed, closed_found: closedFound };
 }
 
 // ---------------- PDF FONT (robust minimal) ----------------
@@ -413,7 +528,7 @@ app.post("/api/ingest", requireKey, async (req, res) => {
         pubDate: it.pubDate || null,
         placeText,
         cityText,
-        statusText: it.statusText || null,
+        statusText: it.statusText || extractStatusFromDescription(desc) || null,
         eventType,
         descriptionRaw: desc || null,
         startTimeIso: startIso,
@@ -443,6 +558,25 @@ app.post("/api/ingest", requireKey, async (req, res) => {
       accepted,
       closed_seen_in_batch: updatedClosed,
       geocoded
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok: false, error: "server error" });
+  }
+});
+
+// ✅ ADMIN: ruční přepočet délek (heslo)
+app.post("/api/admin/recalc-durations", requireAdminPassword, async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(Number(req.body?.limit || 500), 5000));
+
+    const rss = await rssMaintenanceOnce(); // zkus rovnou stáhnout RSS a doplnit ukončení
+    const dur = await durationMaintenance(limit);
+
+    res.json({
+      ok: true,
+      rss,
+      durations: dur
     });
   } catch (e) {
     console.error(e);
@@ -696,12 +830,37 @@ app.get("/health", (req, res) => res.send("OK"));
 const port = process.env.PORT || 3000;
 await initDb();
 
-// Po startu rovnou zkus dopočítat chybějící délky (historie)
-durationMaintenance(300).catch(() => {});
+// Po startu: 1) zkus RSS sync (pokud nastaven), 2) dopočítej chybějící délky
+rssMaintenanceOnce()
+  .then((r) => {
+    if (r.ok) console.log(`[rss] processed=${r.processed} closed_found=${r.closed_found}`);
+    else console.log(`[rss] skipped: ${r.reason}`);
+  })
+  .catch((e) => console.warn("[rss] failed", e?.message || e));
 
-// Pak periodicky každých 10 minut (nezávisle na tom, jaký filtr má uživatel v UI)
+durationMaintenance(500)
+  .then((r) => {
+    if (r.fixed > 0) console.log(`[dur-maint] fixed=${r.fixed} checked=${r.checked}`);
+  })
+  .catch((e) => console.warn("[dur-maint] failed", e?.message || e));
+
+// ✅ Každých 5 minut: prohledej RSS a doplň ukončení (a tím i délku)
 setInterval(() => {
-  durationMaintenance(300).catch(() => {});
-}, 10 * 60 * 1000);
+  rssMaintenanceOnce()
+    .then(async (r) => {
+      if (r.ok) {
+        if (r.closed_found > 0) {
+          console.log(`[rss] processed=${r.processed} closed_found=${r.closed_found}`);
+        }
+        // po RSS syncu zkus hned dopočítat chybějící duration (když end_time přibylo)
+        const d = await durationMaintenance(500);
+        if (d.fixed > 0) console.log(`[dur-maint] fixed=${d.fixed} checked=${d.checked}`);
+      } else {
+        // RSS může být záměrně bez URL, tak jen tichý log
+        console.log(`[rss] skipped: ${r.reason}`);
+      }
+    })
+    .catch((e) => console.warn("[rss] failed", e?.message || e));
+}, RSS_POLL_MS);
 
 app.listen(port, () => console.log(`listening on ${port}`));

@@ -58,8 +58,8 @@ function escapeHtml(s) {
     .replaceAll('"', "&quot;");
 }
 
-// ✅ NOVÉ: běžící délka pro AKTIVNÍ zásah (když duration_min chybí)
-const LIVE_DURATION_MAX_MIN = 4320; // 3 dny (stejné jako server default)
+// ✅ běžící délka pro AKTIVNÍ zásah (když duration_min chybí)
+const LIVE_DURATION_MAX_MIN = 4320; // 3 dny
 
 function getLiveDurationMin(it) {
   try {
@@ -81,7 +81,7 @@ function getLiveDurationMin(it) {
     const diffMin = Math.floor((now - startMs) / 60000);
     if (!Number.isFinite(diffMin) || diffMin < 1) return 1;
 
-    if (diffMin > LIVE_DURATION_MAX_MIN) return null; // nepouštět extrémy
+    if (diffMin > LIVE_DURATION_MAX_MIN) return null;
     return diffMin;
   } catch {
     return null;
@@ -100,14 +100,12 @@ function renderTable(items) {
   for (const it of items) {
     const t = it.event_type || "other";
     const state = it.is_closed ? "UKONČENO" : "AKTIVNÍ";
-
-    // ✅ použij běžící délku pro AKTIVNÍ, když duration_min není
     const durMin = getDisplayDurationMin(it);
 
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${escapeHtml(formatDate(it.pub_date || it.created_at))}</td>
-      <td><span class="iconPill" title="${escapeHtml((TYPE[t]||TYPE.other).label)}">${typeEmoji(t)}</span></td>
+      <td><span class="iconPill" title="${escapeHtml((TYPE[t] || TYPE.other).label)}">${typeEmoji(t)}</span></td>
       <td>${escapeHtml(it.title || "")}</td>
       <td>${escapeHtml(it.city_text || it.place_text || "")}</td>
       <td>${escapeHtml(state)}</td>
@@ -139,13 +137,15 @@ function renderMap(items) {
       const m = L.marker([it.lat, it.lon], { icon: makeMarkerIcon(emoji) });
 
       const state = it.is_closed ? "UKONČENO" : "AKTIVNÍ";
+      const durMin = getDisplayDurationMin(it);
+
       const html = `
         <div style="min-width:240px">
           <div style="font-weight:700;margin-bottom:6px">${emoji} ${escapeHtml(it.title || "")}</div>
           <div><b>Stav:</b> ${escapeHtml(state)}</div>
           <div><b>Město:</b> ${escapeHtml(it.city_text || it.place_text || "")}</div>
           <div><b>Čas:</b> ${escapeHtml(formatDate(it.pub_date || it.created_at))}</div>
-          <div><b>Délka:</b> ${escapeHtml(formatDuration(it.duration_min))}</div>
+          <div><b>Délka:</b> ${escapeHtml(formatDuration(durMin))}</div>
           ${it.link ? `<div style="margin-top:8px"><a href="${it.link}" target="_blank" rel="noopener">Detail</a></div>` : ""}
         </div>
       `;
@@ -325,12 +325,51 @@ function exportWithFilters(kind) {
   window.open(url, "_blank");
 }
 
+// ✅ ADMIN: ruční přepočet délek přes heslo
+async function manualRecalc() {
+  const pw = prompt("Zadej admin heslo pro přepočet délek:");
+  if (!pw) return;
+
+  try {
+    setStatus("přepočítávám…", true);
+    const r = await fetch("/api/admin/recalc-durations", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Admin-Password": pw
+      },
+      body: JSON.stringify({ limit: 2000 })
+    });
+
+    const j = await r.json().catch(() => ({}));
+
+    if (!r.ok || !j?.ok) {
+      setStatus(`chyba přepočtu: ${j?.error || r.status}`, false);
+      return;
+    }
+
+    const rssInfo = j?.rss?.ok
+      ? `rss ${j.rss.processed} / ukonč ${j.rss.closed_found}`
+      : `rss skip`;
+
+    const durInfo = `délky fixed ${j?.durations?.fixed ?? 0} / checked ${j?.durations?.checked ?? 0}`;
+
+    setStatus(`OK • ${rssInfo} • ${durInfo}`, true);
+
+    // po úspěchu obnov data
+    await loadAll();
+  } catch (e) {
+    setStatus(`chyba přepočtu`, false);
+  }
+}
+
 // UI events
 document.getElementById("refreshBtn").addEventListener("click", loadAll);
 document.getElementById("applyBtn").addEventListener("click", loadAll);
 document.getElementById("resetBtn").addEventListener("click", () => { resetFilters(); loadAll(); });
 document.getElementById("exportCsvBtn").addEventListener("click", () => exportWithFilters("csv"));
 document.getElementById("exportPdfBtn").addEventListener("click", () => exportWithFilters("pdf"));
+document.getElementById("recalcBtn").addEventListener("click", manualRecalc);
 
 // map resize on responsive changes
 let resizeTimer = null;
