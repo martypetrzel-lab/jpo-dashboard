@@ -21,7 +21,6 @@ async function colExists(table, col) {
 }
 
 function sqlUtcIsoNow() {
-  // stabilní ISO bez ms
   return `to_char((NOW() AT TIME ZONE 'utc'), 'YYYY-MM-DD"T"HH24:MI:SS"Z"')`;
 }
 
@@ -44,11 +43,12 @@ async function ensureMetaBaseline() {
 
   const r = await pool.query(`SELECT value FROM meta WHERE key='durations_baseline' LIMIT 1;`);
   if (r.rowCount === 0) {
+    // baseline vytvoříme jen jednou (první start po deployi)
     await pool.query(
       `INSERT INTO meta (key, value) VALUES ('durations_baseline', ${sqlUtcIsoNow()});`
     );
 
-    // ✅ historické ukončené = bez času (—)
+    // historické ukončené zásahy -> bez času (aby nevznikaly extrémní délky)
     await pool.query(`
       UPDATE events
       SET duration_min = NULL,
@@ -101,7 +101,7 @@ export async function initDb() {
     );
   `);
 
-  // migrations (pokud starší schema)
+  // migrations (pro starší DB)
   const adds = [
     ["events", "city_text", "TEXT"],
     ["events", "event_type", "TEXT"],
@@ -126,7 +126,6 @@ export async function initDb() {
     }
   }
 
-  // defaults při migraci
   await pool.query(`
     UPDATE events
     SET is_closed = COALESCE(is_closed, FALSE),
@@ -147,7 +146,7 @@ export async function initDb() {
 export async function upsertEvent(ev) {
   const dur = clampDuration(ev.durationMin);
 
-  // ✅ FIX: casts pro $10/$11 => PostgreSQL už vždy ví, že je to TEXT
+  // ✅ FIX pro PG: $11 musíme castnout i v podmínce ($11::text IS NULL)
   await pool.query(
     `
     INSERT INTO events (
@@ -162,7 +161,7 @@ export async function upsertEvent(ev) {
       $1,$2,$3,$4,$5,$6,$7,$8,$9,
       $10::text,
       CASE
-        WHEN $13 = TRUE AND $11 IS NULL THEN ${sqlUtcIsoNow()}
+        WHEN $13 = TRUE AND ($11::text IS NULL) THEN ${sqlUtcIsoNow()}
         ELSE $11::text
       END,
       $12,$13,

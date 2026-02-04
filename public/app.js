@@ -20,27 +20,49 @@ function setStatus(text, ok = true) {
   pill.style.borderColor = ok ? "rgba(60, 180, 120, 0.35)" : "rgba(220, 80, 80, 0.35)";
 }
 
+// ✅ hrubý bounding box Středočeského kraje (stabilní, jednoduché, nevyžaduje polygon data)
+// Pozn.: záměrně neřeší "díry" okolo Prahy – cílem je omezit mapu na region.
+const STC_BOUNDS = L.latLngBounds(
+  [49.30, 13.40], // SW
+  [50.65, 15.70]  // NE
+);
+
+function isInStredocesky(lat, lon) {
+  if (typeof lat !== "number" || typeof lon !== "number") return false;
+  return STC_BOUNDS.contains([lat, lon]);
+}
+
 function initMap() {
-  // ✅ Středočeský kraj: základní pohled + omezení posunu mapy
-  const stcCenter = [49.95, 14.60];
-  const stcZoom = 8;
-
-  map = L.map("map").setView(stcCenter, stcZoom);
-
-  // přibližné hranice Středočeského kraje (ne úplně přesné, ale pro omezení mapy stačí)
-  const stcBounds = L.latLngBounds(
-    L.latLng(49.20, 13.20), // SW
-    L.latLng(50.75, 15.80)  // NE
-  );
-  map.setMaxBounds(stcBounds.pad(0.05));
-  map.on("drag", () => map.panInsideBounds(stcBounds, { animate: false }));
+  map = L.map("map", {
+    maxBounds: STC_BOUNDS,
+    maxBoundsViscosity: 1.0
+  }).fitBounds(STC_BOUNDS);
 
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 18,
-    attribution: "&copy; OpenStreetMap contributors"
+    attribution: "&copy; OpenStreetMap"
   }).addTo(map);
 
   markersLayer = L.layerGroup().addTo(map);
+}
+
+function formatDate(d) {
+  if (!d) return "";
+  try {
+    const dt = new Date(d);
+    if (isNaN(dt.getTime())) return d;
+    return dt.toLocaleString("cs-CZ");
+  } catch {
+    return d;
+  }
+}
+
+function formatDuration(min) {
+  if (!Number.isFinite(min) || min <= 0) return "—";
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  if (h <= 0) return `${m} min`;
+  return `${h} h ${m} min`;
 }
 
 function escapeHtml(s) {
@@ -48,97 +70,23 @@ function escapeHtml(s) {
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
-
-function formatDate(v) {
-  if (!v) return "";
-  const d = new Date(v);
-  if (Number.isNaN(d.getTime())) return String(v);
-  return d.toLocaleString("cs-CZ");
-}
-
-function formatDuration(min) {
-  if (!Number.isFinite(min) || min <= 0) return "—";
-  const h = Math.floor(min / 60);
-  const m = Math.floor(min % 60);
-  if (h <= 0) return `${m} min`;
-  return `${h} h ${m} min`;
-}
-
-function parseIsoMs(iso) {
-  if (!iso) return NaN;
-  const ms = new Date(iso).getTime();
-  return Number.isFinite(ms) ? ms : NaN;
-}
-
-// ✅ DÉLKA:
-// - aktivní: (now - start)
-// - ukončené historické: bez času (—)
-// - ukončené nové: použij duration_min z DB
-function getDisplayDurationMin(it) {
-  if (!it) return null;
-
-  if (!it.is_closed) {
-    const startMs = parseIsoMs(it.start_time_iso) || parseIsoMs(it.pub_date) || parseIsoMs(it.created_at);
-    if (!Number.isFinite(startMs)) return null;
-    const nowMs = Date.now();
-    const min = Math.round((nowMs - startMs) / 60000);
-    if (!Number.isFinite(min) || min <= 0) return null;
-    return min;
-  }
-
-  // ukončené: jen "nově ukončené" mají closed_detected_at
-  if (it.closed_detected_at && Number.isFinite(it.duration_min) && it.duration_min > 0) {
-    return it.duration_min;
-  }
-
-  return null;
-}
-
-function safeInvalidateMap() {
-  try {
-    if (map) map.invalidateSize();
-  } catch {
-    // ignore
-  }
-}
-
-function getFiltersFromUi() {
-  const type = document.getElementById("typeSelect").value.trim();
-  const city = document.getElementById("cityInput").value.trim();
-  const status = document.getElementById("statusSelect").value.trim();
-
-  const types = type ? [type] : [];
-  return { types, city, status };
-}
-
-function buildQuery(filters) {
-  const q = new URLSearchParams();
-  if (filters.types && filters.types.length) q.set("type", filters.types.join(","));
-  if (filters.city) q.set("city", filters.city);
-  if (filters.status && filters.status !== "all") q.set("status", filters.status);
-  return q.toString();
+    .replaceAll('"', "&quot;");
 }
 
 function renderTable(items) {
-  const tbody = document.querySelector("#eventsTable tbody");
+  const tbody = document.getElementById("eventsTbody");
   tbody.innerHTML = "";
   for (const it of items) {
     const t = it.event_type || "other";
     const state = it.is_closed ? "UKONČENO" : "AKTIVNÍ";
     const tr = document.createElement("tr");
-
-    const durMin = getDisplayDurationMin(it);
-
     tr.innerHTML = `
       <td>${escapeHtml(formatDate(it.pub_date || it.created_at))}</td>
-      <td><span class="iconPill" title="${escapeHtml((TYPE[t] || TYPE.other).label)}">${typeEmoji(t)}</span></td>
+      <td><span class="iconPill" title="${escapeHtml((TYPE[t]||TYPE.other).label)}">${typeEmoji(t)}</span></td>
       <td>${escapeHtml(it.title || "")}</td>
       <td>${escapeHtml(it.city_text || it.place_text || "")}</td>
       <td>${escapeHtml(state)}</td>
-      <td>${escapeHtml(formatDuration(durMin))}</td>
+      <td>${escapeHtml(formatDuration(it.duration_min))}</td>
       <td>${it.link ? `<a href="${it.link}" target="_blank" rel="noopener">otevřít</a>` : ""}</td>
     `;
     tbody.appendChild(tr);
@@ -160,21 +108,22 @@ function renderMap(items) {
   const pts = [];
   for (const it of items) {
     if (typeof it.lat === "number" && typeof it.lon === "number") {
+      // ✅ filtrování jen na Středočeský kraj
+      if (!isInStredocesky(it.lat, it.lon)) continue;
+
       const t = it.event_type || "other";
       const emoji = typeEmoji(t);
 
       const m = L.marker([it.lat, it.lon], { icon: makeMarkerIcon(emoji) });
 
       const state = it.is_closed ? "UKONČENO" : "AKTIVNÍ";
-      const durMin = getDisplayDurationMin(it);
-
       const html = `
         <div style="min-width:240px">
           <div style="font-weight:700;margin-bottom:6px">${emoji} ${escapeHtml(it.title || "")}</div>
           <div><b>Stav:</b> ${escapeHtml(state)}</div>
           <div><b>Město:</b> ${escapeHtml(it.city_text || it.place_text || "")}</div>
           <div><b>Čas:</b> ${escapeHtml(formatDate(it.pub_date || it.created_at))}</div>
-          <div><b>Délka:</b> ${escapeHtml(formatDuration(durMin))}</div>
+          <div><b>Délka:</b> ${escapeHtml(formatDuration(it.duration_min))}</div>
           ${it.link ? `<div style="margin-top:8px"><a href="${it.link}" target="_blank" rel="noopener">Detail</a></div>` : ""}
         </div>
       `;
@@ -184,15 +133,28 @@ function renderMap(items) {
     }
   }
 
-  // ❗️Nezoomuj na celou ČR – zůstaň v STČ, ale když máme body, přizpůsob se jim v rámci max bounds
+  // ✅ drž mapu v bounds Středočeského kraje
   if (pts.length > 0) {
-    const bounds = L.latLngBounds(pts);
-    map.fitBounds(bounds.pad(0.15), { maxZoom: 12 });
+    const bounds = L.latLngBounds(pts).pad(0.15);
+    map.fitBounds(bounds, { maxZoom: 11 });
+  } else {
+    map.fitBounds(STC_BOUNDS);
   }
+
+  safeInvalidateMap();
+}
+
+function safeInvalidateMap() {
+  try {
+    if (!map) return;
+    setTimeout(() => {
+      try { map.invalidateSize(true); } catch { /* ignore */ }
+    }, 80);
+  } catch { /* ignore */ }
 }
 
 function renderTopCities(rows) {
-  const wrap = document.getElementById("topCitiesList");
+  const wrap = document.getElementById("topCities");
   wrap.innerHTML = "";
   rows.forEach((r, idx) => {
     const div = document.createElement("div");
@@ -200,9 +162,9 @@ function renderTopCities(rows) {
     div.innerHTML = `
       <div class="left">
         <div class="meta">#${idx + 1}</div>
-        <div class="name">${escapeHtml(r.city || "")}</div>
+        <div class="name">${escapeHtml(r.city)}</div>
       </div>
-      <div class="meta">${escapeHtml(String(r.count ?? 0))}</div>
+      <div class="meta">${r.count}×</div>
     `;
     wrap.appendChild(div);
   });
@@ -215,8 +177,6 @@ function renderLongest(rows) {
     const div = document.createElement("div");
     div.className = "row";
     div.style.cursor = r.link ? "pointer" : "default";
-
-    // stats vrací jen nově ukončené => duration_min je validní
     div.innerHTML = `
       <div class="left">
         <div class="meta">#${idx + 1}</div>
@@ -240,26 +200,41 @@ function renderChart(byDay) {
   const labels = byDay.map(x => x.day);
   const data = byDay.map(x => x.count);
 
-  const ctx = document.getElementById("chartCanvas");
-
+  const ctx = document.getElementById("chartByDay");
   if (chart) chart.destroy();
+
   chart = new Chart(ctx, {
     type: "line",
-    data: {
-      labels,
-      datasets: [{ label: "Události / den", data, tension: 0.3 }]
-    },
+    data: { labels, datasets: [{ label: "Výjezdy", data }] },
     options: {
       responsive: true,
-      plugins: {
-        legend: { display: false }
-      },
+      plugins: { legend: { display: false } },
       scales: {
-        x: { ticks: { maxRotation: 0 } },
+        x: { ticks: { maxRotation: 0, autoSkip: true } },
         y: { beginAtZero: true }
       }
     }
   });
+}
+
+function getFiltersFromUi() {
+  const type = document.getElementById("typeSelect").value.trim();
+  const city = document.getElementById("cityInput").value.trim();
+  const status = document.getElementById("statusSelect").value.trim();
+
+  return {
+    type: type || "",
+    city: city || "",
+    status: status || "all"
+  };
+}
+
+function buildQuery(filters) {
+  const qs = new URLSearchParams();
+  if (filters.type) qs.set("type", filters.type);
+  if (filters.city) qs.set("city", filters.city);
+  if (filters.status && filters.status !== "all") qs.set("status", filters.status);
+  return qs.toString();
 }
 
 async function loadAll() {
@@ -304,7 +279,9 @@ function resetFilters() {
 function exportWithFilters(kind) {
   const filters = getFiltersFromUi();
   const q = buildQuery(filters);
-  const url = `/api/export.${kind}${q ? `?${q}` : ""}`;
+  const url = kind === "pdf"
+    ? `/api/export.pdf${q ? `?${q}` : ""}`
+    : `/api/export.csv${q ? `?${q}` : ""}`;
   window.open(url, "_blank");
 }
 
@@ -326,7 +303,8 @@ window.addEventListener("orientationchange", () => safeInvalidateMap());
 initMap();
 loadAll();
 
-// ✅ AUTO REFRESH (bez reloadu stránky)
+// ✅ autorefresh (60s) – jen když je tab aktivní
 setInterval(() => {
+  if (document.visibilityState !== "visible") return;
   loadAll();
-}, 5 * 60 * 1000);
+}, 60000);
