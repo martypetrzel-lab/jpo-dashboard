@@ -396,13 +396,44 @@ export async function getStatsFiltered(filters) {
     params
   );
 
-  // ✅ nejdelší zásahy: ignoruj extrémy > MAX_DURATION_MINUTES
+  // ✅ Nejdelší zásahy:
+  // - ukončené: jen když máme smysluplnou duration_min (<= MAX_DURATION_MINUTES)
+  // - aktivní: "živá" délka (od start_time_iso / first_seen_at / created_at do NOW), také zastropovaná
   const longest = await pool.query(
     `
-    SELECT id, title, link, COALESCE(NULLIF(city_text,''), place_text) AS city, duration_min, start_time_iso, end_time_iso, created_at
+    SELECT
+      id,
+      title,
+      link,
+      COALESCE(NULLIF(city_text,''), place_text) AS city,
+      CASE
+        WHEN duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= $${i}
+          THEN duration_min
+        WHEN NOT is_closed
+          THEN LEAST(
+            $${i},
+            GREATEST(
+              1,
+              FLOOR(
+                EXTRACT(EPOCH FROM (
+                  NOW() - COALESCE(NULLIF(start_time_iso,'')::timestamptz, first_seen_at, created_at)
+                )) / 60
+              )::int
+            )
+          )
+        ELSE NULL
+      END AS duration_min,
+      start_time_iso,
+      end_time_iso,
+      is_closed,
+      created_at
     FROM events
-    ${whereSql} AND duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= $${i}
-    ORDER BY duration_min DESC
+    ${whereSql}
+      AND (
+        (duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= $${i})
+        OR (NOT is_closed)
+      )
+    ORDER BY duration_min DESC NULLS LAST
     LIMIT 10;
     `,
     [...params, MAX_DURATION_MINUTES]
