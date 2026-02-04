@@ -1,11 +1,16 @@
 import pg from "pg";
 
 // ✅ stejný limit jako v serveru (fallback), aby se do DB neukládaly extrémy
-const MAX_DURATION_MINUTES = Math.max(60, Number(process.env.DURATION_MAX_MINUTES || 4320)); // 3 dny
+const MAX_DURATION_MINUTES = Math.max(
+  60,
+  Number(process.env.DURATION_MAX_MINUTES || 4320)
+); // 3 dny
 
 export const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL?.includes("railway") ? { rejectUnauthorized: false } : false
+  ssl: process.env.DATABASE_URL?.includes("railway")
+    ? { rejectUnauthorized: false }
+    : false
 });
 
 async function colExists(table, col) {
@@ -105,7 +110,9 @@ export async function initDb() {
 
   // ✅ „baseline“: všechny už existující ukončené záznamy bereme jako historické
   // (nechceme u nich dopočítávat délku podle "teď"). Spustí se pouze jednou.
-  const base = await pool.query(`SELECT value FROM meta WHERE key='closed_baseline_v1' LIMIT 1`);
+  const base = await pool.query(
+    `SELECT value FROM meta WHERE key='closed_baseline_v1' LIMIT 1`
+  );
   if (base.rowCount === 0) {
     await pool.query(`
       UPDATE events
@@ -115,13 +122,17 @@ export async function initDb() {
       WHERE is_closed = TRUE;
     `);
     await pool.query(
-      `INSERT INTO meta(key, value) VALUES('closed_baseline_v1','1') ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()`
+      `INSERT INTO meta(key, value)
+       VALUES('closed_baseline_v1','1')
+       ON CONFLICT (key) DO UPDATE
+       SET value=EXCLUDED.value, updated_at=NOW()`
     );
   }
 
-  // ✅ jednorázové vyčištění extrémních délek (nepovinné, ale pomůže hned)
+  // ✅ jednorázové vyčištění extrémních délek
   await pool.query(
-    `UPDATE events SET duration_min = NULL WHERE duration_min IS NOT NULL AND duration_min > $1`,
+    `UPDATE events SET duration_min = NULL
+     WHERE duration_min IS NOT NULL AND duration_min > $1`,
     [MAX_DURATION_MINUTES]
   );
 }
@@ -134,8 +145,42 @@ function clampDuration(v) {
   return n;
 }
 
+// ✅ kompatibilita: umí přijmout jak snake_case (ze serveru), tak camelCase (starší kód)
+function pick(ev, snake, camel, fallback = null) {
+  const a = ev?.[snake];
+  if (a !== undefined && a !== null && a !== "") return a;
+  const b = ev?.[camel];
+  if (b !== undefined && b !== null && b !== "") return b;
+  return fallback;
+}
+
 export async function upsertEvent(ev) {
-  const dur = clampDuration(ev.durationMin);
+  // server posílá snake_case, proto to mapujeme (a necháváme kompatibilitu i pro camelCase)
+  const id = pick(ev, "id", "id");
+  const title = pick(ev, "title", "title", "");
+  const link = pick(ev, "link", "link", "");
+  const pub_date = pick(ev, "pub_date", "pubDate", null);
+
+  const place_text = pick(ev, "place_text", "placeText", null);
+  const city_text = pick(ev, "city_text", "cityText", null);
+
+  const status_text = pick(ev, "status_text", "statusText", null);
+  const event_type = pick(ev, "event_type", "eventType", null);
+
+  const description_raw = pick(ev, "description_raw", "descriptionRaw", null);
+
+  const start_time_iso = pick(ev, "start_time_iso", "startTimeIso", null);
+  const end_time_iso = pick(ev, "end_time_iso", "endTimeIso", null);
+
+  const durationCandidate = pick(ev, "duration_min", "durationMin", null);
+  const dur = clampDuration(Number(durationCandidate));
+
+  const isClosedRaw = pick(ev, "is_closed", "isClosed", false);
+  const is_closed = !!isClosedRaw;
+
+  if (!id) {
+    throw new Error("upsertEvent: missing ev.id");
+  }
 
   await pool.query(
     `
@@ -145,10 +190,12 @@ export async function upsertEvent(ev) {
       description_raw,
       start_time_iso, end_time_iso, duration_min, is_closed,
       closed_detected_at,
-      first_seen_at, last_seenaßst_seen_at
+      first_seen_at, last_seen_at
     )
     VALUES (
-      $1,$2,$3,$4,$5,$6,$7,$8,$9,
+      $1,$2,$3,$4,
+      $5,$6,$7,$8,
+      $9,
       $10::text,
       $11::text,
       $12::int,
@@ -169,14 +216,18 @@ export async function upsertEvent(ev) {
       description_raw = COALESCE(EXCLUDED.description_raw, events.description_raw),
 
       start_time_iso = COALESCE(EXCLUDED.start_time_iso, events.start_time_iso),
-      -- end_time_iso: pokud přijde z RSS platné, vezmi ho; jinak při přechodu OPEN->CLOSED nastav NOW() (UTC)
+
+      -- end_time_iso:
+      -- 1) pokud přijde z RSS platné -> vezmi
+      -- 2) při přechodu OPEN->CLOSED -> nastav NOW() (UTC)
       end_time_iso = CASE
         WHEN EXCLUDED.end_time_iso IS NOT NULL THEN EXCLUDED.end_time_iso
-        WHEN (events.is_closed = FALSE AND EXCLUDED.is_closed = TRUE) THEN to_char((NOW() AT TIME ZONE 'utc'), 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+        WHEN (events.is_closed = FALSE AND EXCLUDED.is_closed = TRUE)
+          THEN to_char((NOW() AT TIME ZONE 'utc'), 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
         ELSE events.end_time_iso
       END,
 
-      -- ✅ duration: když je nový dur null, nech starý; ale když je starý extrémní, smaž ho
+      -- duration:
       duration_min = CASE
         WHEN EXCLUDED.duration_min IS NOT NULL THEN EXCLUDED.duration_min
         WHEN events.duration_min IS NOT NULL AND events.duration_min > $14 THEN NULL
@@ -193,19 +244,23 @@ export async function upsertEvent(ev) {
       last_seen_at = NOW()
     `,
     [
-      ev.id,
-      ev.title,
-      ev.link,
-      ev.pubDate || null,
-      ev.placeText || null,
-      ev.cityText || null,
-      ev.statusText || null,
-      ev.eventType || null,
-      ev.descriptionRaw || null,
-      ev.startTimeIso || null,
-      ev.endTimeIso || null,
+      id,
+      title,
+      link,
+      pub_date,
+
+      place_text,
+      city_text,
+      status_text,
+      event_type,
+
+      description_raw,
+
+      start_time_iso,
+      end_time_iso,
       dur,
-      !!ev.isClosed,
+      is_closed,
+
       MAX_DURATION_MINUTES
     ]
   );
@@ -219,12 +274,20 @@ export async function clearEventCoords(id) {
   await pool.query(`UPDATE events SET lat=NULL, lon=NULL WHERE id=$1`, [id]);
 }
 
-export async function updateEventDuration(id, durationMin) {
-  const dur = clampDuration(durationMin);
-  await pool.query(`UPDATE events SET duration_min=$2 WHERE id=$1`, [id, dur]);
+// ✅ server.js volá updateEventDuration(id, endIso, durMin)
+// -> tady to podporujeme a rovnou ukládáme i end_time_iso
+export async function updateEventDuration(id, endTimeIso, durationMin) {
+  const dur = clampDuration(Number(durationMin));
+  await pool.query(
+    `UPDATE events
+     SET end_time_iso = COALESCE($2, end_time_iso),
+         duration_min = $3
+     WHERE id=$1`,
+    [id, endTimeIso || null, dur]
+  );
 }
 
-// ✅ OPRAVA: ukončené zásahy bez dopočítané délky (zpětný přepočet)
+// ✅ ukončené zásahy bez dopočítané délky (zpětný přepočet)
 // - počítáme POUZE ty, které se ukončily po nasazení (closed_detected_at IS NOT NULL)
 export async function getClosedEventsMissingDuration(limit = 200) {
   const lim = Math.max(1, Math.min(2000, Number(limit) || 200));
@@ -283,9 +346,13 @@ export async function deleteCachedGeocode(placeText) {
   await pool.query(`DELETE FROM geocode_cache WHERE place_text=$1`, [placeText]);
 }
 
+// ✅ server.js čeká, že dostane i start_time_iso/pub_date (ne jen first_seen_at)
 export async function getEventFirstSeen(id) {
-  const res = await pool.query(`SELECT first_seen_at FROM events WHERE id=$1`, [id]);
-  return res.rows[0]?.first_seen_at || null;
+  const res = await pool.query(
+    `SELECT first_seen_at, start_time_iso, pub_date FROM events WHERE id=$1`,
+    [id]
+  );
+  return res.rows[0] || null;
 }
 
 export async function getEventsOutsideCz(limit = 200) {
@@ -311,7 +378,8 @@ function buildTimeWindowSql(day, params, iStart) {
   if (day === "today" || day === "yesterday") {
     const offset = day === "yesterday" ? 1 : 0;
     clauses.push(
-      `( (COALESCE(NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date = ((NOW() AT TIME ZONE 'Europe/Prague')::date - $${i}::int) )`
+      `( (COALESCE(NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date =
+         ((NOW() AT TIME ZONE 'Europe/Prague')::date - $${i}::int) )`
     );
     params.push(offset);
     i++;
@@ -323,16 +391,19 @@ function buildTimeWindowSql(day, params, iStart) {
 function buildMonthSql(month, params, iStart) {
   const clauses = [];
   let i = iStart;
+
   if (month) {
     const m = month.match(/^\d{4}-\d{2}$/);
     if (m) {
       clauses.push(
-        `date_trunc('month', (COALESCE(NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')) = date_trunc('month', to_date($${i}, 'YYYY-MM'))`
+        `date_trunc('month', (COALESCE(NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague'))
+         = date_trunc('month', to_date($${i}, 'YYYY-MM'))`
       );
       params.push(month);
       i++;
     }
   }
+
   return { clauses, nextI: i };
 }
 
@@ -370,8 +441,7 @@ export async function getEventsFiltered(filters, limit = 400) {
   where.push(...mWin.clauses);
   i = mWin.nextI;
 
-  const sql =
-    `
+  const sql = `
     SELECT
       id, title, link, pub_date,
       place_text, city_text,
@@ -385,7 +455,7 @@ export async function getEventsFiltered(filters, limit = 400) {
     ${where.length ? "WHERE " + where.join(" AND ") : ""}
     ORDER BY COALESCE(NULLIF(start_time_iso,'' )::timestamptz, created_at) DESC, created_at DESC
     LIMIT $${i}
-    `;
+  `;
 
   params.push(limit);
 
@@ -476,7 +546,6 @@ export async function getStatsFiltered(filters) {
     params
   );
 
-  // ✅ Nejdelší zásahy: jen ty, které byly ukončené po nasazení (closed_detected_at != null)
   const longest = await pool.query(
     `
     SELECT
