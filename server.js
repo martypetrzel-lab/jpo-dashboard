@@ -36,9 +36,46 @@ const GEOCODE_UA = process.env.GEOCODE_USER_AGENT || "jpo-dashboard/1.7 (contact
 const RSS_URL = process.env.RSS_URL || "";
 const RSS_POLL_MS = Math.max(30_000, Number(process.env.RSS_POLL_MS || 5 * 60 * 1000)); // default 5 min
 
+// ✅ region filter: "cz" (default) nebo "stc"
+const REGION_FILTER = String(process.env.REGION_FILTER || "cz").trim().toLowerCase();
+
 // ✅ sanity limit pro délku zásahu (default 3 dny)
 const MAX_DURATION_MINUTES = Math.max(60, Number(process.env.DURATION_MAX_MINUTES || 4320)); // 3 dny
 const FUTURE_END_TOLERANCE_MS = 5 * 60 * 1000; // ukončení nesmí být "v budoucnu" o víc než 5 min
+
+// ✅ hrubé hranice ČR (bbox) – ochrana proti chybnému geocodu
+const CZ_BOUNDS = { minLat: 48.55, maxLat: 51.06, minLon: 12.09, maxLon: 18.87 };
+
+// ✅ hrubé hranice Středočeského kraje (bbox) – jen doplňkově
+// (je to schválně širší, aby se nic důležitého “neuseklo”)
+const STC_BOUNDS = { minLat: 49.20, maxLat: 50.75, minLon: 13.20, maxLon: 15.80 };
+
+// ✅ okresy Středočeského kraje – hlavní filtr (podle RSS "okres ...")
+const STC_DISTRICTS = new Set([
+  "Benešov",
+  "Beroun",
+  "Kladno",
+  "Kolín",
+  "Kutná Hora",
+  "Mělník",
+  "Mladá Boleslav",
+  "Nymburk",
+  "Praha východ",
+  "Praha-východ",
+  "Praha západ",
+  "Praha-západ",
+  "Příbram",
+  "Rakovník"
+]);
+
+function inBounds(lat, lon, b) {
+  return (
+    Number.isFinite(lat) &&
+    Number.isFinite(lon) &&
+    lat >= b.minLat && lat <= b.maxLat &&
+    lon >= b.minLon && lon <= b.maxLon
+  );
+}
 
 // ---------------- AUTH ----------------
 function requireKey(req, res, next) {
@@ -80,14 +117,51 @@ function extractCityFromTitle(title = "") {
   return last;
 }
 
-function extractCityFromDescription(descRaw = "") {
-  if (!descRaw) return null;
-
-  const norm = String(descRaw)
-    .replace(/<br\s*\/?>/gi, "\n")
+/**
+ * RSS description často obsahuje "stav: ...&lt;br&gt;ukončení: ..."
+ * Musíme nejdřív dekódovat entity a až pak převést <br> na \n
+ */
+function normalizeDesc(descRaw = "") {
+  if (!descRaw) return "";
+  return String(descRaw)
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
-    .replace(/&amp;/g, "&");
+    .replace(/&amp;/g, "&")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .trim();
+}
+
+function extractDistrictFromDescription(descRaw = "") {
+  const norm = normalizeDesc(descRaw);
+  if (!norm) return null;
+  const lines = norm.split("\n").map(l => l.trim()).filter(Boolean);
+
+  for (const line of lines) {
+    const m = line.match(/^\s*okres\s+(.+)\s*$/i);
+    if (m && m[1]) return m[1].trim();
+  }
+  return null;
+}
+
+function isAllowedByRegion(descRaw = "") {
+  // default: CZ = nic nevyhazujeme podle okresu, jen ohlídáme souřadnice geocodem
+  if (REGION_FILTER !== "stc") return true;
+
+  const district = extractDistrictFromDescription(descRaw);
+  if (!district) return true; // když okres chybí, raději nevyhazuj (necháme projít)
+
+  // normalizace (Praha Západ / Praha-západ apod.)
+  const d = district
+    .replace(/\s+/g, " ")
+    .replace(/–/g, "-")
+    .trim();
+
+  return STC_DISTRICTS.has(d);
+}
+
+function extractCityFromDescription(descRaw = "") {
+  const norm = normalizeDesc(descRaw);
+  if (!norm) return null;
 
   const lines = norm.split("\n").map(l => l.trim()).filter(Boolean);
 
@@ -110,11 +184,8 @@ function extractCityFromDescription(descRaw = "") {
 }
 
 function extractStatusFromDescription(descRaw = "") {
-  const norm = String(descRaw)
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&amp;/g, "&");
+  const norm = normalizeDesc(descRaw);
+  if (!norm) return null;
 
   const lines = norm.split("\n").map(l => l.trim()).filter(Boolean);
   for (const line of lines) {
@@ -155,11 +226,8 @@ function parseCzDateToIso(s) {
 }
 
 function parseTimesFromDescription(descRaw = "") {
-  const norm = String(descRaw)
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&amp;/g, "&");
+  const norm = normalizeDesc(descRaw);
+  if (!norm) return { startIso: null, endIso: null, isClosed: false };
 
   const lines = norm.split("\n").map(l => l.trim()).filter(Boolean);
 
@@ -230,6 +298,9 @@ async function geocodePlace(placeText) {
 
   const cached = await getCachedGeocode(placeText);
   if (cached && typeof cached.lat === "number" && typeof cached.lon === "number") {
+    // ✅ cache taky hlídáme
+    if (!inBounds(cached.lat, cached.lon, CZ_BOUNDS)) return null;
+    if (REGION_FILTER === "stc" && !inBounds(cached.lat, cached.lon, STC_BOUNDS)) return null;
     return { lat: cached.lat, lon: cached.lon, cached: true };
   }
 
@@ -249,6 +320,7 @@ async function geocodePlace(placeText) {
     url.searchParams.set("limit", "3");
     url.searchParams.set("q", q);
 
+    // ✅ omez na ČR už u dotazu
     url.searchParams.set("countrycodes", "cz");
     url.searchParams.set("addressdetails", "1");
     url.searchParams.set("bounded", "1");
@@ -266,6 +338,12 @@ async function geocodePlace(placeText) {
       const lat = Number(cand.lat);
       const lon = Number(cand.lon);
       if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+
+      // ✅ tvrdá kontrola ČR bounds (řeší Polsko apod.)
+      if (!inBounds(lat, lon, CZ_BOUNDS)) continue;
+
+      // ✅ pokud chceš StČ, tak i bbox StČ
+      if (REGION_FILTER === "stc" && !inBounds(lat, lon, STC_BOUNDS)) continue;
 
       const cc = String(cand?.address?.country_code || "").toLowerCase();
       if (cc && cc !== "cz") continue;
@@ -365,22 +443,22 @@ function arrify(v) {
 }
 
 async function rssMaintenanceOnce() {
-  if (!RSS_URL) return { ok: false, reason: "RSS_URL not set", processed: 0, closed_found: 0 };
+  if (!RSS_URL) return { ok: false, reason: "RSS_URL not set", processed: 0, closed_found: 0, skipped_by_region: 0 };
 
   let xml = "";
   try {
     const r = await fetch(RSS_URL, { headers: { "User-Agent": "jpo-dashboard-rss/1.0" } });
-    if (!r.ok) return { ok: false, reason: `RSS HTTP ${r.status}`, processed: 0, closed_found: 0 };
+    if (!r.ok) return { ok: false, reason: `RSS HTTP ${r.status}`, processed: 0, closed_found: 0, skipped_by_region: 0 };
     xml = await r.text();
   } catch (e) {
-    return { ok: false, reason: `RSS fetch failed: ${e?.message || e}`, processed: 0, closed_found: 0 };
+    return { ok: false, reason: `RSS fetch failed: ${e?.message || e}`, processed: 0, closed_found: 0, skipped_by_region: 0 };
   }
 
   let parsed;
   try {
     parsed = rssParser.parse(xml);
   } catch (e) {
-    return { ok: false, reason: `RSS parse failed: ${e?.message || e}`, processed: 0, closed_found: 0 };
+    return { ok: false, reason: `RSS parse failed: ${e?.message || e}`, processed: 0, closed_found: 0, skipped_by_region: 0 };
   }
 
   const channel = parsed?.rss?.channel;
@@ -388,6 +466,7 @@ async function rssMaintenanceOnce() {
 
   let processed = 0;
   let closedFound = 0;
+  let skippedByRegion = 0;
 
   for (const it of items) {
     const title = String(it?.title || "").trim();
@@ -397,6 +476,12 @@ async function rssMaintenanceOnce() {
     const pubDate = String(it?.pubDate || "").trim();
 
     if (!title || !link) continue;
+
+    // ✅ region gate (StČ podle okresu)
+    if (!isAllowedByRegion(desc)) {
+      skippedByRegion++;
+      continue;
+    }
 
     const id = guid || link;
 
@@ -445,7 +530,7 @@ async function rssMaintenanceOnce() {
     if (ev.isClosed) closedFound++;
   }
 
-  return { ok: true, processed, closed_found: closedFound };
+  return { ok: true, processed, closed_found: closedFound, skipped_by_region: skippedByRegion };
 }
 
 // ---------------- PDF FONT (robust minimal) ----------------
@@ -491,12 +576,20 @@ app.post("/api/ingest", requireKey, async (req, res) => {
     let accepted = 0;
     let updatedClosed = 0;
     let geocoded = 0;
+    let skippedByRegion = 0;
 
     for (const it of items) {
       if (!it?.id || !it?.title || !it?.link) continue;
 
       const eventType = it.eventType || classifyType(it.title);
       const desc = it.descriptionRaw || it.descRaw || it.description || "";
+
+      // ✅ region gate (StČ podle okresu)
+      if (!isAllowedByRegion(desc)) {
+        skippedByRegion++;
+        continue;
+      }
+
       const times = parseTimesFromDescription(desc);
 
       const startIso = it.startTimeIso || times.startIso || null;
@@ -556,8 +649,10 @@ app.post("/api/ingest", requireKey, async (req, res) => {
       ok: true,
       source: source || "unknown",
       accepted,
+      skipped_by_region: skippedByRegion,
       closed_seen_in_batch: updatedClosed,
-      geocoded
+      geocoded,
+      region_filter: REGION_FILTER
     });
   } catch (e) {
     console.error(e);
@@ -570,11 +665,12 @@ app.post("/api/admin/recalc-durations", requireAdminPassword, async (req, res) =
   try {
     const limit = Math.max(1, Math.min(Number(req.body?.limit || 500), 5000));
 
-    const rss = await rssMaintenanceOnce(); // zkus rovnou stáhnout RSS a doplnit ukončení
+    const rss = await rssMaintenanceOnce();
     const dur = await durationMaintenance(limit);
 
     res.json({
       ok: true,
+      region_filter: REGION_FILTER,
       rss,
       durations: dur
     });
@@ -594,14 +690,19 @@ app.get("/api/events", async (req, res) => {
   const fixedCoords = await backfillCoords(rows, 8);
   const fixedDur = await backfillDurations(rows, 80);
 
-  res.json({ ok: true, filters, backfilled_coords: fixedCoords, backfilled_durations: fixedDur, items: rows });
+  res.json({
+    ok: true,
+    region_filter: REGION_FILTER,
+    filters,
+    backfilled_coords: fixedCoords,
+    backfilled_durations: fixedDur,
+    items: rows
+  });
 });
 
 // ✅ stats (30 dní) – vždy ze všech dnů (ignoruje filtr "Den")
 app.get("/api/stats", async (req, res) => {
   const filters = parseFilters(req);
-
-  // ✅ klíčová změna: statistika se nikdy nefiltruje podle dne
   const statsFilters = { ...filters, day: "all" };
 
   const stats = await getStatsFiltered(statsFilters);
@@ -609,7 +710,7 @@ app.get("/api/stats", async (req, res) => {
   const openCount = stats?.openVsClosed?.open ?? 0;
   const closedCount = stats?.openVsClosed?.closed ?? 0;
 
-  res.json({ ok: true, filters: statsFilters, ...stats, openCount, closedCount });
+  res.json({ ok: true, region_filter: REGION_FILTER, filters: statsFilters, ...stats, openCount, closedCount });
 });
 
 // export CSV
@@ -668,7 +769,7 @@ app.get("/api/export.csv", async (req, res) => {
   res.send([header, ...lines].join("\n"));
 });
 
-// export PDF
+// export PDF (beze změn logiky)
 app.get("/api/export.pdf", async (req, res) => {
   const filters = parseFilters(req);
   const limit = Math.min(Number(req.query.limit || 800), 2000);
@@ -774,7 +875,7 @@ app.get("/api/export.pdf", async (req, res) => {
   doc.end();
 });
 
-// admin: re-geocode mimo ČR
+// admin: re-geocode mimo ČR (ponecháno)
 app.post("/api/admin/regeocode", requireKey, async (req, res) => {
   try {
     const mode = String(req.body?.mode || "outside_cz");
@@ -833,7 +934,7 @@ await initDb();
 // Po startu: 1) zkus RSS sync (pokud nastaven), 2) dopočítej chybějící délky
 rssMaintenanceOnce()
   .then((r) => {
-    if (r.ok) console.log(`[rss] processed=${r.processed} closed_found=${r.closed_found}`);
+    if (r.ok) console.log(`[rss] processed=${r.processed} closed_found=${r.closed_found} skipped_by_region=${r.skipped_by_region}`);
     else console.log(`[rss] skipped: ${r.reason}`);
   })
   .catch((e) => console.warn("[rss] failed", e?.message || e));
@@ -849,14 +950,12 @@ setInterval(() => {
   rssMaintenanceOnce()
     .then(async (r) => {
       if (r.ok) {
-        if (r.closed_found > 0) {
-          console.log(`[rss] processed=${r.processed} closed_found=${r.closed_found}`);
+        if (r.closed_found > 0 || r.skipped_by_region > 0) {
+          console.log(`[rss] processed=${r.processed} closed_found=${r.closed_found} skipped_by_region=${r.skipped_by_region}`);
         }
-        // po RSS syncu zkus hned dopočítat chybějící duration (když end_time přibylo)
         const d = await durationMaintenance(500);
         if (d.fixed > 0) console.log(`[dur-maint] fixed=${d.fixed} checked=${d.checked}`);
       } else {
-        // RSS může být záměrně bez URL, tak jen tichý log
         console.log(`[rss] skipped: ${r.reason}`);
       }
     })
