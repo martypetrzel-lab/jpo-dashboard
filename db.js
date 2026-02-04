@@ -178,26 +178,23 @@ export async function updateEventDuration(id, durationMin) {
   await pool.query(`UPDATE events SET duration_min=$2 WHERE id=$1`, [id, dur]);
 }
 
-// ✅ výběr ukončených zásahů bez dopočtené délky (pro zpětný přepočet)
-export async function getClosedEventsNeedingDuration(limit = 200) {
-  const lim = Math.max(1, Math.min(Number(limit || 200), 2000));
+// Ukončené zásahy bez dopočítané délky (zpětný přepočet)
+// Podmínky:
+// - mají end_time_iso (ukončení známé)
+// - duration_min je NULL
+// - jsou v historii (stav ukončený/closed)
+export async function getClosedEventsMissingDuration(limit = 200) {
+  const lim = Math.max(1, Math.min(2000, Number(limit) || 200));
   const res = await pool.query(
     `
-    SELECT
-      id,
-      start_time_iso,
-      end_time_iso,
-      pub_date,
-      first_seen_at,
-      created_at,
-      duration_min,
-      is_closed
+    SELECT id, title, city, pub_date, start_time_iso, end_time_iso, status
     FROM events
-    WHERE is_closed = TRUE
-      AND duration_min IS NULL
+    WHERE duration_min IS NULL
       AND end_time_iso IS NOT NULL
-      AND NULLIF(end_time_iso, '') IS NOT NULL
-    ORDER BY COALESCE(NULLIF(end_time_iso,'')::timestamptz, created_at) DESC
+      AND (
+        status ILIKE '%ukon%' OR status ILIKE '%closed%' OR status ILIKE '%ukonč%'
+      )
+    ORDER BY COALESCE(end_time_iso, pub_date) DESC
     LIMIT $1
     `,
     [lim]
@@ -206,7 +203,10 @@ export async function getClosedEventsNeedingDuration(limit = 200) {
 }
 
 export async function getCachedGeocode(placeText) {
-  const res = await pool.query(`SELECT lat, lon FROM geocode_cache WHERE place_text=$1`, [placeText]);
+  const res = await pool.query(
+    `SELECT lat, lon FROM geocode_cache WHERE place_text=$1`,
+    [placeText]
+  );
   return res.rows[0] || null;
 }
 
