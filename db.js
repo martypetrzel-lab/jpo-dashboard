@@ -44,12 +44,11 @@ async function ensureMetaBaseline() {
 
   const r = await pool.query(`SELECT value FROM meta WHERE key='durations_baseline' LIMIT 1;`);
   if (r.rowCount === 0) {
-    // ✅ baseline vytvoříme jen jednou (první start po deployi)
     await pool.query(
       `INSERT INTO meta (key, value) VALUES ('durations_baseline', ${sqlUtcIsoNow()});`
     );
 
-    // ✅ OD TEĎ: vše co už bylo ukončené bereme jako "historické" => bez času
+    // ✅ historické ukončené = bez času (—)
     await pool.query(`
       UPDATE events
       SET duration_min = NULL,
@@ -102,7 +101,7 @@ export async function initDb() {
     );
   `);
 
-  // migrations if you started from older schema
+  // migrations (pokud starší schema)
   const adds = [
     ["events", "city_text", "TEXT"],
     ["events", "event_type", "TEXT"],
@@ -127,7 +126,7 @@ export async function initDb() {
     }
   }
 
-  // ensure defaults for new columns if migrated
+  // defaults při migraci
   await pool.query(`
     UPDATE events
     SET is_closed = COALESCE(is_closed, FALSE),
@@ -136,10 +135,9 @@ export async function initDb() {
     WHERE is_closed IS NULL OR first_seen_at IS NULL OR last_seen_at IS NULL;
   `);
 
-  // ✅ baseline + historické ukončené bez času
   await ensureMetaBaseline();
 
-  // pojistka – smaž extrémy
+  // pojistka proti extrémům
   await pool.query(
     `UPDATE events SET duration_min = NULL WHERE duration_min IS NOT NULL AND duration_min > $1`,
     [MAX_DURATION_MINUTES]
@@ -149,7 +147,7 @@ export async function initDb() {
 export async function upsertEvent(ev) {
   const dur = clampDuration(ev.durationMin);
 
-  // ✅ FIX: explicitní typy pro $10/$11 (TEXT), aby PG nepadal na "could not determine data type of parameter"
+  // ✅ FIX: casts pro $10/$11 => PostgreSQL už vždy ví, že je to TEXT
   await pool.query(
     `
     INSERT INTO events (
@@ -229,8 +227,8 @@ export async function clearEventCoords(id) {
 }
 
 export async function updateEventDuration(id, durationMin) {
-  const dur2 = clampDuration(durationMin);
-  await pool.query(`UPDATE events SET duration_min=$2 WHERE id=$1`, [id, dur2]);
+  const dur = clampDuration(durationMin);
+  await pool.query(`UPDATE events SET duration_min=$2 WHERE id=$1`, [id, dur]);
 }
 
 export async function getCachedGeocode(placeText) {
