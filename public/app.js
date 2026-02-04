@@ -58,12 +58,52 @@ function escapeHtml(s) {
     .replaceAll('"', "&quot;");
 }
 
+// ✅ NOVÉ: běžící délka pro AKTIVNÍ zásah (když duration_min chybí)
+const LIVE_DURATION_MAX_MIN = 4320; // 3 dny (stejné jako server default)
+
+function getLiveDurationMin(it) {
+  try {
+    if (!it || it.is_closed) return null;
+
+    const now = Date.now();
+    const startCandidate =
+      it.start_time_iso ||
+      it.first_seen_at ||
+      it.created_at ||
+      it.pub_date ||
+      null;
+
+    if (!startCandidate) return null;
+
+    const startMs = new Date(startCandidate).getTime();
+    if (!Number.isFinite(startMs)) return null;
+
+    const diffMin = Math.floor((now - startMs) / 60000);
+    if (!Number.isFinite(diffMin) || diffMin < 1) return 1;
+
+    if (diffMin > LIVE_DURATION_MAX_MIN) return null; // nepouštět extrémy
+    return diffMin;
+  } catch {
+    return null;
+  }
+}
+
+function getDisplayDurationMin(it) {
+  if (Number.isFinite(it?.duration_min) && it.duration_min > 0) return it.duration_min;
+  const live = getLiveDurationMin(it);
+  return Number.isFinite(live) ? live : null;
+}
+
 function renderTable(items) {
   const tbody = document.getElementById("eventsTbody");
   tbody.innerHTML = "";
   for (const it of items) {
     const t = it.event_type || "other";
     const state = it.is_closed ? "UKONČENO" : "AKTIVNÍ";
+
+    // ✅ použij běžící délku pro AKTIVNÍ, když duration_min není
+    const durMin = getDisplayDurationMin(it);
+
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${escapeHtml(formatDate(it.pub_date || it.created_at))}</td>
@@ -71,7 +111,7 @@ function renderTable(items) {
       <td>${escapeHtml(it.title || "")}</td>
       <td>${escapeHtml(it.city_text || it.place_text || "")}</td>
       <td>${escapeHtml(state)}</td>
-      <td>${escapeHtml(formatDuration(it.duration_min))}</td>
+      <td>${escapeHtml(formatDuration(durMin))}</td>
       <td>${it.link ? `<a href="${it.link}" target="_blank" rel="noopener">otevřít</a>` : ""}</td>
     `;
     tbody.appendChild(tr);
