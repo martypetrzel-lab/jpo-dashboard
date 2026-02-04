@@ -178,6 +178,15 @@ export async function updateEventDuration(id, durationMin) {
   await pool.query(`UPDATE events SET duration_min=$2 WHERE id=$1`, [id, dur]);
 }
 
+export async function updateEventEndTime(id, endTimeIso) {
+  const v = String(endTimeIso || "").trim();
+  if (!v) return;
+  await pool.query(
+    `UPDATE events SET end_time_iso=$2, is_closed=TRUE, last_seen_at=NOW() WHERE id=$1`,
+    [id, v]
+  );
+}
+
 // ✅ OPRAVA: ukončené zásahy bez dopočítané délky (zpětný přepočet)
 // - používáme správné sloupce status_text / city_text
 export async function getClosedEventsMissingDuration(limit = 200) {

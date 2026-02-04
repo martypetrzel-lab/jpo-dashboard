@@ -14,6 +14,24 @@ function typeEmoji(t) {
   return (TYPE[t] || TYPE.other).emoji;
 }
 
+
+// ✅ HRUBÉ hranice Středočeského kraje (bbox) – jen pro mapu (frontend)
+// schválně lehce širší, aby se nic "neuseklo"
+const STC_BOUNDS = { minLat: 49.20, maxLat: 50.75, minLon: 13.20, maxLon: 15.80 };
+
+function inBounds(lat, lon, b) {
+  return (
+    Number.isFinite(lat) &&
+    Number.isFinite(lon) &&
+    lat >= b.minLat && lat <= b.maxLat &&
+    lon >= b.minLon && lon <= b.maxLon
+  );
+}
+
+function leafletBoundsFromBBox(b) {
+  return L.latLngBounds([b.minLat, b.minLon], [b.maxLat, b.maxLon]);
+}
+
 function setStatus(text, ok = true) {
   const pill = document.getElementById("statusPill");
   pill.textContent = text;
@@ -22,7 +40,13 @@ function setStatus(text, ok = true) {
 }
 
 function initMap() {
-  map = L.map("map").setView([49.8, 15.3], 7);
+  map = L.map("map", {
+    maxBounds: leafletBoundsFromBBox(STC_BOUNDS),
+    maxBoundsViscosity: 1.0
+  });
+  // Středočeský kraj – výchozí výřez
+  map.fitBounds(leafletBoundsFromBBox(STC_BOUNDS));
+
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 18,
     attribution: "&copy; OpenStreetMap"
@@ -131,6 +155,9 @@ function renderMap(items) {
   const pts = [];
   for (const it of items) {
     if (typeof it.lat === "number" && typeof it.lon === "number") {
+      // ✅ mapa pouze Středočeský kraj
+      if (!inBounds(it.lat, it.lon, STC_BOUNDS)) continue;
+
       const t = it.event_type || "other";
       const emoji = typeEmoji(t);
 
@@ -159,7 +186,7 @@ function renderMap(items) {
     const bounds = L.latLngBounds(pts);
     map.fitBounds(bounds.pad(0.2));
   } else {
-    map.setView([49.8, 15.3], 7);
+    map.fitBounds(leafletBoundsFromBBox(STC_BOUNDS));
   }
 
   safeInvalidateMap();

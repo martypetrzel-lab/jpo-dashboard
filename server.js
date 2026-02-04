@@ -18,6 +18,7 @@ import {
   getEventsOutsideCz,
   getEventFirstSeen,
   updateEventDuration,
+  updateEventEndTime,
   getClosedEventsMissingDuration
 } from "./db.js";
 
@@ -286,6 +287,27 @@ async function computeDurationMin(id, startIso, endIso, createdAtFallback) {
   return dur;
 }
 
+function isFutureIso(iso) {
+  if (!iso) return false;
+  const ms = new Date(iso).getTime();
+  if (!Number.isFinite(ms)) return false;
+  return ms > (Date.now() + FUTURE_END_TOLERANCE_MS);
+}
+
+// ✅ RSS/ESP občas posílá "ukončení" se špatným datem (třeba v budoucnu).
+// Když je zásah ukončený, bereme jako end_time reálný čas na serveru (NOW),
+// pokud je ukončení chybné / chybí / je "v budoucnu".
+function sanitizeEndIsoForClosed(endIso, isClosed) {
+  if (!isClosed) return endIso || null;
+  const nowIso = new Date().toISOString();
+
+  if (!endIso) return nowIso;
+  const ms = new Date(endIso).getTime();
+  if (!Number.isFinite(ms)) return nowIso;
+  if (ms > (Date.now() + FUTURE_END_TOLERANCE_MS)) return nowIso;
+  return endIso;
+}
+
 function normalizePlaceQuery(placeText) {
   const raw = String(placeText || "").trim();
   if (!raw) return "";
@@ -395,13 +417,25 @@ async function backfillDurations(rows, max = 40) {
 async function durationMaintenance(limit = 300) {
   const missing = await getClosedEventsMissingDuration(Math.max(1, Math.min(limit, 500)));
   let fixed = 0;
+
   for (const r of missing) {
+    // ✅ pokud je end_time_iso v budoucnu (chybný RSS), přepiš ho na NOW
+    const safeEndIso = sanitizeEndIsoForClosed(r.end_time_iso || null, true);
+
+    if (safeEndIso && safeEndIso !== r.end_time_iso) {
+      // eslint-disable-next-line no-await-in-loop
+      await updateEventEndTime(r.id, safeEndIso);
+      r.end_time_iso = safeEndIso;
+    }
+
     const dur = await computeDurationMin(r.id, r.start_time_iso, r.end_time_iso, r.created_at);
     if (Number.isFinite(dur) && dur > 0) {
+      // eslint-disable-next-line no-await-in-loop
       await updateEventDuration(r.id, dur);
       fixed++;
     }
   }
+
   return { checked: missing.length, fixed };
 }
 
@@ -491,8 +525,10 @@ async function rssMaintenanceOnce() {
     const times = parseTimesFromDescription(desc);
 
     const startIso = times.startIso || null;
-    const endIso = times.endIso || null;
     const isClosed = !!times.isClosed;
+
+    // ✅ špatné datum ukončení -> použij reálný čas serveru
+    const endIso = sanitizeEndIsoForClosed(times.endIso || null, isClosed);
 
     let durationMin = null;
     if (isClosed && endIso) {
@@ -595,8 +631,10 @@ app.post("/api/ingest", requireKey, async (req, res) => {
       const times = parseTimesFromDescription(desc);
 
       const startIso = it.startTimeIso || times.startIso || null;
-      const endIso = it.endTimeIso || times.endIso || null;
       const isClosed = !!times.isClosed;
+
+      // ✅ špatné datum ukončení -> použij reálný čas serveru
+      const endIso = sanitizeEndIsoForClosed(it.endTimeIso || times.endIso || null, isClosed);
 
       let durationMin = null;
       if (Number.isFinite(it.durationMin)) {
