@@ -1,11 +1,10 @@
+<!-- index.html -->
 <!doctype html>
 <html lang="cs">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-  <meta name="theme-color" content="#0b0f14" />
-  <title>FireWatch CZ</title>
-
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>JPO výjezdy – dashboard</title>
   <link rel="stylesheet" href="styles.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
 </head>
@@ -13,13 +12,16 @@
 
   <header class="topbar">
     <div class="title">
-      <h1>FireWatch <span class="brandAccent">CZ</span></h1>
-      <div class="sub">Přehled a statistiky zásahů JPO</div>
+      <h1>JPO výjezdy – dashboard</h1>
+      <div class="sub">Mapa • filtry • statistiky • export CSV/PDF</div>
     </div>
 
     <div class="actions">
       <span id="statusPill" class="pill">…</span>
-      <button id="recalcBtn" class="btn">Přepočítat délky</button>
+      <div class="adminTools" title="Ruční přepočet délek zásahů">
+        <input id="adminPwInput" class="adminPw" type="password" placeholder="ADMIN_PASSWORD" />
+        <button id="recalcBtn" class="btn">Přepočítat délky</button>
+      </div>
       <button id="refreshBtn" class="btn">Obnovit</button>
     </div>
   </header>
@@ -41,7 +43,7 @@
 
       <div class="field">
         <label for="cityInput">Město</label>
-        <input id="cityInput" type="text" placeholder="např. Nehvizdy" />
+        <input id="cityInput" type="text" placeholder="např. Černošice" />
       </div>
 
       <div class="field">
@@ -54,100 +56,68 @@
       </div>
 
       <div class="field buttons">
-        <label class="ghost">Akce</label>
-        <div class="btnRow">
-          <button id="applyBtn" class="btn primary">Použít</button>
-          <button id="resetBtn" class="btn">Reset</button>
-        </div>
+        <label>&nbsp;</label>
+        <button id="applyBtn" class="btn primary">Použít filtry</button>
       </div>
 
       <div class="field buttons">
-        <label class="ghost">Export</label>
-        <div class="btnRow">
-          <button id="exportCsvBtn" class="btn">Export CSV</button>
-          <button id="exportPdfBtn" class="btn">Export PDF</button>
-        </div>
+        <label>&nbsp;</label>
+        <button id="resetBtn" class="btn">Reset</button>
+        <button id="exportCsvBtn" class="btn">Export CSV</button>
+        <button id="exportPdfBtn" class="btn">Export PDF</button>
       </div>
     </div>
   </section>
 
   <main class="grid">
     <section class="card mapCard">
-      <div class="cardHeader">
-        <h2>Mapa výjezdů</h2>
-        <div class="hint legend">
-          <span class="legendItem">🔥 požár</span>
-          <span class="legendItem">🚗 nehoda</span>
-          <span class="legendItem">🛠️ technická</span>
-          <span class="legendItem">🧍 záchrana</span>
-          <span class="legendItem">🚨 planý poplach</span>
-          <span class="legendItem">❓ jiné</span>
-        </div>
-      </div>
+      <div class="cardTitle">Mapa</div>
       <div id="map"></div>
     </section>
 
-    <section class="card">
-      <div class="cardHeader">
-        <h2>Statistika (30 dní)</h2>
-        <div class="hint">Počet výjezdů po dnech</div>
-      </div>
-      <div class="canvasWrap">
-        <canvas id="chartByDay" height="140"></canvas>
-      </div>
-    </section>
+    <section class="card statsCard">
+      <div class="cardTitle">Statistiky</div>
 
-    <section class="card">
-      <div class="cardHeader">
-        <h2>Aktivní × ukončené</h2>
-        <div class="hint">Počet (30 dní, podle filtrů)</div>
-      </div>
-      <div class="splitStats">
-        <div class="splitCard">
-          <div class="splitValue" id="openCount">—</div>
-          <div class="splitLabel">Aktivní</div>
+      <div class="miniGrid">
+        <div class="mini">
+          <div class="miniLabel">Aktivní</div>
+          <div id="openCount" class="miniValue">—</div>
         </div>
-        <div class="splitCard">
-          <div class="splitValue" id="closedCount">—</div>
-          <div class="splitLabel">Ukončené</div>
+        <div class="mini">
+          <div class="miniLabel">Ukončené</div>
+          <div id="closedCount" class="miniValue">—</div>
         </div>
       </div>
-    </section>
 
-    <section class="card">
-      <div class="cardHeader">
-        <h2>Žebříček měst</h2>
-        <div class="hint">Top 15 (30 dní)</div>
+      <div class="split">
+        <div class="col">
+          <div class="smallTitle">Nejčastější města</div>
+          <div id="topCities" class="list"></div>
+        </div>
+        <div class="col">
+          <div class="smallTitle">Nejdelší zásahy</div>
+          <div id="longestList" class="list"></div>
+        </div>
       </div>
-      <div class="list" id="topCities"></div>
-    </section>
 
-    <section class="card">
-      <div class="cardHeader">
-        <h2>Nejdelší zásahy</h2>
-        <div class="hint">Jen kde se spočítala délka</div>
-      </div>
-      <div class="list" id="longestList"></div>
+      <div class="smallTitle">Trend dle dní</div>
+      <canvas id="chartByDay" height="110"></canvas>
     </section>
 
     <section class="card tableCard">
-      <div class="cardHeader">
-        <h2>Poslední výjezdy</h2>
-        <div class="hint">Tabulka (scroll na mobilu)</div>
-      </div>
-
-      <div class="tableWrap" role="region" aria-label="Tabulka výjezdů" tabindex="0">
+      <div class="cardTitle">Poslední výjezdy</div>
+      <div class="tableWrap">
         <table>
           <thead>
-          <tr>
-            <th>Čas</th>
-            <th>Typ</th>
-            <th>Název</th>
-            <th>Město</th>
-            <th>Stav</th>
-            <th>Délka</th>
-            <th>Odkaz</th>
-          </tr>
+            <tr>
+              <th>Čas</th>
+              <th>Typ</th>
+              <th>Název</th>
+              <th>Město</th>
+              <th>Stav</th>
+              <th>Délka</th>
+              <th>Odkaz</th>
+            </tr>
           </thead>
           <tbody id="eventsTbody"></tbody>
         </table>
@@ -156,7 +126,7 @@
   </main>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

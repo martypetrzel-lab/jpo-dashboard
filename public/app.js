@@ -1,5 +1,16 @@
+// app.js
 let map, markersLayer, chart;
-let inFlight = false;
+
+// CZ bounding box: lon 12.09–18.87, lat 48.55–51.06 (stejné jako backend)
+const CZ_BOUNDS = { minLat: 48.55, maxLat: 51.06, minLon: 12.09, maxLon: 18.87 };
+
+function inBounds(lat, lon) {
+  return (
+    Number.isFinite(lat) && Number.isFinite(lon) &&
+    lat >= CZ_BOUNDS.minLat && lat <= CZ_BOUNDS.maxLat &&
+    lon >= CZ_BOUNDS.minLon && lon <= CZ_BOUNDS.maxLon
+  );
+}
 
 const TYPE = {
   fire: { emoji: "🔥", label: "požár" },
@@ -58,58 +69,20 @@ function escapeHtml(s) {
     .replaceAll('"', "&quot;");
 }
 
-// ✅ běžící délka pro AKTIVNÍ zásah (když duration_min chybí)
-const LIVE_DURATION_MAX_MIN = 4320; // 3 dny
-
-function getLiveDurationMin(it) {
-  try {
-    if (!it || it.is_closed) return null;
-
-    const now = Date.now();
-    const startCandidate =
-      it.start_time_iso ||
-      it.first_seen_at ||
-      it.created_at ||
-      it.pub_date ||
-      null;
-
-    if (!startCandidate) return null;
-
-    const startMs = new Date(startCandidate).getTime();
-    if (!Number.isFinite(startMs)) return null;
-
-    const diffMin = Math.floor((now - startMs) / 60000);
-    if (!Number.isFinite(diffMin) || diffMin < 1) return 1;
-
-    if (diffMin > LIVE_DURATION_MAX_MIN) return null;
-    return diffMin;
-  } catch {
-    return null;
-  }
-}
-
-function getDisplayDurationMin(it) {
-  if (Number.isFinite(it?.duration_min) && it.duration_min > 0) return it.duration_min;
-  const live = getLiveDurationMin(it);
-  return Number.isFinite(live) ? live : null;
-}
-
 function renderTable(items) {
   const tbody = document.getElementById("eventsTbody");
   tbody.innerHTML = "";
   for (const it of items) {
     const t = it.event_type || "other";
     const state = it.is_closed ? "UKONČENO" : "AKTIVNÍ";
-    const durMin = getDisplayDurationMin(it);
-
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${escapeHtml(formatDate(it.pub_date || it.created_at))}</td>
-      <td><span class="iconPill" title="${escapeHtml((TYPE[t] || TYPE.other).label)}">${typeEmoji(t)}</span></td>
+      <td><span class="iconPill" title="${escapeHtml((TYPE[t]||TYPE.other).label)}">${typeEmoji(t)}</span></td>
       <td>${escapeHtml(it.title || "")}</td>
       <td>${escapeHtml(it.city_text || it.place_text || "")}</td>
       <td>${escapeHtml(state)}</td>
-      <td>${escapeHtml(formatDuration(durMin))}</td>
+      <td>${escapeHtml(formatDuration(it.duration_min))}</td>
       <td>${it.link ? `<a href="${it.link}" target="_blank" rel="noopener">otevřít</a>` : ""}</td>
     `;
     tbody.appendChild(tr);
@@ -130,22 +103,20 @@ function renderMap(items) {
 
   const pts = [];
   for (const it of items) {
-    if (typeof it.lat === "number" && typeof it.lon === "number") {
+    if (typeof it.lat === "number" && typeof it.lon === "number" && inBounds(it.lat, it.lon)) {
       const t = it.event_type || "other";
       const emoji = typeEmoji(t);
 
       const m = L.marker([it.lat, it.lon], { icon: makeMarkerIcon(emoji) });
 
       const state = it.is_closed ? "UKONČENO" : "AKTIVNÍ";
-      const durMin = getDisplayDurationMin(it);
-
       const html = `
         <div style="min-width:240px">
           <div style="font-weight:700;margin-bottom:6px">${emoji} ${escapeHtml(it.title || "")}</div>
           <div><b>Stav:</b> ${escapeHtml(state)}</div>
           <div><b>Město:</b> ${escapeHtml(it.city_text || it.place_text || "")}</div>
           <div><b>Čas:</b> ${escapeHtml(formatDate(it.pub_date || it.created_at))}</div>
-          <div><b>Délka:</b> ${escapeHtml(formatDuration(durMin))}</div>
+          <div><b>Délka:</b> ${escapeHtml(formatDuration(it.duration_min))}</div>
           ${it.link ? `<div style="margin-top:8px"><a href="${it.link}" target="_blank" rel="noopener">Detail</a></div>` : ""}
         </div>
       `;
@@ -239,81 +210,63 @@ function renderChart(byDay) {
 }
 
 function getFiltersFromUi() {
-  const day = (document.getElementById("daySelect")?.value || "today").trim();
   const type = document.getElementById("typeSelect").value.trim();
   const city = document.getElementById("cityInput").value.trim();
   const status = document.getElementById("statusSelect").value.trim();
-  const month = (document.getElementById("monthInput")?.value || "").trim();
 
+  // do API posíláme: type=... (1 typ), city=..., status=all/open/closed
   return {
-    day: day || "today",
     type: type || "",
     city: city || "",
-    status: status || "all",
-    month: month || ""
+    status: status || "all"
   };
 }
 
 function buildQuery(filters) {
   const qs = new URLSearchParams();
-  if (filters.day && filters.day !== "today") qs.set("day", filters.day);
   if (filters.type) qs.set("type", filters.type);
   if (filters.city) qs.set("city", filters.city);
   if (filters.status && filters.status !== "all") qs.set("status", filters.status);
-  if (filters.month) qs.set("month", filters.month);
   return qs.toString();
 }
 
 async function loadAll() {
-  if (inFlight) return;
-  inFlight = true;
+  const filters = getFiltersFromUi();
+  const q = buildQuery(filters);
 
-  try {
-    const filters = getFiltersFromUi();
-    const q = buildQuery(filters);
+  setStatus("načítám…", true);
 
-    setStatus("načítám…", true);
+  const [eventsRes, statsRes] = await Promise.all([
+    fetch(`/api/events?limit=500${q ? `&${q}` : ""}`),
+    fetch(`/api/stats${q ? `?${q}` : ""}`)
+  ]);
 
-    const [eventsRes, statsRes] = await Promise.all([
-      fetch(`/api/events?limit=500${q ? `&${q}` : ""}`),
-      fetch(`/api/stats${q ? `?${q}` : ""}`)
-    ]);
-
-    if (!eventsRes.ok || !statsRes.ok) {
-      setStatus("chyba API", false);
-      return;
-    }
-
-    const eventsJson = await eventsRes.json();
-    const statsJson = await statsRes.json();
-
-    const items = (eventsJson.items || []);
-
-    renderTable(items);
-    renderMap(items);
-
-    renderChart(statsJson.byDay || []);
-    renderCounts(statsJson.openCount, statsJson.closedCount);
-    renderTopCities(statsJson.topCities || []);
-    renderLongest(statsJson.longest || []);
-
-    const missing = items.filter(x => x.lat == null || x.lon == null).length;
-    setStatus(`OK • ${items.length} záznamů • bez souřadnic ${missing}`, true);
-  } catch {
-    setStatus("chyba načítání", false);
-  } finally {
-    inFlight = false;
+  if (!eventsRes.ok || !statsRes.ok) {
+    setStatus("chyba API", false);
+    return;
   }
+
+  const eventsJson = await eventsRes.json();
+  const statsJson = await statsRes.json();
+
+  const items = (eventsJson.items || []);
+
+  renderTable(items);
+  renderMap(items);
+
+  renderChart(statsJson.byDay || []);
+  renderCounts(statsJson.openCount, statsJson.closedCount);
+  renderTopCities(statsJson.topCities || []);
+  renderLongest(statsJson.longest || []);
+
+  const missing = items.filter(x => x.lat == null || x.lon == null).length;
+  setStatus(`OK • ${items.length} záznamů • bez souřadnic ${missing}`, true);
 }
 
 function resetFilters() {
-  const dayEl = document.getElementById("daySelect");
-  if (dayEl) dayEl.value = "today";
   document.getElementById("typeSelect").value = "";
   document.getElementById("cityInput").value = "";
   document.getElementById("statusSelect").value = "all";
-  const monthEl = document.getElementById("monthInput");
-  if (monthEl) monthEl.value = "";
 }
 
 function exportWithFilters(kind) {
@@ -325,51 +278,47 @@ function exportWithFilters(kind) {
   window.open(url, "_blank");
 }
 
-// ✅ ADMIN: ruční přepočet délek přes heslo
-async function manualRecalc() {
-  const pw = prompt("Zadej admin heslo pro přepočet délek:");
-  if (!pw) return;
-
-  try {
-    setStatus("přepočítávám…", true);
-    const r = await fetch("/api/admin/recalc-durations", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Admin-Password": pw
-      },
-      body: JSON.stringify({ limit: 2000 })
-    });
-
-    const j = await r.json().catch(() => ({}));
-
-    if (!r.ok || !j?.ok) {
-      setStatus(`chyba přepočtu: ${j?.error || r.status}`, false);
-      return;
-    }
-
-    const rssInfo = j?.rss?.ok
-      ? `rss ${j.rss.processed} / ukonč ${j.rss.closed_found}`
-      : `rss skip`;
-
-    const durInfo = `délky fixed ${j?.durations?.fixed ?? 0} / checked ${j?.durations?.checked ?? 0}`;
-
-    setStatus(`OK • ${rssInfo} • ${durInfo}`, true);
-
-    // po úspěchu obnov data
-    await loadAll();
-  } catch (e) {
-    setStatus(`chyba přepočtu`, false);
-  }
-}
-
 // UI events
 document.getElementById("refreshBtn").addEventListener("click", loadAll);
 document.getElementById("applyBtn").addEventListener("click", loadAll);
 document.getElementById("resetBtn").addEventListener("click", () => { resetFilters(); loadAll(); });
 document.getElementById("exportCsvBtn").addEventListener("click", () => exportWithFilters("csv"));
 document.getElementById("exportPdfBtn").addEventListener("click", () => exportWithFilters("pdf"));
-document.getElementById("recalcBtn").addEventListener("click", manualRecalc);
+
+// admin: ruční přepočet délek zásahu
+const recalcBtn = document.getElementById("recalcBtn");
+if (recalcBtn) {
+  recalcBtn.addEventListener("click", async () => {
+    const pw = String(document.getElementById("adminPwInput")?.value || "").trim();
+    if (!pw) {
+      setStatus("Zadej ADMIN_PASSWORD", false);
+      return;
+    }
+
+    try {
+      setStatus("Přepočítávám…", true);
+      const r = await fetch("/api/admin/recalc", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Admin-Password": pw
+        },
+        body: JSON.stringify({ limit: 10000 })
+      });
+
+      if (!r.ok) {
+        setStatus("Chyba přepočtu (heslo?)", false);
+        return;
+      }
+
+      const j = await r.json();
+      setStatus(`Hotovo • opraveno: ${j.touched || 0} • doplněno end: ${j.filledEnd || 0} • délka: ${j.filledDur || 0}`, true);
+      await loadAll();
+    } catch {
+      setStatus("Chyba přepočtu", false);
+    }
+  });
+}
 
 // map resize on responsive changes
 let resizeTimer = null;
@@ -381,8 +330,3 @@ window.addEventListener("orientationchange", () => safeInvalidateMap());
 
 initMap();
 loadAll();
-
-// ✅ AUTO REFRESH každých 5 minut (zachová filtry, jen znovu načte)
-setInterval(() => {
-  loadAll();
-}, 5 * 60 * 1000);
