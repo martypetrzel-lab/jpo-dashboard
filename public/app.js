@@ -116,6 +116,7 @@ function renderMap(items) {
 
     const state = it.is_closed ? "UKONČENO" : "AKTIVNÍ";
     const durMin = getDisplayDurationMin(it);
+
     const popupHtml = `
       <div style="min-width:220px">
         <div><b>${escapeHtml(it.title || "")}</b></div>
@@ -127,8 +128,18 @@ function renderMap(items) {
       </div>
     `;
 
+    // ✅ VRÁCENÍ EMOJI NA MAPU (zachovaná logika, jen ikona)
+    const emoji = typeIcon(it.event_type);
+    const icon = L.divIcon({
+      className: "emoji-marker",
+      html: `<div style="font-size:22px; line-height:22px;">${emoji}</div>`,
+      iconSize: [26, 26],
+      iconAnchor: [13, 13]
+    });
+
     const m = L.marker([lat, lon], {
-      title: it.title || ""
+      title: it.title || "",
+      icon
     }).bindPopup(popupHtml);
 
     markersLayer.addLayer(m);
