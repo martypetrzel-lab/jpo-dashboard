@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <meta name="theme-color" content="#0b0f14" />
-  <title>JPO výjezdy – dashboard</title>
+  <title>FireWatch CZ</title>
 
   <link rel="stylesheet" href="styles.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
@@ -12,9 +12,12 @@
 <body>
 
   <header class="topbar">
-    <div class="title">
-      <h1>JPO výjezdy – dashboard</h1>
-      <div class="sub">Mapa • filtry • statistiky • export CSV/PDF</div>
+    <div class="brand">
+      <img class="brandLogo" src="logo-firewatch.png" alt="FireWatch CZ logo" />
+      <div class="brandText">
+        <div class="brandName">FireWatch <span class="brandAccent">CZ</span></div>
+        <div class="sub">Přehled a statistiky zásahů JPO</div>
+      </div>
     </div>
 
     <div class="actions">
@@ -25,16 +28,6 @@
 
   <section class="filters">
     <div class="filtersRow">
-
-      <div class="field">
-        <label for="daySelect">Den (mapa + tabulka)</label>
-        <select id="daySelect">
-          <option value="today" selected>dnes</option>
-          <option value="yesterday">včera</option>
-          <option value="all">vše</option>
-        </select>
-      </div>
-
       <div class="field">
         <label for="typeSelect">Typ</label>
         <select id="typeSelect">
@@ -60,11 +53,6 @@
           <option value="open">aktivní</option>
           <option value="closed">ukončené</option>
         </select>
-      </div>
-
-      <div class="field">
-        <label for="monthInput">Měsíc (statistika měst)</label>
-        <input id="monthInput" type="month" />
       </div>
 
       <div class="field buttons">
