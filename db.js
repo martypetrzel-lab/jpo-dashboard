@@ -1,7 +1,6 @@
 import pg from "pg";
 
-// ✅ stejný limit jako v serveru (fallback), aby se do DB neukládaly extrémy
-const MAX_DURATION_MINUTES = Math.max(60, Number(process.env.DURATION_MAX_MINUTES || 4320)); // 3 dny
+const MAX_DURATION_MINUTES = Math.max(60, Number(process.env.DURATION_MAX_MINUTES || 720)); // 12h
 
 export const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL,
@@ -43,6 +42,8 @@ export async function initDb() {
       duration_min INTEGER,
       is_closed BOOLEAN NOT NULL DEFAULT FALSE,
 
+      closed_detected_at TIMESTAMPTZ,
+
       lat DOUBLE PRECISION,
       lon DOUBLE PRECISION,
 
@@ -69,6 +70,7 @@ export async function initDb() {
     ["events", "end_time_iso", "TEXT"],
     ["events", "duration_min", "INTEGER"],
     ["events", "is_closed", "BOOLEAN"],
+    ["events", "closed_detected_at", "TIMESTAMPTZ"],
     ["events", "first_seen_at", "TIMESTAMPTZ"],
     ["events", "last_seen_at", "TIMESTAMPTZ"],
     ["events", "lat", "DOUBLE PRECISION"],
@@ -92,7 +94,7 @@ export async function initDb() {
     WHERE is_closed IS NULL OR first_seen_at IS NULL OR last_seen_at IS NULL;
   `);
 
-  // ✅ jednorázové vyčištění extrémních délek (nepovinné, ale pomůže hned)
+  // pojistka – smaž extrémy
   await pool.query(
     `UPDATE events SET duration_min = NULL WHERE duration_min IS NOT NULL AND duration_min > $1`,
     [MAX_DURATION_MINUTES]
@@ -107,9 +109,20 @@ function clampDuration(v) {
   return n;
 }
 
+// ✅ generuj ISO string v UTC přímo v SQL (TEXT)
+function sqlUtcIsoNow() {
+  // bez milisekund (stabilní a parsovatelný)
+  return `to_char((NOW() AT TIME ZONE 'utc'), 'YYYY-MM-DD"T"HH24:MI:SS"Z"')`;
+}
+
 export async function upsertEvent(ev) {
   const dur = clampDuration(ev.durationMin);
 
+  // ✅ důležité:
+  // - pokud přechází do ukončeno poprvé (events.is_closed=false, excluded.is_closed=true):
+  //   - nastav closed_detected_at = NOW()
+  //   - a pokud nemáme validní end_time_iso z RSS/ESP => end_time_iso = NOW(UTC)
+  // - další updaty už end_time neposunou dopředu (zůstane původní)
   await pool.query(
     `
     INSERT INTO events (
@@ -117,9 +130,19 @@ export async function upsertEvent(ev) {
       place_text, city_text, status_text, event_type,
       description_raw,
       start_time_iso, end_time_iso, duration_min, is_closed,
+      closed_detected_at,
       first_seen_at, last_seen_at
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, NOW(), NOW())
+    VALUES (
+      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
+      CASE
+        WHEN $13 = TRUE AND $11 IS NULL THEN ${sqlUtcIsoNow()}
+        ELSE $11
+      END,
+      $12,$13,
+      CASE WHEN $13 = TRUE THEN NOW() ELSE NULL END,
+      NOW(), NOW()
+    )
     ON CONFLICT (id) DO UPDATE SET
       title = EXCLUDED.title,
       link = EXCLUDED.link,
@@ -133,16 +156,25 @@ export async function upsertEvent(ev) {
       description_raw = COALESCE(EXCLUDED.description_raw, events.description_raw),
 
       start_time_iso = COALESCE(EXCLUDED.start_time_iso, events.start_time_iso),
-      end_time_iso   = COALESCE(EXCLUDED.end_time_iso,   events.end_time_iso),
 
-      -- ✅ duration: když je nový dur null, nech starý; ale když je starý extrémní, smaž ho
+      is_closed = (events.is_closed OR EXCLUDED.is_closed),
+
+      closed_detected_at = CASE
+        WHEN (events.is_closed = FALSE AND EXCLUDED.is_closed = TRUE) THEN NOW()
+        ELSE events.closed_detected_at
+      END,
+
+      end_time_iso = CASE
+        WHEN EXCLUDED.end_time_iso IS NOT NULL THEN EXCLUDED.end_time_iso
+        WHEN (events.is_closed = FALSE AND EXCLUDED.is_closed = TRUE) THEN ${sqlUtcIsoNow()}
+        ELSE events.end_time_iso
+      END,
+
       duration_min = CASE
         WHEN EXCLUDED.duration_min IS NOT NULL THEN EXCLUDED.duration_min
         WHEN events.duration_min IS NOT NULL AND events.duration_min > $14 THEN NULL
         ELSE events.duration_min
       END,
-
-      is_closed      = (events.is_closed OR EXCLUDED.is_closed),
 
       last_seen_at = NOW()
     `,
@@ -182,40 +214,9 @@ export async function updateEventEndTime(id, endTimeIso) {
   const v = String(endTimeIso || "").trim();
   if (!v) return;
   await pool.query(
-    `UPDATE events SET end_time_iso=$2, is_closed=TRUE, last_seen_at=NOW() WHERE id=$1`,
+    `UPDATE events SET end_time_iso=$2, is_closed=TRUE, closed_detected_at=COALESCE(closed_detected_at, NOW()), last_seen_at=NOW() WHERE id=$1`,
     [id, v]
   );
-}
-
-// ✅ OPRAVA: ukončené zásahy bez dopočítané délky (zpětný přepočet)
-// - používáme správné sloupce status_text / city_text
-export async function getClosedEventsMissingDuration(limit = 200) {
-  const lim = Math.max(1, Math.min(2000, Number(limit) || 200));
-  const res = await pool.query(
-    `
-    SELECT
-      id,
-      title,
-      link,
-      pub_date,
-      city_text,
-      place_text,
-      status_text,
-      start_time_iso,
-      end_time_iso,
-      duration_min,
-      is_closed,
-      created_at
-    FROM events
-    WHERE duration_min IS NULL
-      AND end_time_iso IS NOT NULL
-      AND is_closed = TRUE
-    ORDER BY COALESCE(NULLIF(end_time_iso,'' )::timestamptz, NULLIF(pub_date,'' )::timestamptz, created_at) DESC
-    LIMIT $1
-    `,
-    [lim]
-  );
-  return res.rows;
 }
 
 export async function getCachedGeocode(placeText) {
@@ -265,12 +266,65 @@ export async function getEventsOutsideCz(limit = 200) {
   return res.rows;
 }
 
+// ✅ Tohle je ten „START OD TEĎ“ fix:
+// staré ukončené záznamy (olderThanHours) vyčistíme,
+// aby neměly duration ani end_time => nikdy se do žebříčků nebudou počítat
+export async function purgeOldClosedBadDurations({ olderThanHours = 12, maxDurationMinutes = MAX_DURATION_MINUTES } = {}) {
+  const hrs = Math.max(1, Number(olderThanHours) || 12);
+  const maxDur = Math.max(60, Number(maxDurationMinutes) || MAX_DURATION_MINUTES);
+
+  const res = await pool.query(
+    `
+    UPDATE events
+    SET duration_min = NULL,
+        end_time_iso = NULL
+    WHERE is_closed = TRUE
+      AND (
+        duration_min IS NULL
+        OR duration_min > $2
+        OR COALESCE(NULLIF(end_time_iso,'')::timestamptz, closed_detected_at, last_seen_at, created_at) < (NOW() - ($1 || ' hours')::interval)
+      )
+    `,
+    [hrs, maxDur]
+  );
+
+  return { ok: true, cleared: res.rowCount };
+}
+
+export async function getClosedEventsMissingDuration(limit = 200) {
+  const lim = Math.max(1, Math.min(2000, Number(limit) || 200));
+  const res = await pool.query(
+    `
+    SELECT
+      id,
+      title,
+      link,
+      pub_date,
+      city_text,
+      place_text,
+      status_text,
+      start_time_iso,
+      end_time_iso,
+      duration_min,
+      is_closed,
+      created_at
+    FROM events
+    WHERE duration_min IS NULL
+      AND end_time_iso IS NOT NULL
+      AND is_closed = TRUE
+    ORDER BY COALESCE(NULLIF(end_time_iso,'' )::timestamptz, created_at) DESC
+    LIMIT $1
+    `,
+    [lim]
+  );
+  return res.rows;
+}
+
 function buildTimeWindowSql(day, params, iStart) {
   const clauses = [];
   let i = iStart;
 
   if (day === "today" || day === "yesterday" || day === "tomorrow") {
-    // today = 0, yesterday = 1, tomorrow = -1
     const offset = day === "yesterday" ? 1 : (day === "tomorrow" ? -1 : 0);
     clauses.push(
       `( (COALESCE(NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date = ((NOW() AT TIME ZONE 'Europe/Prague')::date - $${i}::int) )`
@@ -437,6 +491,9 @@ export async function getStatsFiltered(filters) {
     params
   );
 
+  // ✅ Nejdelší: ber jen to, co má smysl:
+  // - buď aktivní (počítá se od startu do teď max do limitu),
+  // - nebo ukončené s uloženou duration_min (a ta už nebude u starých “vyčištěných” existovat)
   const longest = await pool.query(
     `
     SELECT
