@@ -1,43 +1,28 @@
+// FireWatch CZ - frontend
+
 let map, markersLayer, chart;
+let inFlight = false;
 
-const TYPE = {
-  fire: { emoji: "🔥", label: "požár" },
-  traffic: { emoji: "🚗", label: "nehoda" },
-  tech: { emoji: "🛠️", label: "technická" },
-  rescue: { emoji: "🧍", label: "záchrana" },
-  false_alarm: { emoji: "🚨", label: "planý poplach" },
-  other: { emoji: "❓", label: "jiné" }
-};
-
-function typeEmoji(t) {
-  return (TYPE[t] || TYPE.other).emoji;
-}
-
-function setStatus(text, ok = true) {
+function setStatus(text, ok) {
   const pill = document.getElementById("statusPill");
   pill.textContent = text;
-  pill.style.background = ok ? "rgba(60, 180, 120, 0.20)" : "rgba(220, 80, 80, 0.20)";
-  pill.style.borderColor = ok ? "rgba(60, 180, 120, 0.35)" : "rgba(220, 80, 80, 0.35)";
+  pill.classList.toggle("ok", !!ok);
+  pill.classList.toggle("bad", !ok);
 }
 
-// ✅ hrubý bounding box Středočeského kraje (stabilní, jednoduché, nevyžaduje polygon data)
-// Pozn.: záměrně neřeší "díry" okolo Prahy – cílem je omezit mapu na region.
-const STC_BOUNDS = L.latLngBounds(
-  [49.30, 13.40], // SW
-  [50.65, 15.70]  // NE
-);
-
-function isInStredocesky(lat, lon) {
-  if (typeof lat !== "number" || typeof lon !== "number") return false;
-  return STC_BOUNDS.contains([lat, lon]);
+function typeIcon(t) {
+  switch (t) {
+    case "fire": return "🔥";
+    case "traffic": return "🚗";
+    case "tech": return "🛠️";
+    case "rescue": return "🧍";
+    case "false_alarm": return "🚨";
+    default: return "❓";
+  }
 }
 
 function initMap() {
-  map = L.map("map", {
-    maxBounds: STC_BOUNDS,
-    maxBoundsViscosity: 1.0
-  }).fitBounds(STC_BOUNDS);
-
+  map = L.map("map").setView([49.8, 15.3], 7);
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 18,
     attribution: "&copy; OpenStreetMap"
@@ -73,33 +58,50 @@ function escapeHtml(s) {
     .replaceAll('"', "&quot;");
 }
 
+function getLiveDurationMin(it) {
+  // pro aktivní: spočítej od start_time_iso do teď
+  if (it?.is_closed) return null;
+  const start = it?.start_time_iso || it?.pub_date || it?.created_at;
+  if (!start) return null;
+  const a = new Date(start).getTime();
+  if (!Number.isFinite(a)) return null;
+  const diff = Math.round((Date.now() - a) / 60000);
+  if (!Number.isFinite(diff) || diff <= 0) return null;
+  return diff;
+}
+
+function getDisplayDurationMin(it) {
+  // ✅ Historické ukončené zásahy (bez serverové detekce ukončení) nemají mít délku
+  if (it?.is_closed && !it?.closed_detected_at) return null;
+
+  if (Number.isFinite(it?.duration_min) && it.duration_min > 0) return it.duration_min;
+  const live = getLiveDurationMin(it);
+  return Number.isFinite(live) ? live : null;
+}
+
 function renderTable(items) {
   const tbody = document.getElementById("eventsTbody");
   tbody.innerHTML = "";
+
   for (const it of items) {
-    const t = it.event_type || "other";
-    const state = it.is_closed ? "UKONČENO" : "AKTIVNÍ";
     const tr = document.createElement("tr");
+
+    const d = formatDate(it.pub_date || it.created_at);
+    const state = it.is_closed ? "UKONČENO" : "AKTIVNÍ";
+    const durMin = getDisplayDurationMin(it);
+
     tr.innerHTML = `
-      <td>${escapeHtml(formatDate(it.pub_date || it.created_at))}</td>
-      <td><span class="iconPill" title="${escapeHtml((TYPE[t]||TYPE.other).label)}">${typeEmoji(t)}</span></td>
+      <td>${escapeHtml(d)}</td>
+      <td class="center">${typeIcon(it.event_type)}</td>
       <td>${escapeHtml(it.title || "")}</td>
       <td>${escapeHtml(it.city_text || it.place_text || "")}</td>
       <td>${escapeHtml(state)}</td>
-      <td>${escapeHtml(formatDuration(it.duration_min))}</td>
-      <td>${it.link ? `<a href="${it.link}" target="_blank" rel="noopener">otevřít</a>` : ""}</td>
+      <td>${escapeHtml(formatDuration(durMin))}</td>
+      <td><a href="${escapeHtml(it.link || "#")}" target="_blank" rel="noopener">otevřít</a></td>
     `;
+
     tbody.appendChild(tr);
   }
-}
-
-function makeMarkerIcon(emoji) {
-  return L.divIcon({
-    className: "leaflet-div-icon",
-    html: `<div style="transform:translate(-50%,-50%);font-size:22px;">${emoji}</div>`,
-    iconSize: [22, 22],
-    iconAnchor: [11, 11]
-  });
 }
 
 function renderMap(items) {
@@ -107,38 +109,37 @@ function renderMap(items) {
 
   const pts = [];
   for (const it of items) {
-    if (typeof it.lat === "number" && typeof it.lon === "number") {
-      // ✅ filtrování jen na Středočeský kraj
-      if (!isInStredocesky(it.lat, it.lon)) continue;
+    if (typeof it.lat !== "number" || typeof it.lon !== "number") continue;
+    const lat = it.lat;
+    const lon = it.lon;
+    pts.push([lat, lon]);
 
-      const t = it.event_type || "other";
-      const emoji = typeEmoji(t);
-
-      const m = L.marker([it.lat, it.lon], { icon: makeMarkerIcon(emoji) });
-
-      const state = it.is_closed ? "UKONČENO" : "AKTIVNÍ";
-      const html = `
-        <div style="min-width:240px">
-          <div style="font-weight:700;margin-bottom:6px">${emoji} ${escapeHtml(it.title || "")}</div>
-          <div><b>Stav:</b> ${escapeHtml(state)}</div>
-          <div><b>Město:</b> ${escapeHtml(it.city_text || it.place_text || "")}</div>
-          <div><b>Čas:</b> ${escapeHtml(formatDate(it.pub_date || it.created_at))}</div>
-          <div><b>Délka:</b> ${escapeHtml(formatDuration(it.duration_min))}</div>
-          ${it.link ? `<div style="margin-top:8px"><a href="${it.link}" target="_blank" rel="noopener">Detail</a></div>` : ""}
+    const state = it.is_closed ? "UKONČENO" : "AKTIVNÍ";
+    const durMin = getDisplayDurationMin(it);
+    const popupHtml = `
+      <div style="min-width:220px">
+        <div><b>${escapeHtml(it.title || "")}</b></div>
+        <div>${escapeHtml(it.city_text || it.place_text || "")}</div>
+        <div>${escapeHtml(state)} • ${escapeHtml(formatDuration(durMin))}</div>
+        <div style="margin-top:6px">
+          <a href="${escapeHtml(it.link || "#")}" target="_blank" rel="noopener">otevřít detail</a>
         </div>
-      `;
-      m.bindPopup(html);
-      m.addTo(markersLayer);
-      pts.push([it.lat, it.lon]);
-    }
+      </div>
+    `;
+
+    const m = L.marker([lat, lon], {
+      title: it.title || ""
+    }).bindPopup(popupHtml);
+
+    markersLayer.addLayer(m);
   }
 
-  // ✅ drž mapu v bounds Středočeského kraje
   if (pts.length > 0) {
-    const bounds = L.latLngBounds(pts).pad(0.15);
-    map.fitBounds(bounds, { maxZoom: 11 });
+    const bounds = L.latLngBounds(pts);
+    map.fitBounds(bounds.pad(0.2));
   } else {
-    map.fitBounds(STC_BOUNDS);
+    // když nejsou body, nech defaultní pohled na ČR
+    map.setView([49.8, 15.3], 7);
   }
 
   safeInvalidateMap();
@@ -149,45 +150,45 @@ function safeInvalidateMap() {
     if (!map) return;
     setTimeout(() => {
       try { map.invalidateSize(true); } catch { /* ignore */ }
-    }, 80);
+    }, 30);
   } catch { /* ignore */ }
 }
 
-function renderTopCities(rows) {
-  const wrap = document.getElementById("topCities");
-  wrap.innerHTML = "";
-  rows.forEach((r, idx) => {
-    const div = document.createElement("div");
-    div.className = "row";
-    div.innerHTML = `
-      <div class="left">
-        <div class="meta">#${idx + 1}</div>
-        <div class="name">${escapeHtml(r.city)}</div>
-      </div>
-      <div class="meta">${r.count}×</div>
-    `;
-    wrap.appendChild(div);
-  });
-}
+function renderChart(byDay) {
+  const ctx = document.getElementById("chartByDay");
+  if (!ctx) return;
 
-function renderLongest(rows) {
-  const wrap = document.getElementById("longestList");
-  wrap.innerHTML = "";
-  rows.forEach((r, idx) => {
-    const div = document.createElement("div");
-    div.className = "row";
-    div.style.cursor = r.link ? "pointer" : "default";
-    div.innerHTML = `
-      <div class="left">
-        <div class="meta">#${idx + 1}</div>
-        <div class="name">${escapeHtml(r.title || "")}</div>
-      </div>
-      <div class="meta">${escapeHtml(formatDuration(r.duration_min))}</div>
-    `;
-    if (r.link) {
-      div.addEventListener("click", () => window.open(r.link, "_blank", "noopener"));
+  const labels = (byDay || []).map(x => x.day);
+  const data = (byDay || []).map(x => x.count);
+
+  if (chart) {
+    chart.data.labels = labels;
+    chart.data.datasets[0].data = data;
+    chart.update();
+    return;
+  }
+
+  chart = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels,
+      datasets: [{
+        label: "Počet výjezdů",
+        data,
+        tension: 0.25
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false }
+      },
+      scales: {
+        x: { ticks: { maxTicksLimit: 6 } },
+        y: { beginAtZero: true }
+      }
     }
-    wrap.appendChild(div);
   });
 }
 
@@ -196,84 +197,123 @@ function renderCounts(openCount, closedCount) {
   document.getElementById("closedCount").textContent = String(closedCount ?? "—");
 }
 
-function renderChart(byDay) {
-  const labels = byDay.map(x => x.day);
-  const data = byDay.map(x => x.count);
+function renderTopCities(topCities) {
+  const el = document.getElementById("topCities");
+  el.innerHTML = "";
 
-  const ctx = document.getElementById("chartByDay");
-  if (chart) chart.destroy();
+  for (const c of (topCities || [])) {
+    const row = document.createElement("div");
+    row.className = "listRow";
+    row.innerHTML = `<div>${escapeHtml(c.city || "")}</div><div class="muted">${escapeHtml(c.count)}</div>`;
+    el.appendChild(row);
+  }
+}
 
-  chart = new Chart(ctx, {
-    type: "line",
-    data: { labels, datasets: [{ label: "Výjezdy", data }] },
-    options: {
-      responsive: true,
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { ticks: { maxRotation: 0, autoSkip: true } },
-        y: { beginAtZero: true }
-      }
-    }
-  });
+function renderLongest(longest) {
+  const el = document.getElementById("longestList");
+  el.innerHTML = "";
+
+  const items = (longest || []);
+  if (items.length === 0) {
+    const row = document.createElement("div");
+    row.className = "listRow";
+    row.innerHTML = `<div class="muted">Zatím nic (délka se počítá jen u nových uzavření)</div>`;
+    el.appendChild(row);
+    return;
+  }
+
+  let idx = 1;
+  for (const it of items) {
+    const row = document.createElement("div");
+    row.className = "listRow";
+    row.innerHTML = `
+      <div>
+        <div><b>#${idx}</b> ${escapeHtml(it.title || "")}</div>
+        <div class="muted">${escapeHtml(it.city_text || it.place_text || "")}</div>
+      </div>
+      <div class="muted">${escapeHtml(formatDuration(it.duration_min))}</div>
+    `;
+    el.appendChild(row);
+    idx++;
+  }
 }
 
 function getFiltersFromUi() {
+  const day = (document.getElementById("daySelect")?.value || "today").trim();
   const type = document.getElementById("typeSelect").value.trim();
   const city = document.getElementById("cityInput").value.trim();
   const status = document.getElementById("statusSelect").value.trim();
+  const month = (document.getElementById("monthInput")?.value || "").trim();
 
   return {
+    day: day || "today",
     type: type || "",
     city: city || "",
-    status: status || "all"
+    status: status || "all",
+    month: month || ""
   };
 }
 
 function buildQuery(filters) {
   const qs = new URLSearchParams();
+  if (filters.day && filters.day !== "today") qs.set("day", filters.day);
   if (filters.type) qs.set("type", filters.type);
   if (filters.city) qs.set("city", filters.city);
   if (filters.status && filters.status !== "all") qs.set("status", filters.status);
+  if (filters.month) qs.set("month", filters.month);
   return qs.toString();
 }
 
 async function loadAll() {
-  const filters = getFiltersFromUi();
-  const q = buildQuery(filters);
+  if (inFlight) return;
+  inFlight = true;
 
-  setStatus("načítám…", true);
+  try {
+    const filters = getFiltersFromUi();
+    const q = buildQuery(filters);
 
-  const [eventsRes, statsRes] = await Promise.all([
-    fetch(`/api/events?limit=500${q ? `&${q}` : ""}`),
-    fetch(`/api/stats${q ? `?${q}` : ""}`)
-  ]);
+    setStatus("načítám…", true);
 
-  if (!eventsRes.ok || !statsRes.ok) {
-    setStatus("chyba API", false);
-    return;
+    const [eventsRes, statsRes] = await Promise.all([
+      fetch(`/api/events?limit=500${q ? `&${q}` : ""}`),
+      fetch(`/api/stats${q ? `?${q}` : ""}`)
+    ]);
+
+    if (!eventsRes.ok || !statsRes.ok) {
+      setStatus("chyba API", false);
+      return;
+    }
+
+    const eventsJson = await eventsRes.json();
+    const statsJson = await statsRes.json();
+
+    const items = (eventsJson.items || []);
+
+    renderTable(items);
+    renderMap(items);
+
+    renderChart(statsJson.byDay || []);
+    renderCounts(statsJson.openCount, statsJson.closedCount);
+    renderTopCities(statsJson.topCities || []);
+    renderLongest(statsJson.longest || []);
+
+    const missing = items.filter(x => x.lat == null || x.lon == null).length;
+    setStatus(`OK • ${items.length} záznamů • bez souřadnic ${missing}`, true);
+  } catch {
+    setStatus("chyba načítání", false);
+  } finally {
+    inFlight = false;
   }
-
-  const eventsJson = await eventsRes.json();
-  const statsJson = await statsRes.json();
-
-  const items = (eventsJson.items || []);
-
-  renderTable(items);
-  renderMap(items);
-
-  renderChart(statsJson.byDay || []);
-  renderCounts(statsJson.openCount, statsJson.closedCount);
-  renderTopCities(statsJson.topCities || []);
-  renderLongest(statsJson.longest || []);
-
-  const missing = items.filter(x => x.lat == null || x.lon == null).length;
-  setStatus(`OK • ${items.length} záznamů • bez souřadnic ${missing}`, true);
 }
 
 function resetFilters() {
+  const dayEl = document.getElementById("daySelect");
+  if (dayEl) dayEl.value = "today";
   document.getElementById("typeSelect").value = "";
   document.getElementById("cityInput").value = "";
   document.getElementById("statusSelect").value = "all";
+  const monthEl = document.getElementById("monthInput");
+  if (monthEl) monthEl.value = "";
 }
 
 function exportWithFilters(kind) {
@@ -285,12 +325,52 @@ function exportWithFilters(kind) {
   window.open(url, "_blank");
 }
 
+// ✅ ADMIN: ruční přepočet délek přes heslo
+async function manualRecalc() {
+  const pwInput = document.getElementById("adminPw");
+  const pw = (pwInput?.value || "").trim() || prompt("Zadej admin heslo pro přepočet délek:");
+  if (!pw) return;
+
+  try {
+    setStatus("přepočítávám…", true);
+    const r = await fetch("/api/admin/recalc-durations", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Admin-Password": pw
+      },
+      body: JSON.stringify({ limit: 2000 })
+    });
+
+    const j = await r.json().catch(() => ({}));
+
+    if (!r.ok || !j?.ok) {
+      setStatus(`chyba přepočtu: ${j?.error || r.status}`, false);
+      return;
+    }
+
+    const rssInfo = j?.rss?.ok
+      ? `rss ${j.rss.processed} / ukonč ${j.rss.closed_found}`
+      : `rss skip`;
+
+    const durInfo = `délky fixed ${j?.durations?.fixed ?? 0} / checked ${j?.durations?.checked ?? 0}`;
+
+    setStatus(`OK • ${rssInfo} • ${durInfo}`, true);
+
+    // po úspěchu obnov data
+    await loadAll();
+  } catch (e) {
+    setStatus(`chyba přepočtu`, false);
+  }
+}
+
 // UI events
 document.getElementById("refreshBtn").addEventListener("click", loadAll);
 document.getElementById("applyBtn").addEventListener("click", loadAll);
 document.getElementById("resetBtn").addEventListener("click", () => { resetFilters(); loadAll(); });
 document.getElementById("exportCsvBtn").addEventListener("click", () => exportWithFilters("csv"));
 document.getElementById("exportPdfBtn").addEventListener("click", () => exportWithFilters("pdf"));
+document.getElementById("recalcBtn").addEventListener("click", manualRecalc);
 
 // map resize on responsive changes
 let resizeTimer = null;
@@ -303,9 +383,7 @@ window.addEventListener("orientationchange", () => safeInvalidateMap());
 initMap();
 loadAll();
 
-// ✅ autorefresh (60s) – jen když je tab aktivní
+// ✅ AUTO REFRESH každých 5 minut (zachová filtry, jen znovu načte)
 setInterval(() => {
-  if (document.visibilityState !== "visible") return;
   loadAll();
-}, 60000);
- 
+}, 5 * 60 * 1000);
