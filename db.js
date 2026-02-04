@@ -149,10 +149,7 @@ export async function initDb() {
 export async function upsertEvent(ev) {
   const dur = clampDuration(ev.durationMin);
 
-  // ✅ klíčové chování:
-  // - když událost přejde do UKONČENO poprvé:
-  //   - nastav closed_detected_at = NOW()
-  //   - pokud end_time_iso není validní / není => end_time_iso = NOW(UTC)
+  // ✅ FIX: explicitní typy pro $10/$11 (TEXT), aby PG nepadal na "could not determine data type of parameter"
   await pool.query(
     `
     INSERT INTO events (
@@ -164,10 +161,11 @@ export async function upsertEvent(ev) {
       first_seen_at, last_seen_at
     )
     VALUES (
-      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
+      $1,$2,$3,$4,$5,$6,$7,$8,$9,
+      $10::text,
       CASE
         WHEN $13 = TRUE AND $11 IS NULL THEN ${sqlUtcIsoNow()}
-        ELSE $11
+        ELSE $11::text
       END,
       $12,$13,
       CASE WHEN $13 = TRUE THEN NOW() ELSE NULL END,
@@ -231,8 +229,8 @@ export async function clearEventCoords(id) {
 }
 
 export async function updateEventDuration(id, durationMin) {
-  const dur = clampDuration(durationMin);
-  await pool.query(`UPDATE events SET duration_min=$2 WHERE id=$1`, [id, dur]);
+  const dur2 = clampDuration(durationMin);
+  await pool.query(`UPDATE events SET duration_min=$2 WHERE id=$1`, [id, dur2]);
 }
 
 export async function getCachedGeocode(placeText) {
@@ -400,7 +398,6 @@ export async function getStatsFiltered(filters) {
     params
   );
 
-  // ✅ nejdelší: jen "nově ukončené" (mají duration_min + closed_detected_at)
   const longestClosed = await pool.query(
     `
     SELECT id, title, link, COALESCE(NULLIF(city_text,''), place_text) AS city,
@@ -421,7 +418,6 @@ export async function getStatsFiltered(filters) {
     byType: byType.rows,
     topCities: topCities.rows,
     openVsClosed: openVsClosed.rows[0] || { open: 0, closed: 0 },
-    // kvůli kompatibilitě s frontendem:
     openCount: (openVsClosed.rows[0]?.open ?? 0),
     closedCount: (openVsClosed.rows[0]?.closed ?? 0),
     longest: longestClosed.rows
