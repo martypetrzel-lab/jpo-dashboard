@@ -1,5 +1,8 @@
 import pg from "pg";
 
+// ✅ stejný limit jako v serveru (fallback), aby se do DB neukládaly extrémy
+const MAX_DURATION_MINUTES = Math.max(60, Number(process.env.DURATION_MAX_MINUTES || 4320)); // 3 dny
+
 export const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_URL?.includes("railway") ? { rejectUnauthorized: false } : false
@@ -58,7 +61,6 @@ export async function initDb() {
     );
   `);
 
-  // migrations if you started from older schema
   const adds = [
     ["events", "city_text", "TEXT"],
     ["events", "event_type", "TEXT"],
@@ -82,7 +84,6 @@ export async function initDb() {
     }
   }
 
-  // ensure defaults for new columns if migrated
   await pool.query(`
     UPDATE events
     SET is_closed = COALESCE(is_closed, FALSE),
@@ -90,9 +91,25 @@ export async function initDb() {
         last_seen_at = COALESCE(last_seen_at, NOW())
     WHERE is_closed IS NULL OR first_seen_at IS NULL OR last_seen_at IS NULL;
   `);
+
+  // ✅ jednorázové vyčištění extrémních délek (nepovinné, ale pomůže hned)
+  await pool.query(
+    `UPDATE events SET duration_min = NULL WHERE duration_min IS NOT NULL AND duration_min > $1`,
+    [MAX_DURATION_MINUTES]
+  );
+}
+
+function clampDuration(v) {
+  if (!Number.isFinite(v)) return null;
+  const n = Math.round(v);
+  if (n <= 0) return null;
+  if (n > MAX_DURATION_MINUTES) return null;
+  return n;
 }
 
 export async function upsertEvent(ev) {
+  const dur = clampDuration(ev.durationMin);
+
   await pool.query(
     `
     INSERT INTO events (
@@ -117,7 +134,14 @@ export async function upsertEvent(ev) {
 
       start_time_iso = COALESCE(EXCLUDED.start_time_iso, events.start_time_iso),
       end_time_iso   = COALESCE(EXCLUDED.end_time_iso,   events.end_time_iso),
-      duration_min   = COALESCE(EXCLUDED.duration_min,   events.duration_min),
+
+      -- ✅ duration: když je nový dur null, nech starý; ale když je starý extrémní, smaž ho
+      duration_min = CASE
+        WHEN EXCLUDED.duration_min IS NOT NULL THEN EXCLUDED.duration_min
+        WHEN events.duration_min IS NOT NULL AND events.duration_min > $14 THEN NULL
+        ELSE events.duration_min
+      END,
+
       is_closed      = (events.is_closed OR EXCLUDED.is_closed),
 
       last_seen_at = NOW()
@@ -134,8 +158,9 @@ export async function upsertEvent(ev) {
       ev.descriptionRaw || null,
       ev.startTimeIso || null,
       ev.endTimeIso || null,
-      Number.isFinite(ev.durationMin) ? Math.round(ev.durationMin) : null,
-      !!ev.isClosed
+      dur,
+      !!ev.isClosed,
+      MAX_DURATION_MINUTES
     ]
   );
 }
@@ -149,10 +174,8 @@ export async function clearEventCoords(id) {
 }
 
 export async function updateEventDuration(id, durationMin) {
-  await pool.query(`UPDATE events SET duration_min=$2 WHERE id=$1`, [
-    id,
-    Number.isFinite(durationMin) ? Math.round(durationMin) : null
-  ]);
+  const dur = clampDuration(durationMin);
+  await pool.query(`UPDATE events SET duration_min=$2 WHERE id=$1`, [id, dur]);
 }
 
 export async function getCachedGeocode(placeText) {
@@ -187,7 +210,6 @@ export async function getEventFirstSeen(id) {
 }
 
 export async function getEventsOutsideCz(limit = 200) {
-  // CZ bounding box: lon 12.09–18.87, lat 48.55–51.06
   const res = await pool.query(
     `
     SELECT id, city_text, place_text, lat, lon
@@ -204,15 +226,11 @@ export async function getEventsOutsideCz(limit = 200) {
 }
 
 function buildTimeWindowSql(day, params, iStart) {
-  // Filter by "event timestamp" interpreted in Europe/Prague
-  // event_ts: prefer start_time_iso, else created_at
-  // day: today/yesterday/all
   const clauses = [];
   let i = iStart;
 
   if (day === "today" || day === "yesterday") {
     const offset = day === "yesterday" ? 1 : 0;
-    // local date comparison
     clauses.push(
       `( (COALESCE(NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date = ((NOW() AT TIME ZONE 'Europe/Prague')::date - $${i}::int) )`
     );
@@ -227,7 +245,6 @@ function buildMonthSql(month, params, iStart) {
   const clauses = [];
   let i = iStart;
   if (month) {
-    // Expect YYYY-MM
     const m = month.match(/^\d{4}-\d{2}$/);
     if (m) {
       clauses.push(
@@ -240,7 +257,6 @@ function buildMonthSql(month, params, iStart) {
   return { clauses, nextI: i };
 }
 
-// --- FILTERED EVENTS ---
 export async function getEventsFiltered(filters, limit = 400) {
   const types = Array.isArray(filters?.types) ? filters.types : [];
   const city = String(filters?.city || "").trim();
@@ -267,12 +283,10 @@ export async function getEventsFiltered(filters, limit = 400) {
   if (status === "open") where.push(`is_closed = FALSE`);
   if (status === "closed") where.push(`is_closed = TRUE`);
 
-  // day filter
   const dayWin = buildTimeWindowSql(day, params, i);
   where.push(...dayWin.clauses);
   i = dayWin.nextI;
 
-  // month filter (optional)
   const mWin = buildMonthSql(month, params, i);
   where.push(...mWin.clauses);
   i = mWin.nextI;
@@ -306,7 +320,6 @@ export async function getStatsFiltered(filters) {
   const day = String(filters?.day || "all").toLowerCase();
   const month = String(filters?.month || "").trim();
 
-  // Stats are for last 30 days by default, but you can narrow further by day/month.
   const where = [`created_at >= NOW() - INTERVAL '30 days'`];
   const params = [];
   let i = 1;
@@ -326,7 +339,6 @@ export async function getStatsFiltered(filters) {
   if (status === "open") where.push(`is_closed = FALSE`);
   if (status === "closed") where.push(`is_closed = TRUE`);
 
-  // day/month filters applied to the same event timestamp
   const dayWin = buildTimeWindowSql(day, params, i);
   where.push(...dayWin.clauses);
   i = dayWin.nextI;
@@ -337,7 +349,6 @@ export async function getStatsFiltered(filters) {
 
   const whereSql = `WHERE ${where.join(" AND ")}`;
 
-  // Use local (Europe/Prague) day based on start_time_iso/created_at
   const byDay = await pool.query(
     `
     SELECT
@@ -385,15 +396,16 @@ export async function getStatsFiltered(filters) {
     params
   );
 
+  // ✅ nejdelší zásahy: ignoruj extrémy > MAX_DURATION_MINUTES
   const longest = await pool.query(
     `
     SELECT id, title, link, COALESCE(NULLIF(city_text,''), place_text) AS city, duration_min, start_time_iso, end_time_iso, created_at
     FROM events
-    ${whereSql} AND duration_min IS NOT NULL AND duration_min > 0
+    ${whereSql} AND duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= $${i}
     ORDER BY duration_min DESC
     LIMIT 10;
     `,
-    params
+    [...params, MAX_DURATION_MINUTES]
   );
 
   return {

@@ -29,6 +29,11 @@ app.use(express.static("public"));
 const API_KEY = process.env.API_KEY || "";
 const GEOCODE_UA = process.env.GEOCODE_USER_AGENT || "jpo-dashboard/1.7 (contact: missing)";
 
+// ✅ sanity limit pro délku zásahu (default 3 dny)
+// (aby chyby typu "ukončení: dubna" neudělaly 1368 hodin)
+const MAX_DURATION_MINUTES = Math.max(60, Number(process.env.DURATION_MAX_MINUTES || 4320)); // 3 dny
+const FUTURE_END_TOLERANCE_MS = 5 * 60 * 1000; // ukončení nesmí být "v budoucnu" o víc než 5 min
+
 // ---------------- AUTH ----------------
 function requireKey(req, res, next) {
   const key = req.header("X-API-Key") || "";
@@ -155,8 +160,11 @@ function parseTimesFromDescription(descRaw = "") {
   };
 }
 
+// ✅ tady je fix na extrémní / nesmyslné délky
 async function computeDurationMin(id, startIso, endIso, createdAtFallback) {
   if (!endIso) return null;
+
+  const nowMs = Date.now();
 
   let startMs = startIso ? new Date(startIso).getTime() : NaN;
 
@@ -171,9 +179,20 @@ async function computeDurationMin(id, startIso, endIso, createdAtFallback) {
   }
 
   const endMs = new Date(endIso).getTime();
+
+  // základní validace
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return null;
 
-  return Math.round((endMs - startMs) / 60000);
+  // ukončení nesmí být "v budoucnu" (chyby feedu)
+  if (endMs > nowMs + FUTURE_END_TOLERANCE_MS) return null;
+
+  const dur = Math.round((endMs - startMs) / 60000);
+
+  // extrémní délky neukazovat (typicky špatný měsíc / datum)
+  if (!Number.isFinite(dur) || dur <= 0) return null;
+  if (dur > MAX_DURATION_MINUTES) return null;
+
+  return dur;
 }
 
 function normalizePlaceQuery(placeText) {
@@ -241,17 +260,12 @@ function parseFilters(req) {
   const city = String(req.query.city || "").trim();
   const status = String(req.query.status || "all").trim().toLowerCase();
 
-  // den: today | yesterday | all (default today for UI)
   const day = String(req.query.day || "today").trim().toLowerCase();
-
-  // mesic: YYYY-MM (optional)
   const month = String(req.query.month || "").trim();
 
   const types = typeQ ? typeQ.split(",").map(s => s.trim()).filter(Boolean) : [];
   const normStatus = ["all", "open", "closed"].includes(status) ? status : "all";
   const normDay = ["today", "yesterday", "all"].includes(day) ? day : "today";
-
-  // allow empty or YYYY-MM
   const normMonth = /^\d{4}-\d{2}$/.test(month) ? month : "";
 
   return { types, city, status: normStatus, day: normDay, month: normMonth };
@@ -351,10 +365,19 @@ app.post("/api/ingest", requireKey, async (req, res) => {
       const desc = it.descriptionRaw || it.descRaw || it.description || "";
       const times = parseTimesFromDescription(desc);
 
-      const durationMin =
-        Number.isFinite(it.durationMin)
-          ? it.durationMin
-          : await computeDurationMin(it.id, it.startTimeIso || times.startIso, it.endTimeIso || times.endIso, null);
+      const startIso = it.startTimeIso || times.startIso || null;
+      const endIso = it.endTimeIso || times.endIso || null;
+      const isClosed = !!times.isClosed;
+
+      // ✅ Duration jen když máme ukončení + projde sanity kontrolou.
+      // Když nevíme konec => durationMin = null => UI ukáže "—"
+      let durationMin = null;
+      if (Number.isFinite(it.durationMin)) {
+        const candidate = Math.round(it.durationMin);
+        durationMin = (candidate > 0 && candidate <= MAX_DURATION_MINUTES) ? candidate : null;
+      } else if (isClosed && endIso) {
+        durationMin = await computeDurationMin(it.id, startIso, endIso, null);
+      }
 
       const placeText = it.placeText || null;
       const cityFromDesc = extractCityFromDescription(desc);
@@ -376,10 +399,10 @@ app.post("/api/ingest", requireKey, async (req, res) => {
         statusText: it.statusText || null,
         eventType,
         descriptionRaw: desc || null,
-        startTimeIso: it.startTimeIso || times.startIso || null,
-        endTimeIso: it.endTimeIso || times.endIso || null,
+        startTimeIso: startIso,
+        endTimeIso: endIso,
         durationMin,
-        isClosed: !!times.isClosed
+        isClosed
       };
 
       await upsertEvent(ev);
@@ -428,14 +451,13 @@ app.get("/api/stats", async (req, res) => {
   const filters = parseFilters(req);
   const stats = await getStatsFiltered(filters);
 
-  // Frontend expects openCount/closedCount
   const openCount = stats?.openVsClosed?.open ?? 0;
   const closedCount = stats?.openVsClosed?.closed ?? 0;
 
   res.json({ ok: true, filters, ...stats, openCount, closedCount });
 });
 
-// export CSV (nejdřív backfill duration, aby export měl vše)
+// export CSV
 app.get("/api/export.csv", async (req, res) => {
   const filters = parseFilters(req);
   const limit = Math.min(Number(req.query.limit || 2000), 5000);
@@ -491,7 +513,7 @@ app.get("/api/export.csv", async (req, res) => {
   res.send([header, ...lines].join("\n"));
 });
 
-// export PDF (backfill duration + jednoduché stránkování podle výšky řádku)
+// export PDF
 app.get("/api/export.pdf", async (req, res) => {
   const filters = parseFilters(req);
   const limit = Math.min(Number(req.query.limit || 800), 2000);
@@ -597,7 +619,7 @@ app.get("/api/export.pdf", async (req, res) => {
   doc.end();
 });
 
-// ✅ Varianta B: oprava špatných bodů mimo ČR (purge cache + re-geocode)
+// admin: re-geocode mimo ČR
 app.post("/api/admin/regeocode", requireKey, async (req, res) => {
   try {
     const mode = String(req.body?.mode || "outside_cz");

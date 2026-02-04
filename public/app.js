@@ -1,4 +1,5 @@
 let map, markersLayer, chart;
+let inFlight = false;
 
 const TYPE = {
   fire: { emoji: "🔥", label: "požár" },
@@ -202,11 +203,8 @@ function getFiltersFromUi() {
   const type = document.getElementById("typeSelect").value.trim();
   const city = document.getElementById("cityInput").value.trim();
   const status = document.getElementById("statusSelect").value.trim();
-
-  // month input returns YYYY-MM (or "")
   const month = (document.getElementById("monthInput")?.value || "").trim();
 
-  // do API posíláme: day=..., type=..., city=..., status=all/open/closed, month=YYYY-MM
   return {
     day: day || "today",
     type: type || "",
@@ -227,36 +225,45 @@ function buildQuery(filters) {
 }
 
 async function loadAll() {
-  const filters = getFiltersFromUi();
-  const q = buildQuery(filters);
+  if (inFlight) return;
+  inFlight = true;
 
-  setStatus("načítám…", true);
+  try {
+    const filters = getFiltersFromUi();
+    const q = buildQuery(filters);
 
-  const [eventsRes, statsRes] = await Promise.all([
-    fetch(`/api/events?limit=500${q ? `&${q}` : ""}`),
-    fetch(`/api/stats${q ? `?${q}` : ""}`)
-  ]);
+    setStatus("načítám…", true);
 
-  if (!eventsRes.ok || !statsRes.ok) {
-    setStatus("chyba API", false);
-    return;
+    const [eventsRes, statsRes] = await Promise.all([
+      fetch(`/api/events?limit=500${q ? `&${q}` : ""}`),
+      fetch(`/api/stats${q ? `?${q}` : ""}`)
+    ]);
+
+    if (!eventsRes.ok || !statsRes.ok) {
+      setStatus("chyba API", false);
+      return;
+    }
+
+    const eventsJson = await eventsRes.json();
+    const statsJson = await statsRes.json();
+
+    const items = (eventsJson.items || []);
+
+    renderTable(items);
+    renderMap(items);
+
+    renderChart(statsJson.byDay || []);
+    renderCounts(statsJson.openCount, statsJson.closedCount);
+    renderTopCities(statsJson.topCities || []);
+    renderLongest(statsJson.longest || []);
+
+    const missing = items.filter(x => x.lat == null || x.lon == null).length;
+    setStatus(`OK • ${items.length} záznamů • bez souřadnic ${missing}`, true);
+  } catch {
+    setStatus("chyba načítání", false);
+  } finally {
+    inFlight = false;
   }
-
-  const eventsJson = await eventsRes.json();
-  const statsJson = await statsRes.json();
-
-  const items = (eventsJson.items || []);
-
-  renderTable(items);
-  renderMap(items);
-
-  renderChart(statsJson.byDay || []);
-  renderCounts(statsJson.openCount, statsJson.closedCount);
-  renderTopCities(statsJson.topCities || []);
-  renderLongest(statsJson.longest || []);
-
-  const missing = items.filter(x => x.lat == null || x.lon == null).length;
-  setStatus(`OK • ${items.length} záznamů • bez souřadnic ${missing}`, true);
 }
 
 function resetFilters() {
@@ -295,3 +302,8 @@ window.addEventListener("orientationchange", () => safeInvalidateMap());
 
 initMap();
 loadAll();
+
+// ✅ AUTO REFRESH každých 5 minut (zachová filtry, jen znovu načte)
+setInterval(() => {
+  loadAll();
+}, 5 * 60 * 1000);
