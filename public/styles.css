@@ -23,49 +23,13 @@ body {
   z-index: 10;
 }
 
-/* BRAND (logo + title) */
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-width: 0;
-}
-
-.brandLogo {
-  width: 44px;
-  height: 44px;
-  object-fit: contain;
-  border-radius: 10px;
-  /* jemný “badge” efekt na tmavém pozadí */
-  background: rgba(255,255,255,0.02);
-  border: 1px solid rgba(255,255,255,0.10);
-  padding: 6px;
-}
-
-.brandText { min-width: 0; }
-.brandName {
-  margin: 0;
-  font-size: 18px;
-  line-height: 1.1;
-  font-weight: 800;
-  letter-spacing: 0.2px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
+.title { min-width: 0; }
+.title h1 { margin: 0; font-size: 18px; line-height: 1.2; font-weight: 900; letter-spacing: 0.2px; }
+.sub { opacity: 0.75; font-size: 12px; margin-top: 2px; }
 
 .brandAccent {
   color: #ff8a3d;
   font-weight: 900;
-}
-
-.sub {
-  opacity: 0.75;
-  font-size: 12px;
-  margin-top: 3px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .actions {
@@ -307,12 +271,9 @@ a:hover { text-decoration: underline; }
   #map { height: min(420px, 55vh); }
 
   .grid { padding: 10px; gap: 10px; }
-
-  .brandLogo { width: 40px; height: 40px; padding: 5px; }
-  .brandName { font-size: 16px; }
 }
 
 @media (max-width: 380px) {
   #map { height: min(360px, 52vh); }
-  .brandName { font-size: 15px; }
+  .title h1 { font-size: 16px; }
 }
