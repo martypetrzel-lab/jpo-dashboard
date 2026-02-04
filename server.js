@@ -1,21 +1,19 @@
 import express from "express";
-import path from "path";
-import fs from "fs";
-import { fileURLToPath } from "url";
-
 import PDFDocument from "pdfkit";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 
 import {
   initDb,
   upsertEvent,
-  updateEventCoords,
   getEventsFiltered,
   getStatsFiltered,
-  getGeocache,
-  setGeocache,
-  deleteGeocache,
-  clearCoordsFor,
-  getEventsNeedingGeocode,
+  getCachedGeocode,
+  setCachedGeocode,
+  updateEventCoords,
+  clearEventCoords,
+  deleteCachedGeocode,
   getEventsOutsideCz,
   getEventFirstSeen,
   updateEventDuration,
@@ -23,149 +21,269 @@ import {
   recalcDurationsFromTimes
 } from "./db.js";
 
-const app = express();
-app.use(express.json({ limit: "2mb" }));
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const API_KEY = process.env.API_KEY || "JPO_KEY_123456";
-const ENABLE_CORS = String(process.env.CORS || "1") === "1";
+const app = express();
+app.use(express.json({ limit: "2mb" }));
 
-if (ENABLE_CORS) {
-  app.use((req, res, next) => {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-    if (req.method === "OPTIONS") return res.sendStatus(204);
-    next();
-  });
+// statika – ať funguje jak při "public/", tak i když je FE v rootu
+const publicDir = path.join(__dirname, "public");
+if (fs.existsSync(publicDir)) app.use(express.static(publicDir));
+app.use(express.static(__dirname));
+
+// ✅ jistota: vždy obsloužit "/" i když se změní umístění FE souborů
+// (řeší "Cannot GET /" po deployi / změně složek)
+function findIndexHtml() {
+  const candidates = [
+    path.join(publicDir, "index.html"),
+    path.join(__dirname, "index.html")
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
 }
 
-app.use(express.static(path.join(__dirname, ".")));
+const INDEX_HTML = findIndexHtml();
 
-// ---------- Helpers ----------
+// assets (font pro PDF apod.) – ať je dostupné i mimo "public"
+const assetsDir = path.join(__dirname, "assets");
+if (fs.existsSync(assetsDir)) app.use("/assets", express.static(assetsDir));
+
+app.get("/", (req, res) => {
+  if (!INDEX_HTML) return res.status(500).send("index.html not found");
+  res.sendFile(INDEX_HTML);
+});
+
+// SPA fallback: cokoliv mimo /api (včetně "/api") necháme spadnout na index.html
+app.get(/^\/(?!api(?:\/|$)).*/, (req, res, next) => {
+  if (!INDEX_HTML) return next();
+  res.sendFile(INDEX_HTML);
+});
+
+// ✅ tolerovat různé názvy ENV proměnné pro klíč (aby se nerozbily admin endpointy)
+const API_KEY = process.env.API_KEY || process.env.JPO_KEY || process.env.ADMIN_API_KEY || "";
+const GEOCODE_UA = process.env.GEOCODE_USER_AGENT || "jpo-dashboard/1.8 (contact: missing)";
+
+// ---------------- AUTH ----------------
+// PODPORA: X-API-Key header i ?apikey=... v URL
 function requireKey(req, res, next) {
-  const key = String(req.query.apikey || req.headers["x-api-key"] || "").trim();
-  if (!API_KEY || key === API_KEY) return next();
-  return res.status(401).json({ ok: false, error: "unauthorized" });
+  const key = String(req.header("X-API-Key") || req.query.apikey || "").trim();
+  if (!API_KEY) return res.status(500).json({ ok: false, error: "API_KEY not set on server" });
+  if (key !== API_KEY) return res.status(401).json({ ok: false, error: "unauthorized" });
+  next();
 }
 
-function normalizeType(s) {
-  const t = String(s || "").toLowerCase();
+// ---------------- HELPERS ----------------
+function classifyType(title = "") {
+  const t = title.toLowerCase();
   if (t.includes("požár") || t.includes("pozar")) return "fire";
-  if (t.includes("dopravní nehoda") || t.includes("nehoda")) return "traffic";
-  if (t.includes("technická") || t.includes("technicka")) return "tech";
-  if (t.includes("záchrana") || t.includes("zachrana")) return "rescue";
-  if (t.includes("planý") || t.includes("plany") || t.includes("poplach")) return "false_alarm";
+  if (t.includes("doprav") || t.includes("nehoda") || t.includes("dn")) return "traffic";
+  if (t.includes("technick") || t.includes("čerpad") || t.includes("cerpad") || t.includes("strom")) return "tech";
+  if (t.includes("záchrana") || t.includes("zachrana") || t.includes("transport") || t.includes("resusc")) return "rescue";
+  if (t.includes("planý poplach") || t.includes("plany poplach")) return "false_alarm";
   return "other";
 }
 
-function parseCzDateToIso(text) {
-  // "2. února 2026, 18:07"
-  if (!text) return null;
-  const s = String(text).trim();
+function isDistrictPlace(placeText = "") {
+  return /^\s*okres\s+/i.test(String(placeText || ""));
+}
+
+function extractCityFromTitle(title = "") {
+  const s = String(title || "").trim();
+  if (!s.includes(" - ")) return null;
+  const parts = s.split(" - ").map(x => x.trim()).filter(Boolean);
+  if (parts.length < 2) return null;
+  const last = parts[parts.length - 1];
+  if (last.length < 2) return null;
+  return last;
+}
+
+function extractCityFromDescription(descRaw = "") {
+  if (!descRaw) return null;
+
+  const norm = String(descRaw)
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+
+  const lines = norm.split("\n").map(l => l.trim()).filter(Boolean);
+
+  for (const line of lines) {
+    const low = line
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/\p{Diacritic}/gu, "");
+
+    if (low.startsWith("stav:")) continue;
+    if (low.startsWith("ukonceni:")) continue;
+    if (low.startsWith("vyhlaseni:")) continue;
+    if (low.startsWith("ohlaseni:")) continue;
+    if (low.startsWith("okres ")) continue;
+    if (line.length < 2) continue;
+
+    return line;
+  }
+  return null;
+}
+
+// ✅ pubDate z RSS (RFC2822) -> ISO (nepovinné, jen aby se dalo bezpečně počítat)
+function parseRssPubDateToIso(pubDate) {
+  if (!pubDate) return null;
+  const d = new Date(pubDate);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString();
+}
+
+function parseCzDateToIso(s) {
+  if (!s) return null;
+  const norm = String(s)
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "");
 
   const months = {
-    ledna: 1,
-    února: 2,
-    brezna: 3,
-    března: 3,
-    dubna: 4,
-    kvetna: 5,
-    května: 5,
-    cervna: 6,
-    června: 6,
-    cervence: 7,
-    července: 7,
-    srpna: 8,
-    zari: 9,
-    září: 9,
-    rijna: 10,
-    října: 10,
-    listopadu: 11,
-    prosince: 12
+    ledna: 1, unora: 2, brezna: 3, dubna: 4, kvetna: 5, cervna: 6,
+    cervence: 7, srpna: 8, zari: 9, rijna: 10, listopadu: 11, prosince: 12
   };
 
-  const m = s
-    .replace(/\s+/g, " ")
-    .match(/(\d{1,2})\.\s*([^\s]+)\s+(\d{4}),\s*(\d{1,2}):(\d{2})/i);
-
+  const m = norm.match(/(\d{1,2})\.?\s+([a-z]+)\s+(\d{4}),\s*(\d{1,2}):(\d{2})/);
   if (!m) return null;
 
   const day = Number(m[1]);
-  const monName = m[2].toLowerCase();
+  const monName = m[2];
   const year = Number(m[3]);
   const hh = Number(m[4]);
   const mm = Number(m[5]);
 
-  const monthNum = months[monName];
-  if (!monthNum || !day || !year) return null;
+  const month = months[monName];
+  if (!month) return null;
 
-  // Pozn.: používáme UTC konstrukci – na délku zásahu to nevadí (rozdíl je konstantní),
-  // hlavní je, že se to nebude rozpadat.
-  const d = new Date(Date.UTC(year, monthNum - 1, day, hh, mm, 0));
-  return d.toISOString();
+  const dt = new Date(Date.UTC(year, month - 1, day, hh, mm, 0));
+  if (Number.isNaN(dt.getTime())) return null;
+  return dt.toISOString();
 }
 
-function extractUkonceni(descriptionRaw) {
-  // description obsahuje "ukončení: 2. února 2026, 18:07"
-  if (!descriptionRaw) return null;
-  const s = String(descriptionRaw);
-  const m = s.match(/ukončen[íi]:\s*([^<\n\r]+)/i);
-  if (!m) return null;
-  return String(m[1]).trim();
-}
+function parseTimesFromDescription(descRaw = "") {
+  const norm = String(descRaw)
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
 
-function extractStatus(descriptionRaw) {
-  if (!descriptionRaw) return "";
-  const s = String(descriptionRaw).toLowerCase();
-  if (s.includes("stav: ukončená") || s.includes("stav: ukoncena") || s.includes("ukončení:") || s.includes("ukonceni:"))
-    return "UKONČENO";
-  if (s.includes("stav:")) {
-    const m = String(descriptionRaw).match(/stav:\s*([^<\n\r]+)/i);
-    if (m) return String(m[1]).trim();
+  const lines = norm.split("\n").map(l => l.trim()).filter(Boolean);
+
+  // ⚠️ V RSS často NENÍ vyhlášení/ohlášení -> start bereme z pubDate (řešíme v ingest)
+  let endText = null;
+  let isClosed = false;
+
+  for (const line of lines) {
+    const n = line
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/\p{Diacritic}/gu, "");
+
+    if (n.startsWith("ukonceni:")) {
+      endText = line.split(":").slice(1).join(":").trim();
+      isClosed = true;
+    }
   }
-  return "";
+
+  return {
+    endIso: parseCzDateToIso(endText),
+    isClosed
+  };
 }
 
-function extractPlace(descriptionRaw) {
-  if (!descriptionRaw) return "";
-  const parts = String(descriptionRaw)
-    .split("<br>")
-    .map((x) => x.replace(/<[^>]*>/g, "").trim())
-    .filter(Boolean);
+// ✅ HLAVNÍ FIX: délka = (ukončení - start)
+// start = start_time_iso (pokud je), jinak pubDate ISO (z RSS), fallback až potom first_seen/created_at
+async function computeDurationMin(id, startIso, endIso, pubDateIsoFallback, createdAtFallback) {
+  if (!endIso) return null;
 
-  // typicky:
-  // ["stav: ukončená", "ukončení: ...", "Město", "okres ..."]
-  // vybereme první položku, která není stav/ukončení/okres
-  for (const p of parts) {
-    const low = p.toLowerCase();
-    if (low.startsWith("stav:")) continue;
-    if (low.startsWith("ukončení:") || low.startsWith("ukonceni:")) continue;
-    if (low.startsWith("okres")) continue;
-    return p;
+  let startMs = startIso ? new Date(startIso).getTime() : NaN;
+
+  if (!Number.isFinite(startMs) && pubDateIsoFallback) {
+    const pd = new Date(pubDateIsoFallback).getTime();
+    if (Number.isFinite(pd)) startMs = pd;
   }
-  return "";
+
+  if (!Number.isFinite(startMs)) {
+    const firstSeen = await getEventFirstSeen(id);
+    if (firstSeen) startMs = new Date(firstSeen).getTime();
+  }
+
+  if (!Number.isFinite(startMs) && createdAtFallback) {
+    const ca = new Date(createdAtFallback).getTime();
+    if (Number.isFinite(ca)) startMs = ca;
+  }
+
+  const endMs = new Date(endIso).getTime();
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return null;
+
+  return Math.round((endMs - startMs) / 60000);
 }
 
-function guessCityFromTitle(title) {
-  // "... - Město" (poslední pomlčka)
-  if (!title) return "";
-  const s = String(title);
-  const parts = s.split(" - ").map((x) => x.trim()).filter(Boolean);
-  if (parts.length >= 2) return parts[parts.length - 1];
-  return "";
+function normalizePlaceQuery(placeText) {
+  const raw = String(placeText || "").trim();
+  if (!raw) return "";
+  return raw.replace(/^okres\s+/i, "").replace(/^ok\.\s*/i, "").trim();
 }
 
-function computeDurationMin(startIso, endIso) {
-  if (!startIso || !endIso) return null;
-  const a = new Date(startIso);
-  const b = new Date(endIso);
-  if (isNaN(a.getTime()) || isNaN(b.getTime())) return null;
-  const diff = Math.round((b.getTime() - a.getTime()) / 60000);
-  if (diff <= 0) return null;
-  return diff;
+// ---------------- GEOCODE (CZ ONLY) ----------------
+async function geocodePlace(placeText) {
+  if (!placeText || placeText.trim().length < 2) return null;
+
+  const cached = await getCachedGeocode(placeText);
+  if (cached && typeof cached.lat === "number" && typeof cached.lon === "number") {
+    return { lat: cached.lat, lon: cached.lon, cached: true };
+  }
+
+  const cleaned = normalizePlaceQuery(placeText);
+
+  const candidates = [];
+  candidates.push(String(placeText).trim());
+  if (cleaned && cleaned !== String(placeText).trim()) candidates.push(cleaned);
+  if (cleaned) candidates.push(`${cleaned}, Czechia`);
+  candidates.push(`${String(placeText).trim()}, Czechia`);
+
+  const CZ_VIEWBOX = "12.09,51.06,18.87,48.55";
+
+  for (const q of candidates) {
+    const url = new URL("https://nominatim.openstreetmap.org/search");
+    url.searchParams.set("format", "json");
+    url.searchParams.set("limit", "3");
+    url.searchParams.set("q", q);
+
+    url.searchParams.set("countrycodes", "cz");
+    url.searchParams.set("addressdetails", "1");
+    url.searchParams.set("bounded", "1");
+    url.searchParams.set("viewbox", CZ_VIEWBOX);
+
+    const r = await fetch(url.toString(), {
+      headers: { "User-Agent": GEOCODE_UA, "Accept-Language": "cs,en;q=0.8" }
+    });
+    if (!r.ok) continue;
+
+    const data = await r.json();
+    if (!Array.isArray(data) || data.length === 0) continue;
+
+    for (const cand of data) {
+      const lat = Number(cand.lat);
+      const lon = Number(cand.lon);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+
+      const cc = String(cand?.address?.country_code || "").toLowerCase();
+      if (cc && cc !== "cz") continue;
+
+      await setCachedGeocode(placeText, lat, lon);
+      return { lat, lon, cached: false, qUsed: q };
+    }
+  }
+
+  return null;
 }
 
 function parseFilters(req) {
@@ -182,97 +300,202 @@ function parseFilters(req) {
   const month = String(req.query.month || "").trim();
   const normMonth = /^\d{4}-\d{2}$/.test(month) ? month : "";
 
-  let types = [];
-  if (typeQ && typeQ !== "all") {
-    if (typeQ.includes(",")) {
-      types = typeQ.split(",").map((x) => x.trim()).filter(Boolean);
-    } else {
-      types = [typeQ];
-    }
-  }
+  const types = typeQ ? typeQ.split(",").map(s => s.trim()).filter(Boolean) : [];
+  const normStatus = ["all", "open", "closed"].includes(status) ? status : "all";
 
-  return {
-    day: normDay,
-    types,
-    city,
-    status,
-    month: normMonth
-  };
+  return { types, city, status: normStatus, day: normDay, month: normMonth };
 }
 
-// ---------- Ingest ----------
-app.post("/api/ingest", requireKey, async (req, res) => {
-  const items = Array.isArray(req.body?.items) ? req.body.items : [];
-  if (!items.length) return res.json({ ok: true, inserted: 0 });
+// ✅ PRŮBĚŽNÉ DOPOČÍTÁVÁNÍ DÉLKY (pokud už máme end_time_iso a duration je null)
+async function backfillDurations(rows, max = 40) {
+  const candidates = rows
+    .filter(r => r?.is_closed && r?.end_time_iso && (r.duration_min == null))
+    .slice(0, Math.max(0, Math.min(max, 200)));
 
-  let inserted = 0;
-  let updated = 0;
+  let fixed = 0;
 
-  for (const it of items) {
-    try {
-      const id = String(it.id || it.guid || it.link || "").trim();
-      if (!id) continue;
-
-      const title = String(it.title || "").trim();
-      const link = String(it.link || "").trim();
-      const pubDateRaw = it.pubDate || it.pub_date || null;
-
-      let pubDateIso = null;
-      try {
-        if (pubDateRaw) pubDateIso = new Date(pubDateRaw).toISOString();
-      } catch (_) {}
-
-      const descriptionRaw = it.description || it.description_raw || it.desc || "";
-      const statusText = extractStatus(descriptionRaw);
-      const isClosed = String(statusText).toLowerCase().includes("ukončen") || String(statusText).toLowerCase().includes("ukonc");
-
-      const placeText = extractPlace(descriptionRaw) || String(it.place || "").trim();
-      const cityText = String(it.city || "").trim() || guessCityFromTitle(title) || placeText;
-
-      const endText = extractUkonceni(descriptionRaw);
-      const endTimeIso = parseCzDateToIso(endText);
-
-      const startTimeIso = pubDateIso; // start = pubDate
-      const durationMin = computeDurationMin(startTimeIso, endTimeIso);
-
-      const ev = {
-        id: id,
-        title,
-        link,
-        // pub_date necháme původní (RFC2822) -> pro zobrazení funguje
-        pubDate: pubDateRaw || null,
-        // ✅ ISO timestamp pro filtry "dnes/včera" (v DB je pub_ts)
-        pubTs: pubDateIso || null,
-        placeText: placeText || null,
-        cityText: cityText || null,
-        statusText: statusText || null,
-        eventType: normalizeType(title),
-        descriptionRaw: descriptionRaw || null,
-        startTimeIso: startTimeIso || null,
-        endTimeIso: endTimeIso || null,
-        durationMin: durationMin || null,
-        isClosed: Boolean(isClosed)
-      };
-
-      const r = await upsertEvent(ev);
-      if (r === "inserted") inserted++;
-      else updated++;
-    } catch (e) {
-      console.error("ingest item error", e);
+  for (const r of candidates) {
+    // start_time_iso (ideálně z pubDate) je už uložený; fallbacky ponechány
+    const dur = await computeDurationMin(r.id, r.start_time_iso, r.end_time_iso, null, r.created_at);
+    if (Number.isFinite(dur) && dur > 0) {
+      await updateEventDuration(r.id, dur);
+      r.duration_min = dur;
+      fixed++;
     }
   }
 
-  res.json({ ok: true, inserted, updated });
+  return fixed;
+}
+
+async function backfillCoords(rows, max = 8) {
+  const need = rows
+    .filter(r => ((r.city_text || r.place_text) && (r.lat == null || r.lon == null)))
+    .slice(0, Math.max(0, Math.min(max, 20)));
+
+  let fixed = 0;
+  for (const r of need) {
+    try {
+      const q = r.city_text || r.place_text;
+      const g = await geocodePlace(q);
+      if (g) {
+        await updateEventCoords(r.id, g.lat, g.lon);
+        r.lat = g.lat;
+        r.lon = g.lon;
+        fixed++;
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return fixed;
+}
+
+// ---------------- PDF FONT ----------------
+function findFontPath() {
+  const p = path.join(__dirname, "assets", "DejaVuSans.ttf");
+  if (fs.existsSync(p)) return p;
+  return null;
+}
+
+function tryApplyPdfFont(doc) {
+  const p = findFontPath();
+  if (!p) return { ok: false, fontPath: null, reason: "not_found" };
+  try {
+    doc.registerFont("CZ", p);
+    doc.font("CZ");
+    return { ok: true, fontPath: p, reason: "ok" };
+  } catch (e) {
+    return { ok: false, fontPath: p, reason: `load_failed_${e?.message || "unknown"}` };
+  }
+}
+
+function typeLabel(t) {
+  switch (t) {
+    case "fire": return "požár";
+    case "traffic": return "nehoda";
+    case "tech": return "technická";
+    case "rescue": return "záchrana";
+    case "false_alarm": return "planý poplach";
+    default: return "jiné";
+  }
+}
+
+// ---------------- ROUTES ----------------
+
+// ingest (data z ESP)
+app.post("/api/ingest", requireKey, async (req, res) => {
+  try {
+    const { source, items } = req.body || {};
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ ok: false, error: "items missing" });
+    }
+
+    let accepted = 0;
+    let updatedClosed = 0;
+    let geocoded = 0;
+
+    for (const it of items) {
+      if (!it?.id || !it?.title || !it?.link) continue;
+
+      const eventType = it.eventType || classifyType(it.title);
+      const desc = it.descriptionRaw || it.descRaw || it.description || "";
+
+      // ✅ end_time_iso z "ukončení:" (pokud existuje)
+      const times = parseTimesFromDescription(desc);
+
+      // ✅ start_time_iso = pubDate (RSS)
+      const pubDateIso = parseRssPubDateToIso(it.pubDate);
+
+      // pokud by někdy přišlo startTimeIso z jiného zdroje, respektujeme ho
+      const startIsoUsed = it.startTimeIso || pubDateIso || null;
+
+      // ✅ duration = end - start (pubDate)
+      const durationMin =
+        Number.isFinite(it.durationMin)
+          ? it.durationMin
+          : await computeDurationMin(
+              it.id,
+              startIsoUsed,
+              it.endTimeIso || times.endIso,
+              pubDateIso,
+              null
+            );
+
+      const placeText = it.placeText || null;
+      const cityFromDesc = extractCityFromDescription(desc);
+      const cityFromTitle = extractCityFromTitle(it.title);
+
+      const cityText =
+        it.cityText ||
+        cityFromDesc ||
+        (!placeText ? cityFromTitle : (isDistrictPlace(placeText) ? cityFromTitle : placeText)) ||
+        null;
+
+      const ev = {
+        id: it.id,
+        title: it.title,
+        link: it.link,
+        // pub_date necháme původní (RFC2822) -> pro zobrazení funguje
+        pubDate: it.pubDate || null,
+        // ✅ ISO timestamp pro filtry "dnes/včera" (v DB je pub_ts)
+        pubTs: pubDateIso || null,
+
+        placeText,
+        cityText,
+        statusText: it.statusText || null,
+        eventType,
+        descriptionRaw: desc || null,
+
+        // ✅ ukládáme start z pubDate (ISO), aby šel později dopočítat duration
+        startTimeIso: startIsoUsed,
+        endTimeIso: it.endTimeIso || times.endIso || null,
+
+        durationMin,
+        isClosed: !!times.isClosed
+      };
+
+      await upsertEvent(ev);
+      accepted++;
+
+      if (ev.isClosed) updatedClosed++;
+
+      const geoQuery = ev.cityText || ev.placeText;
+      if (geoQuery) {
+        const g = await geocodePlace(geoQuery);
+        if (g) {
+          await updateEventCoords(ev.id, g.lat, g.lon);
+          geocoded++;
+        }
+      }
+    }
+
+    res.json({
+      ok: true,
+      source: source || "unknown",
+      accepted,
+      closed_seen_in_batch: updatedClosed,
+      geocoded
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok: false, error: "server error" });
+  }
 });
 
-// ---------- API ----------
+// ✅ EVENTS: map + tabulka -> podle dne (today/yesterday/all)
 app.get("/api/events", async (req, res) => {
+  const limit = Math.min(Number(req.query.limit || 500), 2000);
   const filters = parseFilters(req);
-  const limit = Math.min(Number(req.query.limit || 400), 2000);
+
   const rows = await getEventsFiltered(filters, limit);
-  res.json({ ok: true, filters, rows });
+
+  const fixedCoords = await backfillCoords(rows, 8);
+  const fixedDur = await backfillDurations(rows, 120);
+
+  res.json({ ok: true, filters, backfilled_coords: fixedCoords, backfilled_durations: fixedDur, items: rows });
 });
 
+// ✅ STATS: vždy 30 dní (graf + aktivní/ukončené + nejdelší) + žebříček měst za měsíc
 app.get("/api/stats", async (req, res) => {
   const filters = parseFilters(req);
   const stats = await getStatsFiltered(filters);
@@ -338,243 +561,213 @@ app.get("/api/export.csv", async (req, res) => {
 
   const csvEscape = (v) => {
     const s = String(v ?? "");
-    if (/[\",\n]/.test(s)) return `"${s.replace(/\"/g, '""')}"`;
+    if (/[",\n\r;]/.test(s)) return `"${s.replaceAll('"', '""')}"`;
     return s;
   };
 
-  const header = ["čas", "stav", "typ", "město", "délka_min", "název", "odkaz"];
-  let out = "\uFEFF" + header.map(csvEscape).join(",") + "\n";
+  const formatDateForCsv = (v) => {
+    if (!v) return "";
+    const d = new Date(v);
+    if (Number.isNaN(d.getTime())) return String(v);
+    return d.toISOString();
+  };
 
-  for (const r of rows) {
-    out += [
-      r.pub_date || "",
-      r.is_closed ? "UKONČENO" : "AKTIVNÍ",
-      r.event_type || "",
-      r.city_text || r.place_text || "",
-      r.duration_min ?? "",
-      r.title || "",
-      r.link || ""
-    ]
-      .map(csvEscape)
-      .join(",") + "\n";
-  }
+  const header = [
+    "time_iso",
+    "state",
+    "type",
+    "title",
+    "city",
+    "place_text",
+    "status_text",
+    "duration_min",
+    "link"
+  ].join(";");
 
-  res.send(out);
+  const lines = rows.map(r => {
+    const timeIso = formatDateForCsv(r.pub_date || r.created_at);
+    const state = r.is_closed ? "UKONČENO" : "AKTIVNÍ";
+    const typ = typeLabel(r.event_type || "other");
+    return [
+      csvEscape(timeIso),
+      csvEscape(state),
+      csvEscape(typ),
+      csvEscape(r.title || ""),
+      csvEscape(r.city_text || r.place_text || ""),
+      csvEscape(r.place_text || ""),
+      csvEscape(r.status_text || ""),
+      csvEscape(Number.isFinite(r.duration_min) ? r.duration_min : ""),
+      csvEscape(r.link || "")
+    ].join(";");
+  });
+
+  // BOM na začátek (Excel)
+  res.send("\ufeff" + [header, ...lines].join("\n"));
 });
 
-// export PDF (diakritika přes DejaVuSans.ttf v assets/)
+// ✅ export PDF: DejaVuSans + CZ diakritika
 app.get("/api/export.pdf", async (req, res) => {
   const filters = parseFilters(req);
-  const limit = Math.min(Number(req.query.limit || 2000), 5000);
+  const limit = Math.min(Number(req.query.limit || 800), 2000);
   const rows = await getEventsFiltered(filters, limit);
 
   await backfillDurations(rows, 500);
 
-  const fontPath = path.join(__dirname, "assets", "DejaVuSans.ttf");
-  if (!fs.existsSync(fontPath)) {
-    return res.status(500).json({
-      ok: false,
-      error: "Missing font file",
-      hint: "Expected: assets/DejaVuSans.ttf"
-    });
-  }
-
   res.setHeader("Content-Type", "application/pdf");
   res.setHeader("Content-Disposition", `attachment; filename="jpo_vyjezdy_export.pdf"`);
 
-  const doc = new PDFDocument({ size: "A4", margin: 36 });
-  doc.registerFont("DejaVu", fontPath);
-  doc.font("DejaVu");
-
+  const doc = new PDFDocument({ size: "A4", layout: "landscape", margin: 24 });
   doc.pipe(res);
 
-  doc.fontSize(18).text("JPO výjezdy – export", { align: "left" });
-  doc.moveDown(0.4);
+  const font = tryApplyPdfFont(doc);
 
-  doc.fontSize(10).fillColor("#333");
-  doc.text(
-    `Filtry: den=${filters.day} | typ=${filters.types.length ? filters.types.join(",") : "vše"} | město=${filters.city || "—"} | stav=${filters.status || "all"}`
-  );
+  const now = new Date();
+  doc.fontSize(18).fillColor("#000").text("JPO výjezdy – export");
+  doc.moveDown(0.2);
+  doc.fontSize(10).fillColor("#333").text(`Vygenerováno: ${now.toLocaleString("cs-CZ")}`);
+  doc.moveDown(0.35);
 
-  doc.moveDown(0.8);
-
-  doc.fontSize(10).fillColor("#000");
-
-  const cols = [
-    { name: "Čas", w: 90 },
-    { name: "Stav", w: 65 },
-    { name: "Typ", w: 55 },
-    { name: "Město", w: 105 },
-    { name: "Délka", w: 55 },
-    { name: "Název", w: 160 }
-  ];
-
-  let x = doc.x;
-  let y = doc.y;
-
-  doc.fontSize(10).fillColor("#000");
-  for (const c of cols) {
-    doc.text(c.name, x, y, { width: c.w, continued: false });
-    x += c.w;
+  if (!font.ok) {
+    doc.fontSize(9).fillColor("#a33").text(`Pozn.: font nelze použít (${font.reason})`);
+    doc.moveDown(0.25);
   }
 
-  y += 14;
-  doc.moveTo(doc.x, y).lineTo(doc.page.width - doc.page.margins.right, y).strokeColor("#aaa").stroke();
-  y += 8;
+  const col = { time: 95, state: 70, type: 78, city: 200, dur: 78, title: 330 };
+  const startX = doc.x;
+  let y = doc.y;
+  const tableWidth = col.time + col.state + col.type + col.city + col.dur + col.title;
 
-  doc.strokeColor("#000").fillColor("#000");
+  function drawHeader() {
+    doc.fontSize(10).fillColor("#000");
+    doc.text("Čas", startX, y, { width: col.time });
+    doc.text("Stav", startX + col.time, y, { width: col.state });
+    doc.text("Typ", startX + col.time + col.state, y, { width: col.type });
+    doc.text("Město", startX + col.time + col.state + col.type, y, { width: col.city });
+    doc.text("Délka", startX + col.time + col.state + col.type + col.city, y, { width: col.dur });
+    doc.text("Název", startX + col.time + col.state + col.type + col.city + col.dur, y, { width: col.title });
+    y += 14;
+    doc.moveTo(startX, y).lineTo(startX + tableWidth, y).strokeColor("#999").stroke();
+    y += 8;
+    if (font.ok) doc.font("CZ");
+  }
 
-  const rowH = 14;
+  function formatDuration(min) {
+    if (!Number.isFinite(min) || min <= 0) return "—";
+    const h = Math.floor(min / 60);
+    const m = min % 60;
+    if (h <= 0) return `${m} min`;
+    return `${h} h ${m} min`;
+  }
+
+  function rowHeightFor(rowObj) {
+    doc.fontSize(9);
+    const d = new Date(rowObj.pub_date || rowObj.created_at);
+    const timeText = Number.isNaN(d.getTime()) ? String(rowObj.pub_date || rowObj.created_at || "") : d.toLocaleString("cs-CZ");
+    const state = rowObj.is_closed ? "UKONČENO" : "AKTIVNÍ";
+    const typ = typeLabel(rowObj.event_type || "other");
+    const city = String(rowObj.city_text || rowObj.place_text || "");
+    const dur = formatDuration(rowObj.duration_min);
+    const ttl = String(rowObj.title || "");
+    const opts = { align: "left", lineBreak: true };
+
+    const h = Math.max(
+      doc.heightOfString(timeText, { width: col.time, ...opts }),
+      doc.heightOfString(state, { width: col.state, ...opts }),
+      doc.heightOfString(typ, { width: col.type, ...opts }),
+      doc.heightOfString(city, { width: col.city, ...opts }),
+      doc.heightOfString(dur, { width: col.dur, ...opts }),
+      doc.heightOfString(ttl, { width: col.title, ...opts })
+    );
+    return Math.max(14, Math.ceil(h) + 4);
+  }
+
+  function drawRow(rowObj) {
+    doc.fontSize(9).fillColor("#111");
+    const d = new Date(rowObj.pub_date || rowObj.created_at);
+    const timeText = Number.isNaN(d.getTime()) ? String(rowObj.pub_date || rowObj.created_at || "") : d.toLocaleString("cs-CZ");
+    const state = rowObj.is_closed ? "UKONČENO" : "AKTIVNÍ";
+    const typ = typeLabel(rowObj.event_type || "other");
+    const city = String(rowObj.city_text || rowObj.place_text || "");
+    const dur = formatDuration(rowObj.duration_min);
+    const ttl = String(rowObj.title || "");
+    const opts = { align: "left", lineBreak: true };
+
+    doc.text(timeText, startX, y, { width: col.time, ...opts });
+    doc.text(state, startX + col.time, y, { width: col.state, ...opts });
+    doc.text(typ, startX + col.time + col.state, y, { width: col.type, ...opts });
+    doc.text(city, startX + col.time + col.state + col.type, y, { width: col.city, ...opts });
+    doc.text(dur, startX + col.time + col.state + col.type + col.city, y, { width: col.dur, ...opts });
+    doc.text(ttl, startX + col.time + col.state + col.type + col.city + col.dur, y, { width: col.title, ...opts });
+  }
+
+  const bottomLimit = () => doc.page.height - doc.page.margins.bottom - 18;
+
+  drawHeader();
 
   for (const r of rows) {
-    const durText = r.duration_min != null ? `${r.duration_min} min` : "—";
-    const row = [
-      r.pub_date || "",
-      r.is_closed ? "UKONČENO" : "AKTIVNÍ",
-      r.event_type || "",
-      r.city_text || r.place_text || "",
-      durText,
-      r.title || ""
-    ];
-
-    if (y > doc.page.height - doc.page.margins.bottom - 60) {
-      doc.addPage();
-      doc.font("DejaVu");
+    const h = rowHeightFor(r);
+    if (y + h > bottomLimit()) {
+      doc.addPage({ size: "A4", layout: "landscape", margin: 24 });
       y = doc.y;
+      drawHeader();
     }
-
-    x = doc.x;
-    for (let i = 0; i < cols.length; i++) {
-      doc.text(row[i], x, y, { width: cols[i].w, height: rowH, ellipsis: true });
-      x += cols[i].w;
-    }
-    y += rowH;
+    drawRow(r);
+    y += h;
   }
 
+  doc.fontSize(9).fillColor("#444").text(`Záznamů: ${rows.length}`, startX, y + 10);
   doc.end();
 });
 
-// ---------- Backfill duration helper ----------
-async function backfillDurations(rows, maxItems = 300) {
-  let done = 0;
-  for (const r of rows) {
-    if (done >= maxItems) break;
-    if (r.duration_min != null) continue;
+// ✅ Varianta: oprava bodů mimo ČR (purge cache + re-geocode)
+app.post("/api/admin/regeocode", requireKey, async (req, res) => {
+  try {
+    const mode = String(req.body?.mode || "outside_cz");
+    const limit = Math.max(1, Math.min(Number(req.body?.limit || 200), 2000));
 
-    if (r.is_closed && r.start_time_iso && r.end_time_iso) {
-      const computed = computeDurationMin(r.start_time_iso, r.end_time_iso);
-      if (computed != null && computed > 0) {
-        await updateEventDuration(r.id, computed);
-        r.duration_min = computed;
-        done++;
+    if (mode !== "outside_cz") {
+      return res.status(400).json({ ok: false, error: "mode must be 'outside_cz'" });
+    }
+
+    const bad = await getEventsOutsideCz(limit);
+
+    let cacheDeleted = 0;
+    let coordsCleared = 0;
+    let reGeocoded = 0;
+    let failed = 0;
+
+    for (const ev of bad) {
+      const q = (ev.city_text && String(ev.city_text).trim()) ? ev.city_text : ev.place_text;
+      if (!q) continue;
+
+      await deleteCachedGeocode(q);
+      cacheDeleted++;
+
+      await clearEventCoords(ev.id);
+      coordsCleared++;
+
+      const g = await geocodePlace(q);
+      if (g) {
+        await updateEventCoords(ev.id, g.lat, g.lon);
+        reGeocoded++;
+      } else {
+        failed++;
       }
-    } else if (!r.is_closed) {
-      // aktivní – necháme "—"
-    } else {
-      // ukončeno bez dat -> necháme null
     }
+
+    res.json({
+      ok: true,
+      mode,
+      processed: bad.length,
+      cache_deleted: cacheDeleted,
+      coords_cleared: coordsCleared,
+      re_geocoded: reGeocoded,
+      failed
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok: false, error: "server error" });
   }
-}
-
-// ---------- GEOCODE CACHE ----------
-app.get("/api/geocache", requireKey, async (req, res) => {
-  const key = String(req.query.key || "").trim();
-  if (!key) return res.status(400).json({ ok: false, error: "missing key" });
-  const row = await getGeocache(key);
-  res.json({ ok: true, row: row || null });
-});
-
-app.post("/api/geocache", requireKey, async (req, res) => {
-  const key = String(req.body?.key || "").trim();
-  const lat = Number(req.body?.lat);
-  const lon = Number(req.body?.lon);
-  const source = String(req.body?.source || "").trim();
-
-  if (!key || !Number.isFinite(lat) || !Number.isFinite(lon)) {
-    return res.status(400).json({ ok: false, error: "invalid payload" });
-  }
-
-  await setGeocache(key, lat, lon, source || null);
-  res.json({ ok: true });
-});
-
-app.delete("/api/geocache", requireKey, async (req, res) => {
-  const key = String(req.query.key || "").trim();
-  if (!key) return res.status(400).json({ ok: false, error: "missing key" });
-  const del = await deleteGeocache(key);
-  res.json({ ok: true, deleted: del });
-});
-
-// ---------- ADMIN TOOLS ----------
-app.post("/api/admin/coords", requireKey, async (req, res) => {
-  const id = String(req.body?.id || "").trim();
-  const lat = Number(req.body?.lat);
-  const lon = Number(req.body?.lon);
-
-  if (!id || !Number.isFinite(lat) || !Number.isFinite(lon)) {
-    return res.status(400).json({ ok: false, error: "invalid payload" });
-  }
-
-  await updateEventCoords(id, lat, lon);
-  res.json({ ok: true });
-});
-
-app.post("/api/admin/clear-coords", requireKey, async (req, res) => {
-  const city = String(req.body?.city || "").trim();
-  if (!city) return res.status(400).json({ ok: false, error: "missing city" });
-  const n = await clearCoordsFor(city);
-  res.json({ ok: true, cleared: n });
-});
-
-app.get("/api/admin/events-needing-geocode", requireKey, async (req, res) => {
-  const limit = Math.min(Number(req.query.limit || 100), 500);
-  const rows = await getEventsNeedingGeocode(limit);
-  res.json({ ok: true, rows });
-});
-
-app.get("/api/admin/events-outside-cz", requireKey, async (req, res) => {
-  const limit = Math.min(Number(req.query.limit || 100), 500);
-  const rows = await getEventsOutsideCz(limit);
-  res.json({ ok: true, rows });
-});
-
-app.get("/api/admin/first-seen", requireKey, async (req, res) => {
-  const id = String(req.query.id || "").trim();
-  if (!id) return res.status(400).json({ ok: false, error: "missing id" });
-  const row = await getEventFirstSeen(id);
-  res.json({ ok: true, row: row || null });
-});
-
-app.get("/api/admin/geocode-reset-city", requireKey, async (req, res) => {
-  const city = String(req.query.city || "").trim();
-  if (!city) return res.status(400).json({ ok: false, error: "missing city" });
-
-  // 1) vynulovat souřadnice v events
-  const coordsCleared = await clearCoordsFor(city);
-
-  // 2) smazat geocache klíče obsahující město
-  // (přesněji: procházíme seznam events needing geocode a delete cache z klíčů)
-  const needing = await getEventsNeedingGeocode(2000);
-  let cacheDeleted = 0;
-  for (const r of needing) {
-    const key = `${r.city_text || ""}|${r.place_text || ""}`.trim();
-    if (key.toLowerCase().includes(city.toLowerCase())) {
-      cacheDeleted += await deleteGeocache(key);
-    }
-  }
-
-  // 3) re-geocode (vyžaduje externí geocoding – zde jen vrátíme seznam co je potřeba)
-  const reGeocoded = 0;
-  const failed = 0;
-
-  res.json({
-    ok: true,
-    city,
-    cache_deleted: cacheDeleted,
-    coords_cleared: coordsCleared,
-    re_geocoded: reGeocoded,
-    failed
-  });
 });
 
 app.get("/health", (req, res) => res.send("OK"));
