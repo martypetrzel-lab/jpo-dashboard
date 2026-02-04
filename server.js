@@ -4,6 +4,10 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 
+import http from "http";
+import https from "https";
+import zlib from "zlib";
+
 import {
   initDb,
   upsertEvent,
@@ -18,7 +22,8 @@ import {
   getEventFirstSeen,
   updateEventDuration,
   clearExtremeDurations,
-  recalcDurationsFromTimes
+  recalcDurationsFromTimes,
+  clearCoordsFor
 } from "./db.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -271,29 +276,101 @@ function parseRssItems(xml) {
   return items;
 }
 
-async function fetchText(url, timeoutMs = 15000) {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    const r = await fetch(url, { signal: ctrl.signal, headers: { "User-Agent": GEOCODE_UA } });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    return await r.text();
-  } finally {
-    clearTimeout(t);
+/**
+ * ✅ Robustní stažení URL (http/https, redirecty, gzip/br) bez fetch().
+ * DŮLEŽITÉ: loguje konkrétní chyby (ENOTFOUND, ECONNRESET, ETIMEDOUT...)
+ */
+function fetchTextNative(urlStr, timeoutMs = 20000, maxRedirects = 5) {
+  return new Promise((resolve, reject) => {
+    let u;
+    try {
+      u = new URL(urlStr);
+    } catch (e) {
+      reject(new Error(`Bad URL: ${urlStr}`));
+      return;
+    }
+
+    const lib = u.protocol === "http:" ? http : https;
+
+    const req = lib.request(
+      {
+        protocol: u.protocol,
+        hostname: u.hostname,
+        port: u.port || (u.protocol === "http:" ? 80 : 443),
+        path: u.pathname + (u.search || ""),
+        method: "GET",
+        headers: {
+          "User-Agent": GEOCODE_UA,
+          "Accept": "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.5",
+          "Accept-Encoding": "gzip, deflate, br"
+        }
+      },
+      (res) => {
+        // Redirect
+        if ([301, 302, 303, 307, 308].includes(res.statusCode || 0)) {
+          const loc = res.headers.location;
+          res.resume();
+          if (!loc) return reject(new Error(`Redirect without location (HTTP ${res.statusCode})`));
+          if (maxRedirects <= 0) return reject(new Error(`Too many redirects, last=${loc}`));
+          const next = new URL(loc, urlStr).toString();
+          return resolve(fetchTextNative(next, timeoutMs, maxRedirects - 1));
+        }
+
+        if ((res.statusCode || 0) < 200 || (res.statusCode || 0) >= 300) {
+          const chunks = [];
+          res.on("data", (d) => chunks.push(d));
+          res.on("end", () => {
+            const body = Buffer.concat(chunks).toString("utf8");
+            reject(new Error(`HTTP ${res.statusCode} ${res.statusMessage || ""} body=${body.slice(0, 200)}`));
+          });
+          return;
+        }
+
+        const enc = String(res.headers["content-encoding"] || "").toLowerCase();
+        let stream = res;
+
+        if (enc.includes("br")) stream = res.pipe(zlib.createBrotliDecompress());
+        else if (enc.includes("gzip")) stream = res.pipe(zlib.createGunzip());
+        else if (enc.includes("deflate")) stream = res.pipe(zlib.createInflate());
+
+        const chunks = [];
+        stream.on("data", (d) => chunks.push(d));
+        stream.on("error", (e) => reject(e));
+        stream.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+      }
+    );
+
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error(`ETIMEDOUT after ${timeoutMs}ms`));
+    });
+
+    req.on("error", (e) => reject(e));
+    req.end();
+  });
+}
+
+function formatErr(e) {
+  const cause = e?.cause;
+  const parts = [];
+  parts.push(e?.name || "Error");
+  parts.push(e?.message || String(e));
+  if (cause) {
+    parts.push(`cause=${cause?.code || cause?.name || "unknown"}:${cause?.message || String(cause)}`);
   }
+  if (e?.code) parts.push(`code=${e.code}`);
+  return parts.join(" | ");
 }
 
 async function runRssOnce(tag = "interval") {
   if (!RSS_ENABLED) return { ok: false, reason: "disabled" };
+
   try {
-    const xml = await fetchText(JPO_RSS_URL, 20000);
+    const xml = await fetchTextNative(JPO_RSS_URL, 20000, 5);
     const parsed = parseRssItems(xml);
 
     let accepted = 0;
     let closedSeen = 0;
 
-    // ⚠️ geocode tady neděláme hromadně (kvůli limitům),
-    // mapu si doplní backfill při /api/events (max 8 ks na request)
     for (const it of parsed) {
       if (!it?.id || !it?.title || !it?.link) continue;
 
@@ -309,14 +386,11 @@ async function runRssOnce(tag = "interval") {
 
       const durationMin = await computeDurationMin(it.id, times.startIso || pubTs, times.endIso, null);
 
-      const placeText = null; // v RSS bývá město často v description; place_text necháme null
+      const placeText = null;
       const cityFromDesc = extractCityFromDescription(desc);
       const cityFromTitle = extractCityFromTitle(it.title);
 
-      const cityText =
-        cityFromDesc ||
-        cityFromTitle ||
-        null;
+      const cityText = cityFromDesc || cityFromTitle || null;
 
       const ev = {
         id: it.id,
@@ -343,14 +417,11 @@ async function runRssOnce(tag = "interval") {
       if (ev.isClosed) closedSeen++;
     }
 
-    if (accepted > 0) {
-      console.log(`[rss] ${tag} accepted=${accepted} closed_seen=${closedSeen} url=${JPO_RSS_URL}`);
-    }
-
+    console.log(`[rss] ${tag} ok accepted=${accepted} closed_seen=${closedSeen} total=${parsed.length} url=${JPO_RSS_URL}`);
     return { ok: true, accepted, closedSeen, count: parsed.length };
   } catch (e) {
-    console.error("[rss] error", e?.message || e);
-    return { ok: false, error: String(e?.message || e) };
+    console.error(`[rss] ${tag} error ${formatErr(e)}`);
+    return { ok: false, error: formatErr(e) };
   }
 }
 
@@ -369,7 +440,6 @@ function parseFilters(req) {
   return { types, city, status: normStatus, day: normDay, month };
 }
 
-// ✅ PRŮBĚŽNÉ DOPOČÍTÁVÁNÍ DÉLKY (a uložení do DB)
 async function backfillDurations(rows, max = 40) {
   const candidates = rows
     .filter(r => r?.is_closed && r?.end_time_iso && (r.duration_min == null))
@@ -412,7 +482,7 @@ async function backfillCoords(rows, max = 8) {
   return fixed;
 }
 
-// ---------------- PDF FONT (robust minimal) ----------------
+// ---------------- PDF FONT ----------------
 function findFontPath() {
   const p = path.join(__dirname, "assets", "DejaVuSans.ttf");
   if (fs.existsSync(p)) return p;
@@ -443,100 +513,11 @@ function typeLabel(t) {
 }
 
 // ---------------- ROUTES ----------------
-
-// ✅ ruční refresh RSS (chráněné klíčem)
 app.post("/api/rss/refresh", requireKey, async (req, res) => {
   const out = await runRssOnce("manual");
   res.json(out);
 });
 
-// ingest (data z ESP) – necháváme
-app.post("/api/ingest", requireKey, async (req, res) => {
-  try {
-    const { source, items } = req.body || {};
-    if (!Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ ok: false, error: "items missing" });
-    }
-
-    let accepted = 0;
-    let updatedClosed = 0;
-    let geocoded = 0;
-
-    for (const it of items) {
-      if (!it?.id || !it?.title || !it?.link) continue;
-
-      const eventType = it.eventType || classifyType(it.title);
-      const desc = it.descriptionRaw || it.descRaw || it.description || "";
-      const times = parseTimesFromDescription(desc);
-
-      const durationMin =
-        Number.isFinite(it.durationMin)
-          ? it.durationMin
-          : await computeDurationMin(it.id, it.startTimeIso || times.startIso, it.endTimeIso || times.endIso, null);
-
-      const placeText = it.placeText || null;
-      const cityFromDesc = extractCityFromDescription(desc);
-      const cityFromTitle = extractCityFromTitle(it.title);
-
-      const cityText =
-        it.cityText ||
-        cityFromDesc ||
-        (!placeText ? cityFromTitle : (isDistrictPlace(placeText) ? cityFromTitle : placeText)) ||
-        null;
-
-      let pubTs = null;
-      if (it.pubDate) {
-        const d = new Date(it.pubDate);
-        if (!Number.isNaN(d.getTime())) pubTs = d.toISOString();
-      }
-
-      const ev = {
-        id: it.id,
-        title: it.title,
-        link: it.link,
-        pubDate: it.pubDate || null,
-        pubTs,
-
-        placeText,
-        cityText,
-        statusText: it.statusText || null,
-        eventType,
-        descriptionRaw: desc || null,
-        startTimeIso: it.startTimeIso || times.startIso || pubTs || null,
-        endTimeIso: it.endTimeIso || times.endIso || null,
-        durationMin,
-        isClosed: !!times.isClosed
-      };
-
-      await upsertEvent(ev);
-      accepted++;
-
-      if (ev.isClosed) updatedClosed++;
-
-      const geoQuery = ev.cityText || ev.placeText;
-      if (geoQuery) {
-        const g = await geocodePlace(geoQuery);
-        if (g) {
-          await updateEventCoords(ev.id, g.lat, g.lon);
-          geocoded++;
-        }
-      }
-    }
-
-    res.json({
-      ok: true,
-      source: source || "unknown",
-      accepted,
-      closed_seen_in_batch: updatedClosed,
-      geocoded
-    });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ ok: false, error: "server error" });
-  }
-});
-
-// events (filters) + backfill coords + backfill duration
 app.get("/api/events", async (req, res) => {
   const limit = Math.min(Number(req.query.limit || 400), 2000);
   const filters = parseFilters(req);
@@ -549,19 +530,16 @@ app.get("/api/events", async (req, res) => {
   res.json({ ok: true, filters, backfilled_coords: fixedCoords, backfilled_durations: fixedDur, items: rows });
 });
 
-// stats (filters)
 app.get("/api/stats", async (req, res) => {
   const filters = parseFilters(req);
   const stats = await getStatsFiltered(filters);
   res.json({ ok: true, filters, ...stats });
 });
 
-// export CSV
 app.get("/api/export.csv", async (req, res) => {
   const filters = parseFilters(req);
   const limit = Math.min(Number(req.query.limit || 2000), 5000);
   const rows = await getEventsFiltered(filters, limit);
-
   await backfillDurations(rows, 500);
 
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
@@ -573,27 +551,12 @@ app.get("/api/export.csv", async (req, res) => {
     return s;
   };
 
-  const formatDateForCsv = (v) => {
-    if (!v) return "";
-    const d = new Date(v);
-    if (Number.isNaN(d.getTime())) return String(v);
-    return d.toISOString();
-  };
-
   const header = [
-    "time_iso",
-    "state",
-    "type",
-    "title",
-    "city",
-    "place_text",
-    "status_text",
-    "duration_min",
-    "link"
+    "time_iso", "state", "type", "title", "city", "place_text", "status_text", "duration_min", "link"
   ].join(";");
 
   const lines = rows.map(r => {
-    const timeIso = formatDateForCsv(r.pub_date || r.created_at);
+    const timeIso = new Date(r.pub_ts || r.created_at).toISOString();
     const state = r.is_closed ? "UKONCENO" : "AKTIVNI";
     const typ = typeLabel(r.event_type || "other");
     return [
@@ -612,12 +575,10 @@ app.get("/api/export.csv", async (req, res) => {
   res.send([header, ...lines].join("\n"));
 });
 
-// export PDF
 app.get("/api/export.pdf", async (req, res) => {
   const filters = parseFilters(req);
   const limit = Math.min(Number(req.query.limit || 800), 2000);
   const rows = await getEventsFiltered(filters, limit);
-
   await backfillDurations(rows, 500);
 
   res.setHeader("Content-Type", "application/pdf");
@@ -658,7 +619,6 @@ app.get("/api/export.pdf", async (req, res) => {
   }
 
   drawHeader();
-
   doc.fontSize(9).fillColor("#000");
 
   for (const r of rows) {
@@ -668,8 +628,6 @@ app.get("/api/export.pdf", async (req, res) => {
     const city = (r.city_text || r.place_text || "");
     const dur = (Number.isFinite(r.duration_min) ? `${r.duration_min} min` : "—");
     const title = (r.title || "");
-
-    const rowH = 12;
 
     if (y > doc.page.height - 40) {
       doc.addPage();
@@ -685,24 +643,22 @@ app.get("/api/export.pdf", async (req, res) => {
     doc.text(dur, startX + col.time + col.state + col.type + col.city, y, { width: col.dur });
     doc.text(title, startX + col.time + col.state + col.type + col.city + col.dur, y, { width: col.title });
 
-    y += rowH;
+    y += 12;
   }
 
   doc.end();
 });
 
-// admin: re-geocode single city (kept) + cache ops (kept)
-app.post("/api/admin/regeocode", requireKey, async (req, res) => {
+// ✅ admin: skutečné „re-geocode města“ (cache pryč + coords pryč)
+app.post("/api/admin/regeocode-city", requireKey, async (req, res) => {
   try {
     const city = String(req.body?.city || "").trim();
     if (!city) return res.status(400).json({ ok: false, error: "city missing" });
 
     const cacheDeleted = await deleteCachedGeocode(city);
+    const cleared = await clearCoordsFor(city);
 
-    const coordsCleared = await clearEventCoords(city); // NOTE: server.js historicky používal city, ale my clearEventCoords je podle ID.
-    // necháme kompatibilně: pokud chceš město, použij admin endpoint v původním kódu; tady už to neřešíme.
-
-    res.json({ ok: true, cache_deleted: cacheDeleted, coords_cleared: coordsCleared });
+    res.json({ ok: true, city, cache_deleted: cacheDeleted, coords_cleared: cleared });
   } catch (e) {
     console.error(e);
     res.status(500).json({ ok: false, error: "server error" });
@@ -714,7 +670,7 @@ app.get("/health", (req, res) => res.send("OK"));
 const port = process.env.PORT || 3000;
 await initDb();
 
-// ✅ start RSS loop (hned po startu + interval)
+// ✅ start RSS loop
 if (RSS_ENABLED) {
   setTimeout(() => runRssOnce("startup"), 4000);
   setInterval(() => runRssOnce("interval"), RSS_INTERVAL_MS);
@@ -723,9 +679,9 @@ if (RSS_ENABLED) {
   console.log("[rss] disabled");
 }
 
-// ✅ AUTOMATICKÁ ÚDRŽBA (několikrát za den)
+// ✅ duration maintenance
 const MAINT_MAX_MINUTES = Math.max(1, Math.min(Number(process.env.DURATION_MAX_MINUTES || 720), 43200));
-const MAINT_EVERY_MS = Math.max(60_000, Number(process.env.DURATION_MAINT_INTERVAL_MS || 6 * 60 * 60 * 1000)); // default 6h
+const MAINT_EVERY_MS = Math.max(60_000, Number(process.env.DURATION_MAINT_INTERVAL_MS || 6 * 60 * 60 * 1000));
 
 async function runDurationMaintenance(tag = "scheduled") {
   try {
