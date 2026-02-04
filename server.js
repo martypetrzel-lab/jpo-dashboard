@@ -30,7 +30,6 @@ const API_KEY = process.env.API_KEY || "";
 const GEOCODE_UA = process.env.GEOCODE_USER_AGENT || "jpo-dashboard/1.7 (contact: missing)";
 
 // ✅ sanity limit pro délku zásahu (default 3 dny)
-// (aby chyby typu "ukončení: dubna" neudělaly 1368 hodin)
 const MAX_DURATION_MINUTES = Math.max(60, Number(process.env.DURATION_MAX_MINUTES || 4320)); // 3 dny
 const FUTURE_END_TOLERANCE_MS = 5 * 60 * 1000; // ukončení nesmí být "v budoucnu" o víc než 5 min
 
@@ -160,7 +159,7 @@ function parseTimesFromDescription(descRaw = "") {
   };
 }
 
-// ✅ tady je fix na extrémní / nesmyslné délky
+// ✅ fix na extrémní / nesmyslné délky
 async function computeDurationMin(id, startIso, endIso, createdAtFallback) {
   if (!endIso) return null;
 
@@ -180,15 +179,12 @@ async function computeDurationMin(id, startIso, endIso, createdAtFallback) {
 
   const endMs = new Date(endIso).getTime();
 
-  // základní validace
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return null;
 
-  // ukončení nesmí být "v budoucnu" (chyby feedu)
   if (endMs > nowMs + FUTURE_END_TOLERANCE_MS) return null;
 
   const dur = Math.round((endMs - startMs) / 60000);
 
-  // extrémní délky neukazovat (typicky špatný měsíc / datum)
   if (!Number.isFinite(dur) || dur <= 0) return null;
   if (dur > MAX_DURATION_MINUTES) return null;
 
@@ -271,7 +267,7 @@ function parseFilters(req) {
   return { types, city, status: normStatus, day: normDay, month: normMonth };
 }
 
-// ✅ PRŮBĚŽNÉ DOPOČÍTÁVÁNÍ DÉLKY (a uložení do DB)
+// ✅ dopočítávání délky (uložení do DB)
 async function backfillDurations(rows, max = 40) {
   const candidates = rows
     .filter(r => r?.is_closed && r?.end_time_iso && (r.duration_min == null))
@@ -369,8 +365,6 @@ app.post("/api/ingest", requireKey, async (req, res) => {
       const endIso = it.endTimeIso || times.endIso || null;
       const isClosed = !!times.isClosed;
 
-      // ✅ Duration jen když máme ukončení + projde sanity kontrolou.
-      // Když nevíme konec => durationMin = null => UI ukáže "—"
       let durationMin = null;
       if (Number.isFinite(it.durationMin)) {
         const candidate = Math.round(it.durationMin);
@@ -446,15 +440,19 @@ app.get("/api/events", async (req, res) => {
   res.json({ ok: true, filters, backfilled_coords: fixedCoords, backfilled_durations: fixedDur, items: rows });
 });
 
-// stats (filters)
+// ✅ stats (30 dní) – vždy ze všech dnů (ignoruje filtr "Den")
 app.get("/api/stats", async (req, res) => {
   const filters = parseFilters(req);
-  const stats = await getStatsFiltered(filters);
+
+  // ✅ klíčová změna: statistika se nikdy nefiltruje podle dne
+  const statsFilters = { ...filters, day: "all" };
+
+  const stats = await getStatsFiltered(statsFilters);
 
   const openCount = stats?.openVsClosed?.open ?? 0;
   const closedCount = stats?.openVsClosed?.closed ?? 0;
 
-  res.json({ ok: true, filters, ...stats, openCount, closedCount });
+  res.json({ ok: true, filters: statsFilters, ...stats, openCount, closedCount });
 });
 
 // export CSV
