@@ -656,3 +656,4 @@ app.get("/health", (req, res) => res.send("OK"));
 const port = process.env.PORT || 3000;
 await initDb();
 app.listen(port, () => console.log(`listening on ${port}`));
+  

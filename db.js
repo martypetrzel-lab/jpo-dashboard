@@ -420,3 +420,4 @@ export async function getStatsFiltered(filters) {
     longest: longestClosed.rows
   };
 }
+ 
