@@ -32,7 +32,7 @@ if (fs.existsSync(publicDir)) app.use(express.static(publicDir));
 app.use(express.static(__dirname));
 
 const API_KEY = process.env.API_KEY || "";
-const GEOCODE_UA = process.env.GEOCODE_USER_AGENT || "jpo-dashboard/1.7 (contact: missing)";
+const GEOCODE_UA = process.env.GEOCODE_USER_AGENT || "jpo-dashboard/1.8 (contact: missing)";
 
 // ---------------- AUTH ----------------
 // PODPORA: X-API-Key header i ?apikey=... v URL
@@ -97,6 +97,14 @@ function extractCityFromDescription(descRaw = "") {
   return null;
 }
 
+// ✅ pubDate z RSS (RFC2822) -> ISO (nepovinné, jen aby se dalo bezpečně počítat)
+function parseRssPubDateToIso(pubDate) {
+  if (!pubDate) return null;
+  const d = new Date(pubDate);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString();
+}
+
 function parseCzDateToIso(s) {
   if (!s) return null;
   const norm = String(s)
@@ -136,7 +144,7 @@ function parseTimesFromDescription(descRaw = "") {
 
   const lines = norm.split("\n").map(l => l.trim()).filter(Boolean);
 
-  let startText = null;
+  // ⚠️ V RSS často NENÍ vyhlášení/ohlášení -> start bereme z pubDate (řešíme v ingest)
   let endText = null;
   let isClosed = false;
 
@@ -146,8 +154,6 @@ function parseTimesFromDescription(descRaw = "") {
       .normalize("NFD")
       .replace(/\p{Diacritic}/gu, "");
 
-    if (n.startsWith("vyhlaseni:")) startText = line.split(":").slice(1).join(":").trim();
-    if (n.startsWith("ohlaseni:")) startText = startText || line.split(":").slice(1).join(":").trim();
     if (n.startsWith("ukonceni:")) {
       endText = line.split(":").slice(1).join(":").trim();
       isClosed = true;
@@ -155,16 +161,22 @@ function parseTimesFromDescription(descRaw = "") {
   }
 
   return {
-    startIso: parseCzDateToIso(startText),
     endIso: parseCzDateToIso(endText),
     isClosed
   };
 }
 
-async function computeDurationMin(id, startIso, endIso, createdAtFallback) {
+// ✅ HLAVNÍ FIX: délka = (ukončení - start)
+// start = start_time_iso (pokud je), jinak pubDate ISO (z RSS), fallback až potom first_seen/created_at
+async function computeDurationMin(id, startIso, endIso, pubDateIsoFallback, createdAtFallback) {
   if (!endIso) return null;
 
   let startMs = startIso ? new Date(startIso).getTime() : NaN;
+
+  if (!Number.isFinite(startMs) && pubDateIsoFallback) {
+    const pd = new Date(pubDateIsoFallback).getTime();
+    if (Number.isFinite(pd)) startMs = pd;
+  }
 
   if (!Number.isFinite(startMs)) {
     const firstSeen = await getEventFirstSeen(id);
@@ -261,7 +273,7 @@ function parseFilters(req) {
   return { types, city, status: normStatus, day: normDay, month: normMonth };
 }
 
-// ✅ PRŮBĚŽNÉ DOPOČÍTÁVÁNÍ DÉLKY (a uložení do DB)
+// ✅ PRŮBĚŽNÉ DOPOČÍTÁVÁNÍ DÉLKY (pokud už máme end_time_iso a duration je null)
 async function backfillDurations(rows, max = 40) {
   const candidates = rows
     .filter(r => r?.is_closed && r?.end_time_iso && (r.duration_min == null))
@@ -270,7 +282,8 @@ async function backfillDurations(rows, max = 40) {
   let fixed = 0;
 
   for (const r of candidates) {
-    const dur = await computeDurationMin(r.id, r.start_time_iso, r.end_time_iso, r.created_at);
+    // start_time_iso (ideálně z pubDate) je už uložený; fallbacky ponechány
+    const dur = await computeDurationMin(r.id, r.start_time_iso, r.end_time_iso, null, r.created_at);
     if (Number.isFinite(dur) && dur > 0) {
       await updateEventDuration(r.id, dur);
       r.duration_min = dur;
@@ -306,7 +319,6 @@ async function backfillCoords(rows, max = 8) {
 
 // ---------------- PDF FONT ----------------
 function findFontPath() {
-  // ✅ přesně dle tvé cesty
   const p = path.join(__dirname, "assets", "DejaVuSans.ttf");
   if (fs.existsSync(p)) return p;
   return null;
@@ -354,12 +366,27 @@ app.post("/api/ingest", requireKey, async (req, res) => {
 
       const eventType = it.eventType || classifyType(it.title);
       const desc = it.descriptionRaw || it.descRaw || it.description || "";
+
+      // ✅ end_time_iso z "ukončení:" (pokud existuje)
       const times = parseTimesFromDescription(desc);
 
+      // ✅ start_time_iso = pubDate (RSS)
+      const pubDateIso = parseRssPubDateToIso(it.pubDate);
+
+      // pokud by někdy přišlo startTimeIso z jiného zdroje, respektujeme ho
+      const startIsoUsed = it.startTimeIso || pubDateIso || null;
+
+      // ✅ duration = end - start (pubDate)
       const durationMin =
         Number.isFinite(it.durationMin)
           ? it.durationMin
-          : await computeDurationMin(it.id, it.startTimeIso || times.startIso, it.endTimeIso || times.endIso, null);
+          : await computeDurationMin(
+              it.id,
+              startIsoUsed,
+              it.endTimeIso || times.endIso,
+              pubDateIso,
+              null
+            );
 
       const placeText = it.placeText || null;
       const cityFromDesc = extractCityFromDescription(desc);
@@ -375,14 +402,19 @@ app.post("/api/ingest", requireKey, async (req, res) => {
         id: it.id,
         title: it.title,
         link: it.link,
+        // pub_date necháme původní (RFC2822) -> pro zobrazení funguje
         pubDate: it.pubDate || null,
+
         placeText,
         cityText,
         statusText: it.statusText || null,
         eventType,
         descriptionRaw: desc || null,
-        startTimeIso: it.startTimeIso || times.startIso || null,
+
+        // ✅ ukládáme start z pubDate (ISO), aby šel později dopočítat duration
+        startTimeIso: startIsoUsed,
         endTimeIso: it.endTimeIso || times.endIso || null,
+
         durationMin,
         isClosed: !!times.isClosed
       };
