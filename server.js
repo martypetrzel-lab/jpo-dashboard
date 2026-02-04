@@ -616,15 +616,18 @@ async function rssMaintenanceOnce(limit = 250) {
 }
 
 // ---------------- PDF font helper ----------------
+// ✅ Použije assets/DejaVuSans.ttf a hlavně nastaví font hned po vytvoření doc (aby diakritika fungovala všude)
 function tryApplyPdfFont(doc) {
   try {
-    const f = path.join(__dirname, "public", "fonts", "NotoSans-Regular.ttf");
+    const f = path.join(__dirname, "assets", "DejaVuSans.ttf");
     if (fs.existsSync(f)) {
       doc.registerFont("CZ", f);
+      // ⚠️ Nevolat doc.font("CZ") tady je taky OK, ale my to stejně nastavíme hned po vytvoření dokumentu.
+      // Pro jistotu to nastavíme i zde, ať se font použije okamžitě.
       doc.font("CZ");
       return { ok: true };
     }
-    return { ok: false, reason: "font file not found" };
+    return { ok: false, reason: `font file not found: ${f}` };
   } catch (e) {
     return { ok: false, reason: e?.message || "font error" };
   }
@@ -862,6 +865,7 @@ app.get("/api/export.pdf", async (req, res) => {
   const doc = new PDFDocument({ size: "A4", layout: "landscape", margin: 24 });
   doc.pipe(res);
 
+  // ✅ Font nastav hned po vytvoření dokumentu, ještě před prvním textem
   const font = tryApplyPdfFont(doc);
 
   const now = new Date();
@@ -881,6 +885,9 @@ app.get("/api/export.pdf", async (req, res) => {
   const tableWidth = col.time + col.state + col.type + col.city + col.dur + col.title;
 
   function drawHeader() {
+    // ✅ pro jistotu vždy drž CZ font i v headeru
+    if (font.ok) doc.font("CZ");
+
     doc.fontSize(10).fillColor("#000");
     doc.text("Čas", startX, y, { width: col.time });
     doc.text("Stav", startX + col.time, y, { width: col.state });
@@ -891,11 +898,12 @@ app.get("/api/export.pdf", async (req, res) => {
     y += 14;
     doc.moveTo(startX, y).lineTo(startX + tableWidth, y).strokeColor("#999").stroke();
     y += 8;
-    if (font.ok) doc.font("CZ");
   }
 
   function rowHeightFor(rowObj) {
+    if (font.ok) doc.font("CZ");
     doc.fontSize(9);
+
     const d = new Date(rowObj.pub_date || rowObj.created_at);
     const timeText = Number.isNaN(d.getTime()) ? String(rowObj.pub_date || rowObj.created_at || "") : d.toLocaleString("cs-CZ");
     const state = rowObj.is_closed ? "UKONČENO" : "AKTIVNÍ";
@@ -917,7 +925,9 @@ app.get("/api/export.pdf", async (req, res) => {
   }
 
   function drawRow(rowObj) {
+    if (font.ok) doc.font("CZ");
     doc.fontSize(9).fillColor("#111");
+
     const d = new Date(rowObj.pub_date || rowObj.created_at);
     const timeText = Number.isNaN(d.getTime()) ? String(rowObj.pub_date || rowObj.created_at || "") : d.toLocaleString("cs-CZ");
     const state = rowObj.is_closed ? "UKONČENO" : "AKTIVNÍ";
@@ -950,6 +960,7 @@ app.get("/api/export.pdf", async (req, res) => {
     y += h;
   }
 
+  if (font.ok) doc.font("CZ");
   doc.fontSize(9).fillColor("#444").text(`Záznamů: ${rows.length}`, startX, y + 10);
   doc.end();
 });
