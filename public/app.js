@@ -92,13 +92,8 @@ function haversineKm(lat1, lon1, lat2, lon2) {
   return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
 }
 
-function typeMeta(t) {
-  return TYPE[t] || TYPE.other;
-}
-
-function statusEmoji(isClosed) {
-  return isClosed ? "✅" : "🔴";
-}
+function typeMeta(t) { return TYPE[t] || TYPE.other; }
+function statusEmoji(isClosed) { return isClosed ? "✅" : "🔴"; }
 
 function setStatus(text, ok = true) {
   const pill = document.getElementById("statusPill");
@@ -126,12 +121,19 @@ function initMap() {
   const toggle = document.getElementById("hzsStationsToggle");
   if (toggle) {
     toggle.checked = false;
-    toggle.addEventListener("change", async () => {
+    toggle.addEventListener("change", () => {
       try {
         if (toggle.checked) {
           hzsStationsLayer.addTo(map);
-          await ensureHzsStationsGeocoded({ reason: "layer" });
+
+          // ✅ A) okmažitě zobraz, co už máme v cache / v paměti
+          applyCacheToStations();
           renderHzsStationsLayer();
+
+          // ✅ A) geocoding spustit na pozadí (NEBLOKUJE UI)
+          ensureHzsStationsGeocoded({ reason: "layer", maxMs: 4500 })
+            .catch(() => { /* ignore */ });
+
         } else {
           hzsStationsLayer.remove();
         }
@@ -338,7 +340,7 @@ async function ensureHzsStationsGeocoded({ reason = "auto", maxMs = 4500 } = {})
   // 2) když už běží proces, nespuštěj další
   if (hzsGeocodeInProgress) return;
 
-  // 3) pokud už máme souřadnice u většiny, taky nic netlač
+  // 3) pokud už máme souřadnice u všech, konec
   const missing = HZS_STATIONS.filter(s => !Number.isFinite(s.lat) || !Number.isFinite(s.lon));
   if (missing.length === 0) return;
 
@@ -349,10 +351,8 @@ async function ensureHzsStationsGeocoded({ reason = "auto", maxMs = 4500 } = {})
     const start = performance.now();
 
     for (const s of missing) {
-      // respektuj časový limit (aby UI nezamrzlo)
       if ((performance.now() - start) > maxMs) break;
 
-      // zkus geocode
       try {
         const { lat, lon } = await geocodeStationNominatim(s);
         s.lat = lat;
@@ -363,13 +363,12 @@ async function ensureHzsStationsGeocoded({ reason = "auto", maxMs = 4500 } = {})
         // nic – stanice se jen přeskočí
       }
 
-      // rate limit
       await sleep(HZS_GEOCODE_DELAY_MS);
     }
   } finally {
     hzsGeocodeInProgress = false;
 
-    // když je vrstva zapnutá, překresli
+    // když je vrstva zapnutá, překresli (doplní nové stanice)
     try {
       const toggle = document.getElementById("hzsStationsToggle");
       if (toggle?.checked) renderHzsStationsLayer();
@@ -379,8 +378,6 @@ async function ensureHzsStationsGeocoded({ reason = "auto", maxMs = 4500 } = {})
 
 /**
  * ✅ SIMULOVANÝ VÝJEZD – routing přes OSRM (nejrychlejší ETA)
- * - nejdřív filtr 20 km vzdušně
- * - poté pro kandidáty zjisti ETA po silnici a vyber nejrychlejší
  */
 async function osrmRoute(fromLat, fromLon, toLat, toLon, abortSignal) {
   const url = `${OSRM_ENDPOINT}/${fromLon},${fromLat};${toLon},${toLat}?overview=full&geometries=geojson`;
@@ -390,7 +387,7 @@ async function osrmRoute(fromLat, fromLon, toLat, toLon, abortSignal) {
   const r = json?.routes?.[0];
   if (!r || !r.geometry || !Array.isArray(r.geometry.coordinates)) throw new Error("osrm_no_route");
 
-  const coords = r.geometry.coordinates.map(([lon, lat]) => [lat, lon]); // Leaflet [lat,lon]
+  const coords = r.geometry.coordinates.map(([lon, lat]) => [lat, lon]);
   return { durationSec: Number(r.duration || 0), distanceM: Number(r.distance || 0), coords };
 }
 
@@ -446,15 +443,14 @@ async function startDispatchSimulationForEvent(it) {
   try {
     if (!it || it.is_closed) return;
     if (!Number.isFinite(it.lat) || !Number.isFinite(it.lon)) return;
-    if (activeDispatch.has(it.id)) return; // už běží
+    if (activeDispatch.has(it.id)) return;
 
-    // ✅ zajisti, že máme (aspoň část) stanic geocodovaných
+    // pro dispatch je fajn mít co nejvíc stanic – ale pořád držíme limit času
     await ensureHzsStationsGeocoded({ reason: "dispatch", maxMs: 3800 });
 
     const readyStations = HZS_STATIONS.filter(s => Number.isFinite(s.lat) && Number.isFinite(s.lon));
     if (readyStations.length === 0) return;
 
-    // Kandidáti do 20 km vzdušně
     const candidates = readyStations
       .map(s => ({ ...s, km: haversineKm(s.lat, s.lon, it.lat, it.lon) }))
       .filter(s => s.km <= HZS_MAX_STRAIGHT_KM)
@@ -462,20 +458,17 @@ async function startDispatchSimulationForEvent(it) {
 
     if (candidates.length === 0) return;
 
-    // Routing – vyber nejrychlejší ETA
     const controller = new AbortController();
     const t = setTimeout(() => controller.abort(), 8000);
 
     let best = null;
-    for (const s of candidates.slice(0, 6)) { // limit kvůli rate-limitům OSRM
+    for (const s of candidates.slice(0, 6)) {
       try {
         const route = await osrmRoute(s.lat, s.lon, it.lat, it.lon, controller.signal);
         const eta = route.durationSec;
         if (!Number.isFinite(eta) || eta <= 0) continue;
         if (!best || eta < best.etaSec) best = { station: s, route, etaSec: eta };
-      } catch {
-        // zkoušíme další kandidáty
-      }
+      } catch { /* ignore */ }
     }
 
     clearTimeout(t);
@@ -484,7 +477,6 @@ async function startDispatchSimulationForEvent(it) {
     const latlngs = best.route.coords;
     if (!Array.isArray(latlngs) || latlngs.length < 2) return;
 
-    // Vykresli trasu + vozidlo
     const poly = L.polyline(latlngs, { weight: 4, opacity: 0.75 });
     poly.addTo(dispatchLayer);
 
@@ -492,7 +484,7 @@ async function startDispatchSimulationForEvent(it) {
     vehicle.addTo(dispatchLayer);
 
     const cumKm = computeCumDistancesKm(latlngs);
-    const durationMs = Math.max(10_000, Math.round(best.etaSec * 1000)); // min 10 s aby to bylo vidět
+    const durationMs = Math.max(10_000, Math.round(best.etaSec * 1000));
     const startedAt = performance.now();
 
     const sim = { marker: vehicle, polyline: poly, raf: null, startedAt, durationMs, cumKm, latlngs };
@@ -516,7 +508,7 @@ async function startDispatchSimulationForEvent(it) {
 
     sim.raf = requestAnimationFrame(step);
   } catch {
-    // ticho – simulace nesmí rozbít zbytek dashboardu
+    // nesmí rozbít zbytek dashboardu
   }
 }
 
@@ -714,13 +706,11 @@ async function loadAll() {
     const items = (eventsJson.items || []);
 
     // --- Simulované výjezdy HZS: jen NOVÉ + AKTIVNÍ události ---
-    // 1) zastav, co se ukončilo
     for (const [eventId] of activeDispatch) {
       const it = items.find(x => x.id === eventId);
       if (!it || it.is_closed) stopDispatchSimulation(eventId);
     }
 
-    // 2) spust pro nové aktivní (až po prvním načtení, aby se nespouštělo na historických)
     const allowSim = hasLoadedOnce;
     for (const it of items) {
       if (!it?.id) continue;
@@ -793,7 +783,7 @@ ensureHzsStationsGeocoded({ reason: "startup", maxMs: 4200 }).catch(() => { /* i
 
 loadAll();
 
-// AUTO REFRESH každých 5 minut (beze změny)
+// AUTO REFRESH každých 5 minut
 setInterval(() => {
   loadAll();
 }, 5 * 60 * 1000);
