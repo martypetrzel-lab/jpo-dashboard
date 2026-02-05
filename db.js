@@ -1,435 +1,412 @@
 import pg from "pg";
 
-// ✅ sanity limit pro délku zásahu (default 3 dny)
-const MAX_DURATION_MINUTES = Math.max(60, Number(process.env.DURATION_MAX_MINUTES || 4320)); // 3 dny
+const { Pool } = pg;
 
-export const pool = new pg.Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL?.includes("railway") ? { rejectUnauthorized: false } : false
-});
+// Railway/Render/etc. typicky dávají DATABASE_URL
+const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || "";
 
-async function colExists(table, col) {
-  const res = await pool.query(
-    `
-    SELECT 1
-    FROM information_schema.columns
-    WHERE table_name = $1 AND column_name = $2
-    LIMIT 1
-    `,
-    [table, col]
-  );
-  return res.rowCount > 0;
+let pool = null;
+
+function getPool() {
+  if (pool) return pool;
+
+  if (!DATABASE_URL) {
+    throw new Error("DATABASE_URL not set");
+  }
+
+  pool = new Pool({
+    connectionString: DATABASE_URL,
+    ssl: process.env.PGSSLMODE === "disable" ? false : { rejectUnauthorized: false },
+  });
+
+  return pool;
 }
 
 export async function initDb() {
-  await pool.query(`
+  const p = getPool();
+
+  // events
+  await p.query(`
     CREATE TABLE IF NOT EXISTS events (
       id TEXT PRIMARY KEY,
-      title TEXT NOT NULL,
-      link TEXT NOT NULL,
+      title TEXT,
+      link TEXT,
+      pub_date TIMESTAMPTZ NULL,
+      place_text TEXT NULL,
+      city_text TEXT NULL,
+      status_text TEXT NULL,
+      event_type TEXT NULL,
+      description_raw TEXT NULL,
 
-      pub_date TEXT,
+      start_time_iso TIMESTAMPTZ NULL,
+      end_time_iso TIMESTAMPTZ NULL,
 
-      place_text TEXT,
-      city_text TEXT,
-
-      status_text TEXT,
-      event_type TEXT,
-
-      description_raw TEXT,
-
-      start_time_iso TEXT,
-      end_time_iso TEXT,
-      duration_min INTEGER,
       is_closed BOOLEAN NOT NULL DEFAULT FALSE,
+      closed_detected_at TIMESTAMPTZ NULL,
+      duration_min INTEGER NULL,
 
-      -- ✅ pouze pro "nově detekované uzavření"
-      closed_detected_at TIMESTAMPTZ,
+      lat DOUBLE PRECISION NULL,
+      lon DOUBLE PRECISION NULL,
 
-      lat DOUBLE PRECISION,
-      lon DOUBLE PRECISION,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      first_seen TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
 
-      first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      last_seen_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  await p.query(`CREATE INDEX IF NOT EXISTS idx_events_pub_date ON events(pub_date);`);
+  await p.query(`CREATE INDEX IF NOT EXISTS idx_events_start_time ON events(start_time_iso);`);
+  await p.query(`CREATE INDEX IF NOT EXISTS idx_events_closed ON events(is_closed);`);
+  await p.query(`CREATE INDEX IF NOT EXISTS idx_events_city ON events(city_text);`);
+
+  // geocode cache
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS geocode_cache (
+      q TEXT PRIMARY KEY,
+      lat DOUBLE PRECISION NOT NULL,
+      lon DOUBLE PRECISION NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS meta (
-      key TEXT PRIMARY KEY,
-      value TEXT,
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-  `);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS geocode_cache (
-      place_text TEXT PRIMARY KEY,
-      lat DOUBLE PRECISION,
-      lon DOUBLE PRECISION,
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-  `);
-
-  // migrations (kdybys startoval ze staršího schématu)
-  const adds = [
-    ["events", "city_text", "TEXT"],
-    ["events", "event_type", "TEXT"],
-    ["events", "description_raw", "TEXT"],
-    ["events", "start_time_iso", "TEXT"],
-    ["events", "end_time_iso", "TEXT"],
-    ["events", "duration_min", "INTEGER"],
-    ["events", "is_closed", "BOOLEAN"],
-    ["events", "first_seen_at", "TIMESTAMPTZ"],
-    ["events", "last_seen_at", "TIMESTAMPTZ"],
-    ["events", "lat", "DOUBLE PRECISION"],
-    ["events", "lon", "DOUBLE PRECISION"],
-    ["events", "closed_detected_at", "TIMESTAMPTZ"]
-  ];
-
-  for (const [t, c, typ] of adds) {
-    // eslint-disable-next-line no-await-in-loop
-    const exists = await colExists(t, c);
-    if (!exists) {
-      // eslint-disable-next-line no-await-in-loop
-      await pool.query(`ALTER TABLE ${t} ADD COLUMN ${c} ${typ};`);
-    }
-  }
-
-  await pool.query(`
-    UPDATE events
-    SET is_closed = COALESCE(is_closed, FALSE),
-        first_seen_at = COALESCE(first_seen_at, created_at, NOW()),
-        last_seen_at = COALESCE(last_seen_at, NOW())
-    WHERE is_closed IS NULL OR first_seen_at IS NULL OR last_seen_at IS NULL;
-  `);
-
-  // ✅ baseline: staré uzavřené ber jako historické (bez délky)
-  const base = await pool.query(`SELECT value FROM meta WHERE key='closed_baseline_v1' LIMIT 1`);
-  if (base.rowCount === 0) {
-    await pool.query(`
-      UPDATE events
-      SET duration_min = NULL,
-          end_time_iso = NULL,
-          closed_detected_at = NULL
-      WHERE is_closed = TRUE;
-    `);
-    await pool.query(
-      `INSERT INTO meta(key, value)
-       VALUES('closed_baseline_v1','1')
-       ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()`
-    );
-  }
-
-  // pojistka proti extrémům
-  await pool.query(
-    `UPDATE events SET duration_min = NULL WHERE duration_min IS NOT NULL AND duration_min > $1`,
-    [MAX_DURATION_MINUTES]
-  );
-}
-
-function clampDuration(v) {
-  if (!Number.isFinite(v)) return null;
-  const n = Math.round(v);
-  if (n <= 0) return null;
-  if (n > MAX_DURATION_MINUTES) return null;
-  return n;
 }
 
 export async function upsertEvent(ev) {
-  const dur = clampDuration(ev.durationMin);
+  const p = getPool();
 
-  await pool.query(
+  const id = ev.id;
+  const title = ev.title ?? null;
+  const link = ev.link ?? null;
+
+  const pubDate = ev.pubDate ? new Date(ev.pubDate) : null;
+  const pubDateTs = pubDate && !Number.isNaN(pubDate.getTime()) ? pubDate.toISOString() : null;
+
+  const placeText = ev.placeText ?? null;
+  const cityText = ev.cityText ?? null;
+  const statusText = ev.statusText ?? null;
+  const eventType = ev.eventType ?? null;
+  const descriptionRaw = ev.descriptionRaw ?? null;
+
+  const startTimeIso = ev.startTimeIso ? new Date(ev.startTimeIso) : null;
+  const startTs = startTimeIso && !Number.isNaN(startTimeIso.getTime()) ? startTimeIso.toISOString() : null;
+
+  const endTimeIso = ev.endTimeIso ? new Date(ev.endTimeIso) : null;
+  const endTs = endTimeIso && !Number.isNaN(endTimeIso.getTime()) ? endTimeIso.toISOString() : null;
+
+  const isClosed = !!ev.isClosed;
+  const durationMin = Number.isFinite(ev.durationMin) ? Math.round(ev.durationMin) : null;
+
+  // Logika:
+  // - closed_detected_at nastav jen při přechodu FALSE->TRUE
+  // - end_time_iso nastav jen při prvním uzavření
+  // - duration_min ulož jen pokud se ještě nepoužila (při prvním uzavření)
+  await p.query(
     `
     INSERT INTO events (
-      id, title, link, pub_date,
-      place_text, city_text, status_text, event_type,
-      description_raw,
-      start_time_iso, end_time_iso, duration_min, is_closed,
-      closed_detected_at,
-      first_seen_at, last_seen_at
-    )
-    VALUES (
-      $1,$2,$3,$4,
-      $5,$6,$7,$8,
-      $9,
-      $10::text,
-      $11::text,
-      $12::int,
-      $13::boolean,
-      CASE WHEN $13::boolean = TRUE THEN NOW() ELSE NULL END,
-      NOW(), NOW()
+      id, title, link, pub_date, place_text, city_text, status_text, event_type, description_raw,
+      start_time_iso, end_time_iso, is_closed, closed_detected_at, duration_min,
+      updated_at
+    ) VALUES (
+      $1,$2,$3,$4,$5,$6,$7,$8,$9,
+      $10,$11,$12,
+      CASE WHEN $12 = TRUE THEN NOW() ELSE NULL END,
+      $13,
+      NOW()
     )
     ON CONFLICT (id) DO UPDATE SET
-      title = EXCLUDED.title,
-      link = EXCLUDED.link,
-      pub_date = EXCLUDED.pub_date,
-
+      title = COALESCE(EXCLUDED.title, events.title),
+      link = COALESCE(EXCLUDED.link, events.link),
+      pub_date = COALESCE(EXCLUDED.pub_date, events.pub_date),
       place_text = COALESCE(EXCLUDED.place_text, events.place_text),
-      city_text  = COALESCE(EXCLUDED.city_text,  events.city_text),
-
+      city_text = COALESCE(EXCLUDED.city_text, events.city_text),
       status_text = COALESCE(EXCLUDED.status_text, events.status_text),
-      event_type  = COALESCE(EXCLUDED.event_type,  events.event_type),
+      event_type = COALESCE(EXCLUDED.event_type, events.event_type),
       description_raw = COALESCE(EXCLUDED.description_raw, events.description_raw),
 
       start_time_iso = COALESCE(EXCLUDED.start_time_iso, events.start_time_iso),
 
-      -- ✅ end_time: nastav jen při prvním uzavření (OPEN->CLOSED)
+      -- end_time_iso jen při prvním uzavření
       end_time_iso = CASE
-        WHEN events.end_time_iso IS NOT NULL THEN events.end_time_iso
-        WHEN (events.is_closed = FALSE AND EXCLUDED.is_closed = TRUE) THEN COALESCE(EXCLUDED.end_time_iso, to_char((NOW() AT TIME ZONE 'utc'), 'YYYY-MM-DD"T"HH24:MI:SS"Z"'))
+        WHEN events.is_closed = FALSE AND EXCLUDED.is_closed = TRUE THEN COALESCE(EXCLUDED.end_time_iso, NOW())
         ELSE events.end_time_iso
-      END,
-
-      -- ✅ duration: jen při prvním uzavření / první insert (po uzavření už NIKDY nepřepisuj)
-      duration_min = CASE
-        WHEN (events.is_closed = FALSE AND EXCLUDED.is_closed = TRUE) THEN COALESCE(EXCLUDED.duration_min, events.duration_min)
-        WHEN (events.is_closed = TRUE) THEN events.duration_min
-        ELSE COALESCE(EXCLUDED.duration_min, events.duration_min)
       END,
 
       is_closed = (events.is_closed OR EXCLUDED.is_closed),
 
+      -- closed_detected_at jen při prvním uzavření
       closed_detected_at = CASE
-        WHEN events.closed_detected_at IS NOT NULL THEN events.closed_detected_at
-        WHEN (events.is_closed = FALSE AND EXCLUDED.is_closed = TRUE) THEN NOW()
+        WHEN events.is_closed = FALSE AND EXCLUDED.is_closed = TRUE THEN NOW()
         ELSE events.closed_detected_at
       END,
 
-      last_seen_at = NOW()
+      -- duration_min jen při prvním uzavření (pokud máme spočítané)
+      duration_min = CASE
+        WHEN events.is_closed = FALSE AND EXCLUDED.is_closed = TRUE AND EXCLUDED.duration_min IS NOT NULL THEN EXCLUDED.duration_min
+        ELSE events.duration_min
+      END,
+
+      updated_at = NOW()
+    ;
     `,
     [
-      ev.id,
-      ev.title,
-      ev.link,
-      ev.pubDate || null,
-      ev.placeText || null,
-      ev.cityText || null,
-      ev.statusText || null,
-      ev.eventType || null,
-      ev.descriptionRaw || null,
-      ev.startTimeIso || null,
-      ev.endTimeIso || null,
-      dur,
-      !!ev.isClosed
+      id,
+      title,
+      link,
+      pubDateTs,
+      placeText,
+      cityText,
+      statusText,
+      eventType,
+      descriptionRaw,
+      startTs,
+      endTs,
+      isClosed,
+      durationMin,
     ]
   );
 }
 
+export async function getEventFirstSeen(id) {
+  const p = getPool();
+  const r = await p.query(`SELECT first_seen FROM events WHERE id=$1`, [id]);
+  return r.rows?.[0]?.first_seen || null;
+}
+
+export async function updateEventDuration(id, durMin) {
+  const p = getPool();
+  const v = Number.isFinite(durMin) ? Math.round(durMin) : null;
+  if (!v || v <= 0) return;
+
+  await p.query(`UPDATE events SET duration_min=$2, updated_at=NOW() WHERE id=$1`, [id, v]);
+}
+
 export async function updateEventCoords(id, lat, lon) {
-  await pool.query(`UPDATE events SET lat=$2, lon=$3 WHERE id=$1`, [id, lat, lon]);
+  const p = getPool();
+  await p.query(`UPDATE events SET lat=$2, lon=$3, updated_at=NOW() WHERE id=$1`, [id, lat, lon]);
 }
 
 export async function clearEventCoords(id) {
-  await pool.query(`UPDATE events SET lat=NULL, lon=NULL WHERE id=$1`, [id]);
+  const p = getPool();
+  await p.query(`UPDATE events SET lat=NULL, lon=NULL, updated_at=NOW() WHERE id=$1`, [id]);
 }
 
-export async function updateEventDuration(id, durationMin) {
-  const dur = clampDuration(durationMin);
-  await pool.query(`UPDATE events SET duration_min=$2 WHERE id=$1`, [id, dur]);
+// ---------------- GEOCODE CACHE ----------------
+export async function getCachedGeocode(q) {
+  const p = getPool();
+  const r = await p.query(`SELECT lat, lon FROM geocode_cache WHERE q=$1`, [q]);
+  return r.rows?.[0] || null;
 }
 
-export async function getCachedGeocode(placeText) {
-  const res = await pool.query(`SELECT lat, lon FROM geocode_cache WHERE place_text=$1`, [placeText]);
-  return res.rows[0] || null;
-}
-
-export async function setCachedGeocode(placeText, lat, lon) {
-  await pool.query(
+export async function setCachedGeocode(q, lat, lon) {
+  const p = getPool();
+  await p.query(
     `
-    INSERT INTO geocode_cache (place_text, lat, lon)
-    VALUES ($1,$2,$3)
-    ON CONFLICT (place_text) DO UPDATE SET
-      lat=EXCLUDED.lat,
-      lon=EXCLUDED.lon,
-      updated_at=NOW()
+    INSERT INTO geocode_cache(q, lat, lon)
+    VALUES($1,$2,$3)
+    ON CONFLICT (q) DO UPDATE SET lat=EXCLUDED.lat, lon=EXCLUDED.lon
     `,
-    [placeText, lat, lon]
+    [q, lat, lon]
   );
 }
 
-export async function deleteCachedGeocode(placeText) {
-  await pool.query(`DELETE FROM geocode_cache WHERE place_text=$1`, [placeText]);
+export async function deleteCachedGeocode(q) {
+  const p = getPool();
+  await p.query(`DELETE FROM geocode_cache WHERE q=$1`, [q]);
+}
+
+// ---------------- FILTER HELPERS ----------------
+function buildWhere(filters, params) {
+  const where = [];
+
+  // status
+  if (filters.status === "open") where.push(`is_closed = FALSE`);
+  else if (filters.status === "closed") where.push(`is_closed = TRUE`);
+
+  // type(s)
+  if (filters.types && filters.types.length > 0) {
+    params.push(filters.types[0]);
+    where.push(`event_type = $${params.length}`);
+  }
+
+  // city substring (city_text OR place_text)
+  if (filters.city) {
+    params.push(`%${filters.city}%`);
+    where.push(`(COALESCE(city_text,'') ILIKE $${params.length} OR COALESCE(place_text,'') ILIKE $${params.length})`);
+  }
+
+  // month YYYY-MM (podle lokálního CZ dne)
+  if (filters.month) {
+    // použijeme local_date = (COALESCE(start_time_iso, pub_date, created_at) AT TIME ZONE 'Europe/Prague')::date
+    params.push(filters.month);
+    where.push(`to_char((COALESCE(start_time_iso, pub_date, created_at) AT TIME ZONE 'Europe/Prague')::date, 'YYYY-MM') = $${params.length}`);
+  }
+
+  // day today/yesterday/all
+  if (filters.day === "today") {
+    where.push(
+      `((COALESCE(start_time_iso, pub_date, created_at) AT TIME ZONE 'Europe/Prague')::date = (NOW() AT TIME ZONE 'Europe/Prague')::date)`
+    );
+  } else if (filters.day === "yesterday") {
+    where.push(
+      `((COALESCE(start_time_iso, pub_date, created_at) AT TIME ZONE 'Europe/Prague')::date = ((NOW() AT TIME ZONE 'Europe/Prague')::date - INTERVAL '1 day')::date)`
+    );
+  }
+
+  return where.length ? `WHERE ${where.join(" AND ")}` : "";
+}
+
+// ---------------- QUERIES ----------------
+export async function getEventsFiltered(filters, limit = 400) {
+  const p = getPool();
+  const params = [];
+  const whereSql = buildWhere(filters, params);
+
+  params.push(limit);
+
+  const r = await p.query(
+    `
+    SELECT
+      id,
+      title,
+      link,
+      pub_date,
+      place_text,
+      city_text,
+      status_text,
+      event_type,
+      description_raw,
+      start_time_iso,
+      end_time_iso,
+      is_closed,
+      closed_detected_at,
+      duration_min,
+      lat,
+      lon,
+      created_at,
+      updated_at
+    FROM events
+    ${whereSql}
+    ORDER BY COALESCE(start_time_iso, pub_date, created_at) DESC
+    LIMIT $${params.length}
+    `,
+    params
+  );
+
+  return r.rows || [];
+}
+
+export async function getStatsFiltered(filters) {
+  const p = getPool();
+  const params = [];
+  const whereSql = buildWhere(filters, params);
+
+  // counts
+  const c = await p.query(
+    `
+    SELECT
+      SUM(CASE WHEN is_closed=FALSE THEN 1 ELSE 0 END)::int AS open_count,
+      SUM(CASE WHEN is_closed=TRUE THEN 1 ELSE 0 END)::int AS closed_count
+    FROM events
+    ${whereSql}
+    `,
+    params
+  );
+
+  const openCount = c.rows?.[0]?.open_count ?? 0;
+  const closedCount = c.rows?.[0]?.closed_count ?? 0;
+
+  // byDay (posledních 14 dní v rámci filtru)
+  const by = await p.query(
+    `
+    SELECT
+      to_char((COALESCE(start_time_iso, pub_date, created_at) AT TIME ZONE 'Europe/Prague')::date, 'YYYY-MM-DD') AS day,
+      COUNT(*)::int AS count
+    FROM events
+    ${whereSql}
+    GROUP BY 1
+    ORDER BY 1 DESC
+    LIMIT 14
+    `,
+    params
+  );
+
+  const byDay = (by.rows || []).reverse();
+
+  // topCities
+  const tc = await p.query(
+    `
+    SELECT
+      NULLIF(trim(COALESCE(city_text, place_text, '')), '') AS city,
+      COUNT(*)::int AS count
+    FROM events
+    ${whereSql}
+    GROUP BY 1
+    ORDER BY count DESC
+    LIMIT 10
+    `,
+    params
+  );
+
+  const topCities = (tc.rows || []).filter((x) => x.city);
+
+  // longest — ✅ po uzavření a uložení duration se sem automaticky dostanou
+  // (bereme jen ty, co mají duration_min > 0 a closed_detected_at != null)
+  const lo = await p.query(
+    `
+    SELECT
+      id, title, city_text, place_text, duration_min
+    FROM events
+    ${whereSql}
+    AND is_closed = TRUE
+    AND closed_detected_at IS NOT NULL
+    AND duration_min IS NOT NULL
+    AND duration_min > 0
+    ORDER BY duration_min DESC
+    LIMIT 10
+    `,
+    params
+  ).catch(async () => {
+    // pokud whereSql je prázdné (bez WHERE), tak ten "AND ..." by spadl.
+    // fallback: udělej query správně
+    const params2 = [];
+    const w = buildWhere(filters, params2);
+    const extra = w ? `${w} AND` : `WHERE`;
+    return await p.query(
+      `
+      SELECT
+        id, title, city_text, place_text, duration_min
+      FROM events
+      ${extra}
+        is_closed = TRUE
+        AND closed_detected_at IS NOT NULL
+        AND duration_min IS NOT NULL
+        AND duration_min > 0
+      ORDER BY duration_min DESC
+      LIMIT 10
+      `,
+      params2
+    );
+  });
+
+  const longest = lo.rows || [];
+
+  return { openCount, closedCount, byDay, topCities, longest };
 }
 
 export async function getEventsOutsideCz(limit = 200) {
-  const res = await pool.query(
+  const p = getPool();
+  const r = await p.query(
     `
-    SELECT id, city_text, place_text, lat, lon
+    SELECT id, lat, lon
     FROM events
-    WHERE lat IS NOT NULL AND lon IS NOT NULL AND (
-      lat < 48.55 OR lat > 51.06 OR lon < 12.09 OR lon > 18.87
-    )
-    ORDER BY last_seen_at DESC
+    WHERE lat IS NOT NULL AND lon IS NOT NULL
+      AND (
+        lat < 48.55 OR lat > 51.06 OR
+        lon < 12.09 OR lon > 18.87
+      )
+    ORDER BY updated_at DESC
     LIMIT $1
     `,
     [limit]
   );
-  return res.rows;
-}
-
-export async function getEventFirstSeen(id) {
-  const res = await pool.query(`SELECT first_seen_at FROM events WHERE id=$1`, [id]);
-  return res.rows[0]?.first_seen_at || null;
-}
-
-function buildWhereSql(filters, params) {
-  const types = Array.isArray(filters?.types) ? filters.types : [];
-  const city = String(filters?.city || "").trim();
-  const status = String(filters?.status || "all").toLowerCase();
-  const day = String(filters?.day || "all").toLowerCase();
-  const month = String(filters?.month || "").trim();
-
-  const where = [];
-  let i = 1;
-
-  if (types.length) {
-    where.push(`event_type = ANY($${i}::text[])`);
-    params.push(types);
-    i++;
-  }
-
-  if (city) {
-    where.push(`(COALESCE(city_text,'') ILIKE $${i} OR COALESCE(place_text,'') ILIKE $${i})`);
-    params.push(`%${city}%`);
-    i++;
-  }
-
-  if (status === "open") where.push(`is_closed = FALSE`);
-  if (status === "closed") where.push(`is_closed = TRUE`);
-
-  if (day === "today" || day === "yesterday") {
-    const offset = day === "yesterday" ? 1 : 0;
-    where.push(
-      `( (COALESCE(NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date =
-         ((NOW() AT TIME ZONE 'Europe/Prague')::date - $${i}::int) )`
-    );
-    params.push(offset);
-    i++;
-  }
-
-  if (month) {
-    const m = month.match(/^\d{4}-\d{2}$/);
-    if (m) {
-      where.push(
-        `date_trunc('month', (COALESCE(NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')) =
-         date_trunc('month', to_date($${i}, 'YYYY-MM'))`
-      );
-      params.push(month);
-      i++;
-    }
-  }
-
-  return { where, nextIndex: i };
-}
-
-export async function getEventsFiltered(filters, limit = 400) {
-  const lim = Math.max(1, Math.min(5000, Number(limit) || 400));
-
-  const params = [];
-  const built = buildWhereSql(filters, params);
-
-  const sql = `
-    SELECT
-      id, title, link, pub_date,
-      place_text, city_text,
-      status_text, event_type,
-      description_raw,
-      start_time_iso, end_time_iso, duration_min, is_closed,
-      closed_detected_at,
-      lat, lon,
-      first_seen_at, last_seen_at, created_at
-    FROM events
-    ${built.where.length ? "WHERE " + built.where.join(" AND ") : ""}
-    ORDER BY COALESCE(NULLIF(start_time_iso,'' )::timestamptz, created_at) DESC, created_at DESC
-    LIMIT $${built.nextIndex}
-  `;
-
-  params.push(lim);
-
-  const res = await pool.query(sql, params);
-  return res.rows;
-}
-
-export async function getStatsFiltered(filters) {
-  const params = [];
-  const built = buildWhereSql(filters, params);
-
-  const where = [...built.where];
-  where.unshift(`created_at >= NOW() - INTERVAL '30 days'`);
-  const whereSql = `WHERE ${where.join(" AND ")}`;
-
-  const byDay = await pool.query(
-    `
-    SELECT
-      to_char(((COALESCE(NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date), 'YYYY-MM-DD') AS day,
-      COUNT(*)::int AS count
-    FROM events
-    ${whereSql}
-    GROUP BY day
-    ORDER BY day ASC;
-    `,
-    params
-  );
-
-  const byType = await pool.query(
-    `
-    SELECT COALESCE(event_type,'other') AS type, COUNT(*)::int AS count
-    FROM events
-    ${whereSql}
-    GROUP BY type
-    ORDER BY count DESC;
-    `,
-    params
-  );
-
-  const topCities = await pool.query(
-    `
-    SELECT COALESCE(NULLIF(city_text,''), NULLIF(place_text,''), '(neznámé)') AS city, COUNT(*)::int AS count
-    FROM events
-    ${whereSql}
-    GROUP BY city
-    ORDER BY count DESC
-    LIMIT 15;
-    `,
-    params
-  );
-
-  const openVsClosed = await pool.query(
-    `
-    SELECT
-      SUM(CASE WHEN is_closed = FALSE THEN 1 ELSE 0 END)::int AS open,
-      SUM(CASE WHEN is_closed = TRUE  THEN 1 ELSE 0 END)::int AS closed
-    FROM events
-    ${whereSql};
-    `,
-    params
-  );
-
-  // ✅ nejdelší jen u nově uzavřených (má closed_detected_at)
-  const longest = await pool.query(
-    `
-    SELECT
-      id, title, link, duration_min, city_text, place_text
-    FROM events
-    ${whereSql}
-      AND duration_min IS NOT NULL
-      AND duration_min > 0
-      AND is_closed = TRUE
-      AND closed_detected_at IS NOT NULL
-    ORDER BY duration_min DESC
-    LIMIT 12;
-    `,
-    params
-  );
-
-  return {
-    byDay: byDay.rows,
-    byType: byType.rows,
-    topCities: topCities.rows,
-    openCount: openVsClosed.rows[0]?.open ?? 0,
-    closedCount: openVsClosed.rows[0]?.closed ?? 0,
-    longest: longest.rows
-  };
+  return r.rows || [];
 }
