@@ -4,6 +4,13 @@ let inFlight = false;
 // ===== Simulované výjezdy HZS (pouze orientační) =====
 const HZS_MAX_STRAIGHT_KM = 20;
 const OSRM_ENDPOINT = "https://router.project-osrm.org/route/v1/driving";
+
+// Geocoding (OSM Nominatim) – pouze pro souřadnice stanic (orientační)
+const NOMINATIM_ENDPOINT = "https://nominatim.openstreetmap.org/search";
+const HZS_GEOCODE_CACHE_KEY = "fw_hzs_station_geocode_v1";
+const HZS_GEOCODE_DELAY_MS = 1100; // ohleduplné tempo
+let hzsGeocodeInProgress = false;
+
 const knownEventIds = new Set();
 let hasLoadedOnce = false;
 const activeDispatch = new Map(); // eventId -> { marker, polyline, raf, startedAt, durationMs }
@@ -17,24 +24,61 @@ const TYPE = {
   other: { emoji: "❓", label: "jiné", cls: "marker-other" }
 };
 
-
-// --- Statická vrstva stanic HZS (Středočeský kraj – orientační body) ---
-// Pozn.: seznam můžeš kdykoliv rozšířit/upravit. Souřadnice jsou pouze přibližné.
+// =====================================================
+// ✅ STANICE HZS – podle tvého seznamu (název + adresa)
+// Souřadnice se dopočítají automaticky přes OSM a uloží do cache.
+// =====================================================
 const HZS_STATIONS = [
-  { id: "kladno", name: "HZS Kladno", lat: 50.147, lon: 14.104 },
-  { id: "slany", name: "HZS Slaný", lat: 50.230, lon: 14.086 },
-  { id: "rakovnik", name: "HZS Rakovník", lat: 50.103, lon: 13.733 },
-  { id: "beroun", name: "HZS Beroun", lat: 49.963, lon: 14.072 },
-  { id: "horovice", name: "HZS Hořovice", lat: 49.836, lon: 13.902 },
-  { id: "pribram", name: "HZS Příbram", lat: 49.690, lon: 14.011 },
-  { id: "benesov", name: "HZS Benešov", lat: 49.781, lon: 14.687 },
-  { id: "ricany", name: "HZS Říčany", lat: 49.992, lon: 14.654 },
-  { id: "brandys", name: "HZS Brandýs n. L.–St. Boleslav", lat: 50.187, lon: 14.663 },
-  { id: "melnik", name: "HZS Mělník", lat: 50.350, lon: 14.474 },
-  { id: "nymburk", name: "HZS Nymburk", lat: 50.186, lon: 15.041 },
-  { id: "mlada_boleslav", name: "HZS Mladá Boleslav", lat: 50.411, lon: 14.903 },
-  { id: "kolin", name: "HZS Kolín", lat: 50.028, lon: 15.200 },
-  { id: "kutna_hora", name: "HZS Kutná Hora", lat: 49.949, lon: 15.268 }
+  // Územní odbor Benešov
+  { id: "benesov-central", name: "Centrální hasičská stanice Benešov", address: "Pod Lihovarem 2152, Benešov, Česko" },
+  { id: "vlasim", name: "Hasičská stanice Vlašim", address: "Blanická 468, Vlašim, Česko" },
+
+  // Územní odbor Beroun
+  { id: "beroun-central", name: "Centrální hasičská stanice Beroun", address: "Pod Studánkou 1258, Beroun, Česko" },
+  { id: "horovice", name: "Hasičská stanice Hořovice", address: "Náměstí Boženy Němcové 811, Hořovice, Česko" },
+
+  // Územní odbor Kladno
+  { id: "kladno-central", name: "Centrální hasičská stanice Kladno", address: "Jana Palacha 1970, Kladno, Česko" },
+  { id: "rakovnik", name: "Hasičská stanice Rakovník", address: "Dukelských hrdinů 2502, Rakovník, Česko" },
+  { id: "roztoky", name: "Hasičská stanice Roztoky", address: "Máchova 449, Roztoky, Česko" },
+  { id: "revnice", name: "Hasičská stanice Řevnice", address: "Havlíčkova 174, Řevnice, Česko" },
+  { id: "slany", name: "Hasičská stanice Slaný", address: "Lázeňská 286, Slaný, Česko" },
+  { id: "stochov", name: "Hasičská stanice Stochov", address: "U Stadionu 527, Stochov, Česko" },
+  { id: "jilove-u-prahy", name: "Hasičská stanice Jílové u Prahy", address: "Rudných dolů 460, Jílové u Prahy, Česko" },
+
+  // Územní odbor Kolín
+  { id: "kolin-central", name: "Centrální hasičská stanice Kolín", address: "Polepská 634, Kolín, Česko" },
+  { id: "cesky-brod", name: "Hasičská stanice Český Brod", address: "Tyršova 73, Český Brod, Česko" },
+  { id: "ovcary", name: "Hasičská stanice Ovčáry", address: "Průmyslová zóna Ovčáry, Ovčáry (Kolín), Česko" },
+  { id: "ricany", name: "Hasičská stanice Říčany", address: "Černokostelecká 447, Říčany, Česko" },
+
+  // Územní odbor Kutná Hora
+  { id: "kutna-hora-central", name: "Centrální hasičská stanice Kutná Hora", address: "U Zastávky 280, Kutná Hora, Česko" },
+  { id: "caslav", name: "Hasičská stanice Čáslav", address: "Vrchovská 2015, Čáslav, Česko" },
+  { id: "uhlirske-janovice", name: "Hasičská stanice Uhlířské Janovice", address: "Hasičská 778, Uhlířské Janovice, Česko" },
+  { id: "zruc-nad-sazavou", name: "Hasičská stanice Zruč nad Sázavou", address: "Jiřická 77, Zruč nad Sázavou, Česko" },
+
+  // Územní odbor Mělník
+  { id: "melnik-central", name: "Centrální hasičská stanice Mělník", address: "Bezručova 3341, Mělník, Česko" },
+  { id: "neratovice", name: "Hasičská stanice Neratovice", address: "Kostomlatského sady 24, Neratovice, Česko" },
+  { id: "kralupy", name: "Hasičská stanice Kralupy nad Vltavou", address: "Přemyslova 935, Kralupy nad Vltavou, Česko" },
+
+  // Územní odbor Mladá Boleslav
+  { id: "mlada-boleslav-central", name: "Centrální hasičská stanice Mladá Boleslav", address: "Laurinova 1370, Mladá Boleslav, Česko" },
+  { id: "benatky", name: "Hasičská stanice Benátky nad Jizerou", address: "Jiráskova 362, Benátky nad Jizerou, Česko" },
+  { id: "bela-pod-bezdezem", name: "Hasičská stanice Bělá pod Bezdězem", address: "Máchova 504, Bělá pod Bezdězem, Česko" },
+  { id: "mnichovo-hradiste", name: "Hasičská stanice Mnichovo Hradiště", address: "Hřbitovní 29, Mnichovo Hradiště, Česko" },
+  { id: "stara-boleslav", name: "Hasičská stanice Stará Boleslav", address: "Svatopluka Čecha 960, Brandýs nad Labem-Stará Boleslav, Česko" },
+
+  // Územní odbor Nymburk
+  { id: "nymburk-central", name: "Centrální hasičská stanice Nymburk", address: "Tyršova 11, Nymburk, Česko" },
+  { id: "podebrady", name: "Hasičská stanice Poděbrady", address: "Krátká 1000, Poděbrady, Česko" },
+  { id: "milovice", name: "Hasičská stanice Milovice", address: "Armádní 866, Milovice, Česko" },
+
+  // Územní odbor Příbram
+  { id: "pribram-central", name: "Centrální hasičská stanice Příbram", address: "Školní 70, Příbram, Česko" },
+  { id: "dobris", name: "Hasičská stanice Dobříš", address: "Plk. Petroviče 601, Dobříš, Česko" },
+  { id: "sedlcany", name: "Hasičská stanice Sedlčany", address: "Kňovická 330, Sedlčany, Česko" }
 ];
 
 function toRad(x) { return (x * Math.PI) / 180; }
@@ -47,7 +91,6 @@ function haversineKm(lat1, lon1, lat2, lon2) {
     Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
   return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
 }
-
 
 function typeMeta(t) {
   return TYPE[t] || TYPE.other;
@@ -83,10 +126,11 @@ function initMap() {
   const toggle = document.getElementById("hzsStationsToggle");
   if (toggle) {
     toggle.checked = false;
-    toggle.addEventListener("change", () => {
+    toggle.addEventListener("change", async () => {
       try {
         if (toggle.checked) {
           hzsStationsLayer.addTo(map);
+          await ensureHzsStationsGeocoded({ reason: "layer" });
           renderHzsStationsLayer();
         } else {
           hzsStationsLayer.remove();
@@ -217,12 +261,120 @@ function renderHzsStationsLayer() {
     if (!hzsStationsLayer || !map) return;
     hzsStationsLayer.clearLayers();
 
-    for (const s of HZS_STATIONS) {
+    const ready = HZS_STATIONS.filter(s => Number.isFinite(s.lat) && Number.isFinite(s.lon));
+    for (const s of ready) {
       const m = L.marker([s.lat, s.lon], { icon: makeStationIcon(s.name) });
-      m.bindTooltip(escapeHtml(s.name), { direction: "top", offset: [0, -6], opacity: 0.95 });
+      const label = `${s.name}\n${s.address || ""}`.trim();
+      m.bindTooltip(escapeHtml(label), { direction: "top", offset: [0, -6], opacity: 0.95 });
       m.addTo(hzsStationsLayer);
     }
   } catch { /* ignore */ }
+}
+
+/**
+ * =========================
+ * ✅ GEO: cache + Nominatim
+ * =========================
+ */
+function loadGeocodeCache() {
+  try {
+    const raw = localStorage.getItem(HZS_GEOCODE_CACHE_KEY);
+    if (!raw) return {};
+    const obj = JSON.parse(raw);
+    if (!obj || typeof obj !== "object") return {};
+    return obj;
+  } catch {
+    return {};
+  }
+}
+
+function saveGeocodeCache(cache) {
+  try {
+    localStorage.setItem(HZS_GEOCODE_CACHE_KEY, JSON.stringify(cache));
+  } catch {
+    // ignore
+  }
+}
+
+function applyCacheToStations() {
+  const cache = loadGeocodeCache();
+  for (const s of HZS_STATIONS) {
+    const hit = cache[s.id];
+    if (hit && Number.isFinite(hit.lat) && Number.isFinite(hit.lon)) {
+      s.lat = hit.lat;
+      s.lon = hit.lon;
+    }
+  }
+}
+
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
+}
+
+async function geocodeStationNominatim(station) {
+  const q = station.address || station.name;
+  const url = new URL(NOMINATIM_ENDPOINT);
+  url.searchParams.set("format", "jsonv2");
+  url.searchParams.set("limit", "1");
+  url.searchParams.set("q", q);
+
+  const res = await fetch(url.toString());
+  if (!res.ok) throw new Error("geocode_http");
+  const data = await res.json();
+  const item = Array.isArray(data) ? data[0] : null;
+  if (!item) throw new Error("geocode_empty");
+
+  const lat = Number(item.lat);
+  const lon = Number(item.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) throw new Error("geocode_bad");
+
+  return { lat, lon };
+}
+
+async function ensureHzsStationsGeocoded({ reason = "auto", maxMs = 4500 } = {}) {
+  // 1) vždy nejdřív natáhni cache
+  applyCacheToStations();
+
+  // 2) když už běží proces, nespuštěj další
+  if (hzsGeocodeInProgress) return;
+
+  // 3) pokud už máme souřadnice u většiny, taky nic netlač
+  const missing = HZS_STATIONS.filter(s => !Number.isFinite(s.lat) || !Number.isFinite(s.lon));
+  if (missing.length === 0) return;
+
+  hzsGeocodeInProgress = true;
+
+  try {
+    const cache = loadGeocodeCache();
+    const start = performance.now();
+
+    for (const s of missing) {
+      // respektuj časový limit (aby UI nezamrzlo)
+      if ((performance.now() - start) > maxMs) break;
+
+      // zkus geocode
+      try {
+        const { lat, lon } = await geocodeStationNominatim(s);
+        s.lat = lat;
+        s.lon = lon;
+        cache[s.id] = { lat, lon, ts: Date.now(), from: "nominatim" };
+        saveGeocodeCache(cache);
+      } catch {
+        // nic – stanice se jen přeskočí
+      }
+
+      // rate limit
+      await sleep(HZS_GEOCODE_DELAY_MS);
+    }
+  } finally {
+    hzsGeocodeInProgress = false;
+
+    // když je vrstva zapnutá, překresli
+    try {
+      const toggle = document.getElementById("hzsStationsToggle");
+      if (toggle?.checked) renderHzsStationsLayer();
+    } catch { /* ignore */ }
+  }
 }
 
 /**
@@ -296,8 +448,14 @@ async function startDispatchSimulationForEvent(it) {
     if (!Number.isFinite(it.lat) || !Number.isFinite(it.lon)) return;
     if (activeDispatch.has(it.id)) return; // už běží
 
+    // ✅ zajisti, že máme (aspoň část) stanic geocodovaných
+    await ensureHzsStationsGeocoded({ reason: "dispatch", maxMs: 3800 });
+
+    const readyStations = HZS_STATIONS.filter(s => Number.isFinite(s.lat) && Number.isFinite(s.lon));
+    if (readyStations.length === 0) return;
+
     // Kandidáti do 20 km vzdušně
-    const candidates = HZS_STATIONS
+    const candidates = readyStations
       .map(s => ({ ...s, km: haversineKm(s.lat, s.lon, it.lat, it.lon) }))
       .filter(s => s.km <= HZS_MAX_STRAIGHT_KM)
       .sort((a, b) => a.km - b.km);
@@ -309,7 +467,7 @@ async function startDispatchSimulationForEvent(it) {
     const t = setTimeout(() => controller.abort(), 8000);
 
     let best = null;
-    for (const s of candidates.slice(0, 6)) { // limit kvůli rate-limitům
+    for (const s of candidates.slice(0, 6)) { // limit kvůli rate-limitům OSRM
       try {
         const route = await osrmRoute(s.lat, s.lon, it.lat, it.lon, controller.signal);
         const eta = route.durationSec;
@@ -341,7 +499,6 @@ async function startDispatchSimulationForEvent(it) {
     activeDispatch.set(it.id, sim);
 
     const step = (now) => {
-      // kdyby se mezitím ukončilo (zastaví se při loadAll)
       const s = activeDispatch.get(it.id);
       if (!s) return;
 
@@ -353,8 +510,6 @@ async function startDispatchSimulationForEvent(it) {
       if (t01 < 1) {
         s.raf = requestAnimationFrame(step);
       } else {
-        // dojezd – necháme trasu + vozidlo ještě chvíli a pak uklidíme,
-        // aby nebyla mapa přeplácaná
         setTimeout(() => stopDispatchSimulation(it.id), 15_000);
       }
     };
@@ -365,18 +520,15 @@ async function startDispatchSimulationForEvent(it) {
   }
 }
 
-// ✅ když je více událostí na stejných souřadnicích, lehce je rozprostřeme,
-// aby se emoji nepřekrývaly (bez clusterů/bublin).
+// ✅ když je více událostí na stejných souřadnicích, lehce je rozprostřeme
 function offsetLatLon(lat, lon, index, total) {
   if (!Number.isFinite(lat) || !Number.isFinite(lon) || total <= 1) {
     return { lat, lon };
   }
 
-  // malé kolečko okolo bodu (v metrech)
-  const radiusM = 22; // ~22 m je na mapě hezky vidět a pořád to „sedí“ na město
+  const radiusM = 22;
   const angle = (index / total) * Math.PI * 2;
 
-  // přepočet metrů na stupně
   const dLat = (radiusM * Math.cos(angle)) / 111320;
   const dLon = (radiusM * Math.sin(angle)) / (111320 * Math.cos((lat * Math.PI) / 180));
 
@@ -386,7 +538,6 @@ function offsetLatLon(lat, lon, index, total) {
 function renderMap(items) {
   markersLayer.clearLayers();
 
-  // ✅ seskup podle souřadnic (zaokrouhlení, aby se trefily stejné body)
   const groups = new Map();
   for (const it of items) {
     if (typeof it.lat === "number" && typeof it.lon === "number") {
@@ -424,7 +575,6 @@ function renderMap(items) {
       m.bindPopup(html);
       m.addTo(markersLayer);
 
-      // ✅ fitBounds bereme z původní pozice (ne z posunuté)
       pts.push([it.lat, it.lon]);
     }
   }
@@ -634,10 +784,16 @@ window.addEventListener("resize", () => {
 });
 window.addEventListener("orientationchange", () => safeInvalidateMap());
 
+// Init
 initMap();
+
+// načti cache hned na startu + rozjeď “tiché” dopočítání (neblokuje UI)
+applyCacheToStations();
+ensureHzsStationsGeocoded({ reason: "startup", maxMs: 4200 }).catch(() => { /* ignore */ });
+
 loadAll();
 
-// AUTO REFRESH každých 5 minut (stabilní 1.02 – beze změny)
+// AUTO REFRESH každých 5 minut (beze změny)
 setInterval(() => {
   loadAll();
 }, 5 * 60 * 1000);
