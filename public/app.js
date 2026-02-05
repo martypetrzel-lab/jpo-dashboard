@@ -15,9 +15,9 @@ const OSRM_BASE = "https://router.project-osrm.org";
 const MAX_STATION_AIR_KM = 20; // vzdušnou čarou
 
 // Animace: zrychlené zobrazení (ETA se počítá reálně, animace je jen simulace)
-const ANIM_MIN_MS = 15000;  // min 15 s
-const ANIM_MAX_MS = 180000; // max 3 min
-const ANIM_SPEEDUP = 20;    // reálná doba / 20
+const ANIM_MIN_MS = 25000;  // min 25 s
+const ANIM_MAX_MS = 240000; // max 4 min
+const ANIM_SPEEDUP = 12;
 let inFlight = false;
 
 const TYPE = {
