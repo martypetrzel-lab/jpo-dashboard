@@ -127,23 +127,26 @@ function renderTable(items) {
   }
 }
 
-// ✅ NOVÉ: hezčí badge marker (barva podle typu + jemný stín)
+// ✅ NOVÝ: pin marker – čitelný i z dálky
 function makeMarkerIcon(typeKey, isClosed) {
   const meta = typeMeta(typeKey);
-  const closedCls = isClosed ? "marker-closed" : "";
+  const closedCls = isClosed ? "pin-closed" : "";
 
   return L.divIcon({
-    className: "fw-marker",
+    className: "fw-pin",
     html: `
-      <div class="markerBadge ${meta.cls} ${closedCls}" title="${escapeHtml(meta.label)}">
-        <div class="markerEmoji">${meta.emoji}</div>
+      <div class="pin ${meta.cls} ${closedCls}">
+        <div class="pin-inner">
+          <span class="pin-emoji">${meta.emoji}</span>
+        </div>
       </div>
     `,
-    iconSize: [34, 34],
-    iconAnchor: [17, 17],
-    popupAnchor: [0, -18]
+    iconSize: [38, 46],
+    iconAnchor: [19, 46],
+    popupAnchor: [0, -38]
   });
 }
+
 
 function renderMap(items) {
   markersLayer.clearLayers();
