@@ -1,5 +1,6 @@
 // db.js
-// Postgres helper: schema bootstrap + safe upsert for events
+// Postgres helper: schema bootstrap + safe upsert for events + filtering/stats + geocode cache
+// FireWatch CZ / JPO Dashboard
 
 import pg from "pg";
 const { Pool } = pg;
@@ -25,8 +26,8 @@ export async function dbPing() {
   return r.rows?.[0]?.now;
 }
 
-export async function ensureSchema() {
-  // vytvoření tabulky + indexy
+async function ensureSchema() {
+  // events + geocode cache + app meta (tracking_start)
   const sql = `
   CREATE TABLE IF NOT EXISTS events (
     id               TEXT PRIMARY KEY,
@@ -50,16 +51,55 @@ export async function ensureSchema() {
 
     closed_detected_at TIMESTAMPTZ,
 
+    -- coords
+    lat              DOUBLE PRECISION,
+    lon              DOUBLE PRECISION,
+
     first_seen_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_seen_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
 
+  -- pro upgrade starších DB
+  ALTER TABLE events ADD COLUMN IF NOT EXISTS lat DOUBLE PRECISION;
+  ALTER TABLE events ADD COLUMN IF NOT EXISTS lon DOUBLE PRECISION;
+
   CREATE INDEX IF NOT EXISTS idx_events_pub_date ON events (pub_date DESC);
   CREATE INDEX IF NOT EXISTS idx_events_last_seen ON events (last_seen_at DESC);
   CREATE INDEX IF NOT EXISTS idx_events_is_closed ON events (is_closed);
+  CREATE INDEX IF NOT EXISTS idx_events_city_text ON events (city_text);
+  CREATE INDEX IF NOT EXISTS idx_events_event_type ON events (event_type);
+  CREATE INDEX IF NOT EXISTS idx_events_first_seen ON events (first_seen_at DESC);
+
+  CREATE TABLE IF NOT EXISTS geocode_cache (
+    q          TEXT PRIMARY KEY,
+    lat        DOUBLE PRECISION NOT NULL,
+    lon        DOUBLE PRECISION NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
+
+  CREATE TABLE IF NOT EXISTS app_meta (
+    k TEXT PRIMARY KEY,
+    v TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
   `;
   await pool.query(sql);
+
+  // tracking start: pokud není nastaveno, nastav teď (persistuje i přes restarty)
+  await pool.query(
+    `
+    INSERT INTO app_meta (k, v)
+    VALUES ('tracking_start_iso', $1)
+    ON CONFLICT (k) DO NOTHING
+    `,
+    [new Date().toISOString()]
+  );
+}
+
+export async function initDb() {
+  await ensureSchema();
+  await dbPing();
 }
 
 /**
@@ -80,8 +120,6 @@ export async function ensureSchema() {
  *  durationMin?: number|null,
  *  isClosed?: boolean,
  * }
- *
- * options = { maxDurationMin?: number }
  */
 export async function upsertEvent(event, options = {}) {
   const maxDurationMin =
@@ -200,18 +238,256 @@ export async function upsertEvent(event, options = {}) {
   return res.rows?.[0]?.id;
 }
 
-export async function listEvents({ limit = 200, onlyOpen = false } = {}) {
-  const lim = Math.max(1, Math.min(1000, Number(limit) || 200));
-  const where = onlyOpen ? "WHERE is_closed = FALSE" : "";
+// ---------- meta ----------
+export async function getTrackingStartIso() {
+  const r = await pool.query("SELECT v FROM app_meta WHERE k='tracking_start_iso' LIMIT 1");
+  return r.rows?.[0]?.v || null;
+}
+
+// ---------- geocode cache ----------
+export async function getCachedGeocode(q) {
+  const qq = String(q || "").trim();
+  if (!qq) return null;
+  const r = await pool.query("SELECT q, lat, lon FROM geocode_cache WHERE q=$1 LIMIT 1", [qq]);
+  return r.rows?.[0] || null;
+}
+
+export async function setCachedGeocode(q, lat, lon) {
+  const qq = String(q || "").trim();
+  if (!qq) return;
+  await pool.query(
+    `
+    INSERT INTO geocode_cache (q, lat, lon, updated_at)
+    VALUES ($1,$2,$3,NOW())
+    ON CONFLICT (q) DO UPDATE SET
+      lat=EXCLUDED.lat, lon=EXCLUDED.lon, updated_at=NOW()
+    `,
+    [qq, Number(lat), Number(lon)]
+  );
+}
+
+export async function deleteCachedGeocode(q) {
+  const qq = String(q || "").trim();
+  if (!qq) return;
+  await pool.query("DELETE FROM geocode_cache WHERE q=$1", [qq]);
+}
+
+// ---------- coords on events ----------
+export async function updateEventCoords(id, lat, lon) {
+  const evId = String(id || "").trim();
+  if (!evId) return;
+  await pool.query(
+    "UPDATE events SET lat=$2, lon=$3, updated_at=NOW() WHERE id=$1",
+    [evId, Number(lat), Number(lon)]
+  );
+}
+
+export async function clearEventCoords(id) {
+  const evId = String(id || "").trim();
+  if (!evId) return;
+  await pool.query("UPDATE events SET lat=NULL, lon=NULL, updated_at=NOW() WHERE id=$1", [evId]);
+}
+
+export async function getEventsOutsideCz(limit = 200) {
+  const lim = Math.max(1, Math.min(2000, Number(limit) || 200));
+  // hrubý bbox ČR – stejné jako na serveru
+  const r = await pool.query(
+    `
+    SELECT id, lat, lon
+    FROM events
+    WHERE lat IS NOT NULL AND lon IS NOT NULL
+      AND NOT (lat BETWEEN 48.55 AND 51.06 AND lon BETWEEN 12.09 AND 18.87)
+    ORDER BY updated_at DESC
+    LIMIT $1
+    `,
+    [lim]
+  );
+  return r.rows || [];
+}
+
+// ---------- duration helpers ----------
+export async function getEventFirstSeen(id) {
+  const evId = String(id || "").trim();
+  if (!evId) return null;
+  const r = await pool.query("SELECT first_seen_at FROM events WHERE id=$1 LIMIT 1", [evId]);
+  return r.rows?.[0]?.first_seen_at || null;
+}
+
+export async function updateEventDuration(id, durationMin) {
+  const evId = String(id || "").trim();
+  if (!evId) return;
+  const d = Number(durationMin);
+  if (!Number.isFinite(d) || d <= 0) return;
+  await pool.query(
+    `
+    UPDATE events
+    SET duration_min=$2, updated_at=NOW()
+    WHERE id=$1
+    `,
+    [evId, Math.round(d)]
+  );
+}
+
+// ---------- filtering ----------
+function normalizeDay(day) {
+  const d = String(day || "all").trim().toLowerCase();
+  if (d === "today" || d === "yesterday" || d === "all") return d;
+  return "all";
+}
+
+function normalizeStatus(status) {
+  const s = String(status || "all").trim().toLowerCase();
+  if (s === "open" || s === "closed" || s === "all") return s;
+  return "all";
+}
+
+export async function getEventsFiltered(filters = {}, limit = 400) {
+  const lim = Math.max(1, Math.min(5000, Number(limit) || 400));
+
+  const day = normalizeDay(filters.day);
+  const status = normalizeStatus(filters.status);
+  const city = String(filters.city || "").trim();
+  const month = String(filters.month || "").trim(); // YYYY-MM
+  const types = Array.isArray(filters.types) ? filters.types.map((x) => String(x).trim()).filter(Boolean) : [];
+
+  const wh = [];
+  const params = [];
+
+  // day filter: podle pub_date v timezone Praha
+  if (day !== "all") {
+    // porovnáváme DATE(pub_date AT TIME ZONE ...)
+    const target = day === "today" ? "CURRENT_DATE" : "(CURRENT_DATE - INTERVAL '1 day')";
+    wh.push(`DATE(pub_date AT TIME ZONE 'Europe/Prague') = ${target}`);
+  }
+
+  if (status === "open") wh.push("is_closed = FALSE");
+  if (status === "closed") wh.push("is_closed = TRUE");
+
+  if (city) {
+    params.push(`%${city}%`);
+    wh.push(`COALESCE(city_text, place_text, '') ILIKE $${params.length}`);
+  }
+
+  if (month && /^\\d{4}-\\d{2}$/.test(month)) {
+    // měsíc podle Prahy
+    params.push(month);
+    wh.push(`to_char((pub_date AT TIME ZONE 'Europe/Prague'), 'YYYY-MM') = $${params.length}`);
+  }
+
+  if (types.length > 0) {
+    params.push(types);
+    wh.push(`event_type = ANY($${params.length}::text[])`);
+  }
+
+  const whereSql = wh.length ? `WHERE ${wh.join(" AND ")}` : "";
+
   const q = `
     SELECT *
     FROM events
-    ${where}
-    ORDER BY last_seen_at DESC
-    LIMIT $1
+    ${whereSql}
+    ORDER BY pub_date DESC NULLS LAST, last_seen_at DESC
+    LIMIT ${lim}
   `;
-  const r = await pool.query(q, [lim]);
-  return r.rows;
+  const r = await pool.query(q, params);
+  return r.rows || [];
+}
+
+// ---------- stats ----------
+export async function getStatsFiltered(filters = {}) {
+  const day = normalizeDay(filters.day);
+  const status = normalizeStatus(filters.status);
+  const city = String(filters.city || "").trim();
+  const month = String(filters.month || "").trim();
+  const types = Array.isArray(filters.types) ? filters.types.map((x) => String(x).trim()).filter(Boolean) : [];
+
+  const wh = [];
+  const params = [];
+
+  if (day !== "all") {
+    const target = day === "today" ? "CURRENT_DATE" : "(CURRENT_DATE - INTERVAL '1 day')";
+    wh.push(`DATE(pub_date AT TIME ZONE 'Europe/Prague') = ${target}`);
+  }
+  if (status === "open") wh.push("is_closed = FALSE");
+  if (status === "closed") wh.push("is_closed = TRUE");
+  if (city) {
+    params.push(`%${city}%`);
+    wh.push(`COALESCE(city_text, place_text, '') ILIKE $${params.length}`);
+  }
+  if (month && /^\\d{4}-\\d{2}$/.test(month)) {
+    params.push(month);
+    wh.push(`to_char((pub_date AT TIME ZONE 'Europe/Prague'), 'YYYY-MM') = $${params.length}`);
+  }
+  if (types.length > 0) {
+    params.push(types);
+    wh.push(`event_type = ANY($${params.length}::text[])`);
+  }
+
+  const whereSql = wh.length ? `WHERE ${wh.join(" AND ")}` : "";
+
+  // counts (respektují filtry)
+  const openQ = `SELECT COUNT(*)::int AS c FROM events ${whereSql}${whereSql ? " AND" : " WHERE"} is_closed=FALSE`;
+  const closedQ = `SELECT COUNT(*)::int AS c FROM events ${whereSql}${whereSql ? " AND" : " WHERE"} is_closed=TRUE`;
+
+  // by day (respektuje filtry, ale seskupí)
+  const byDayQ = `
+    SELECT
+      to_char(DATE(pub_date AT TIME ZONE 'Europe/Prague'), 'YYYY-MM-DD') AS day,
+      COUNT(*)::int AS count
+    FROM events
+    ${whereSql}
+    GROUP BY 1
+    ORDER BY 1 DESC
+    LIMIT 31
+  `;
+
+  // top cities – ZÁMĚRNĚ ze všech výjezdů (ignoruje UI filtry)
+  const topCitiesQ = `
+    SELECT
+      COALESCE(NULLIF(TRIM(city_text), ''), NULLIF(TRIM(place_text), ''), 'Neznámé') AS city,
+      COUNT(*)::int AS count
+    FROM events
+    GROUP BY 1
+    ORDER BY count DESC, city ASC
+    LIMIT 20
+  `;
+
+  // nejdelší zásahy – jen nové od tracking_start
+  const trackingIso = await getTrackingStartIso();
+  const longestParams = [];
+  let longestWhere = "WHERE is_closed=TRUE AND duration_min IS NOT NULL AND duration_min > 0";
+  if (trackingIso) {
+    longestParams.push(trackingIso);
+    // first_seen_at je spolehlivý "od teď" a nepůjde do extrémů backlogu
+    longestWhere += ` AND first_seen_at >= $${longestParams.length}::timestamptz`;
+    // navíc pojistka: pokud existuje start_time_iso, tak musí být také >= tracking
+    longestParams.push(trackingIso);
+    longestWhere += ` AND (start_time_iso IS NULL OR (start_time_iso::timestamptz >= $${longestParams.length}::timestamptz))`;
+  }
+  const longestQ = `
+    SELECT
+      id, title, link, city_text, place_text, duration_min, start_time_iso, end_time_iso, pub_date
+    FROM events
+    ${longestWhere}
+    ORDER BY duration_min DESC
+    LIMIT 20
+  `;
+
+  const [openR, closedR, byDayR, topCitiesR, longestR] = await Promise.all([
+    pool.query(openQ, params),
+    pool.query(closedQ, params),
+    pool.query(byDayQ, params),
+    pool.query(topCitiesQ),
+    pool.query(longestQ, longestParams),
+  ]);
+
+  return {
+    openCount: openR.rows?.[0]?.c ?? 0,
+    closedCount: closedR.rows?.[0]?.c ?? 0,
+    byDay: byDayR.rows || [],
+    topCities: topCitiesR.rows || [],
+    longest: longestR.rows || [],
+    trackingStartIso: trackingIso || null,
+  };
 }
 
 export async function close() {
