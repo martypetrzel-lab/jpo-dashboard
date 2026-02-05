@@ -1,10 +1,9 @@
-// FireWatch CZ - frontend
+// FireWatch CZ - frontend (App.js)
 let map, markersLayer, chart;
 let inFlight = false;
 
 function setStatus(text, ok) {
   const pill = document.getElementById("statusPill");
-  if (!pill) return;
   pill.textContent = text;
   pill.classList.toggle("ok", !!ok);
   pill.classList.toggle("bad", !ok);
@@ -27,11 +26,31 @@ function typeIcon(t) {
   }
 }
 
+// ✅ hrubé omezení mapových bodů na Středočeský kraj (bbox)
+// (rychlé, stabilní, nic nerozbíjí; případně doladíme podle reálných okrajů)
+const STC_BOUNDS = {
+  minLat: 49.20,
+  maxLat: 50.80,
+  minLon: 13.10,
+  maxLon: 15.80
+};
+
+function isInStredocesky(lat, lon) {
+  return (
+    Number.isFinite(lat) &&
+    Number.isFinite(lon) &&
+    lat >= STC_BOUNDS.minLat &&
+    lat <= STC_BOUNDS.maxLat &&
+    lon >= STC_BOUNDS.minLon &&
+    lon <= STC_BOUNDS.maxLon
+  );
+}
+
 function initMap() {
   map = L.map("map").setView([49.8, 15.3], 7);
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 18,
-    attribution: "© OpenStreetMap",
+    attribution: "© OpenStreetMap"
   }).addTo(map);
 
   markersLayer = L.layerGroup().addTo(map);
@@ -89,7 +108,6 @@ function escapeHtml(s) {
 
 function renderTable(items) {
   const tbody = document.getElementById("eventsTbody");
-  if (!tbody) return;
   tbody.innerHTML = "";
 
   for (const it of items) {
@@ -97,30 +115,32 @@ function renderTable(items) {
     const d = formatDate(it.pub_date || it.created_at);
     const state = it.is_closed ? "UKONČENO" : "AKTIVNÍ";
 
-    tr.innerHTML = `
-      <td>${escapeHtml(d)}</td>
-      <td class="center">${escapeHtml(typeIcon(it.event_type))}</td>
-      <td>${escapeHtml(it.title || "")}</td>
-      <td>${escapeHtml(it.city_text || it.place_text || "")}</td>
-      <td>${escapeHtml(state)}</td>
-      <td>${escapeHtml(formatDuration(getDisplayDurationMin(it)))}</td>
-      <td><a href="${escapeHtml(it.link || "#")}" target="_blank" rel="noopener">otevřít</a></td>
-    `;
+    tr.innerHTML =
+      `<td>${escapeHtml(d)}</td>` +
+      `<td class="center">${typeIcon(it.event_type)}</td>` +
+      `<td>${escapeHtml(it.title || "")}</td>` +
+      `<td>${escapeHtml(it.city_text || it.place_text || "")}</td>` +
+      `<td>${escapeHtml(state)}</td>` +
+      `<td>${escapeHtml(formatDuration(getDisplayDurationMin(it)))}</td>` +
+      `<td><a href="${escapeHtml(it.link || "#")}" target="_blank" rel="noopener">otevřít</a></td>`;
+
     tbody.appendChild(tr);
   }
 }
 
 function renderMap(items) {
-  if (!markersLayer || !map) return;
   markersLayer.clearLayers();
 
   const pts = [];
 
   for (const it of items) {
-    if (typeof it.lat !== "number" || typeof it.lon !== "number") continue;
+    const lat = typeof it.lat === "number" ? it.lat : null;
+    const lon = typeof it.lon === "number" ? it.lon : null;
+    if (lat == null || lon == null) continue;
 
-    const lat = it.lat;
-    const lon = it.lon;
+    // ✅ OŘEZ: zobraz jen body v rámci Středočeského kraje
+    if (!isInStredocesky(lat, lon)) continue;
+
     pts.push([lat, lon]);
 
     const state = it.is_closed ? "UKONČENO" : "AKTIVNÍ";
@@ -135,13 +155,13 @@ function renderMap(items) {
       </div>
     `;
 
-    // ✅ zachovat emotikony i v bodech mapy
+    // ✅ emotikony zachovány
     const emoji = typeIcon(it.event_type);
     const icon = L.divIcon({
       className: "emoji-marker",
-      html: `<div style="font-size:22px; line-height:22px;">${escapeHtml(emoji)}</div>`,
+      html: `<div style="font-size:22px; line-height:22px;">${emoji}</div>`,
       iconSize: [26, 26],
-      iconAnchor: [13, 13],
+      iconAnchor: [13, 13]
     });
 
     const m = L.marker([lat, lon], { title: it.title || "", icon }).bindPopup(popupHtml);
@@ -194,21 +214,18 @@ function renderChart(byDay) {
       responsive: true,
       maintainAspectRatio: false,
       plugins: { legend: { display: false } },
-      scales: { x: { ticks: { maxTicksLimit: 6 } }, y: { beginAtZero: true } },
-    },
+      scales: { x: { ticks: { maxTicksLimit: 6 } }, y: { beginAtZero: true } }
+    }
   });
 }
 
 function renderCounts(openCount, closedCount) {
-  const a = document.getElementById("openCount");
-  const b = document.getElementById("closedCount");
-  if (a) a.textContent = String(openCount ?? "—");
-  if (b) b.textContent = String(closedCount ?? "—");
+  document.getElementById("openCount").textContent = String(openCount ?? "—");
+  document.getElementById("closedCount").textContent = String(closedCount ?? "—");
 }
 
 function renderTopCities(topCities) {
   const el = document.getElementById("topCities");
-  if (!el) return;
   el.innerHTML = "";
 
   for (const c of topCities || []) {
@@ -221,7 +238,6 @@ function renderTopCities(topCities) {
 
 function renderLongest(longest) {
   const el = document.getElementById("longestList");
-  if (!el) return;
   el.innerHTML = "";
 
   const items = longest || [];
@@ -237,13 +253,12 @@ function renderLongest(longest) {
   for (const it of items) {
     const row = document.createElement("div");
     row.className = "listRow";
-    row.innerHTML = `
-      <div>
+    row.innerHTML =
+      `<div>
         <div><b>#${idx}</b> ${escapeHtml(it.title || "")}</div>
         <div class="muted">${escapeHtml(it.city_text || it.place_text || "")}</div>
       </div>
-      <div class="muted">${escapeHtml(formatDuration(it.duration_min))}</div>
-    `;
+      <div class="muted">${escapeHtml(formatDuration(it.duration_min))}</div>`;
     el.appendChild(row);
     idx++;
   }
@@ -251,24 +266,21 @@ function renderLongest(longest) {
 
 function getFiltersFromUi() {
   const day = (document.getElementById("daySelect")?.value || "today").trim();
-  const type = (document.getElementById("typeSelect")?.value || "").trim();
-  const city = (document.getElementById("cityInput")?.value || "").trim();
-  const status = (document.getElementById("statusSelect")?.value || "all").trim();
+  const type = document.getElementById("typeSelect")?.value?.trim() || "";
+  const city = document.getElementById("cityInput")?.value?.trim() || "";
+  const status = document.getElementById("statusSelect")?.value?.trim() || "all";
   const month = (document.getElementById("monthInput")?.value || "").trim();
-  return { day: day || "today", type, city, status: status || "all", month };
+
+  return { day: day || "today", type, city, status, month };
 }
 
 function buildQuery(filters) {
   const qs = new URLSearchParams();
-
-  // ✅ FIX: day posílej vždy (today/yesterday/all), aby mapa+body seděly s tabulkou
-  if (filters.day) qs.set("day", filters.day);
-
+  if (filters.day && filters.day !== "today") qs.set("day", filters.day);
   if (filters.type) qs.set("type", filters.type);
   if (filters.city) qs.set("city", filters.city);
   if (filters.status && filters.status !== "all") qs.set("status", filters.status);
   if (filters.month) qs.set("month", filters.month);
-
   return qs.toString();
 }
 
@@ -284,7 +296,7 @@ async function loadAll() {
 
     const [eventsRes, statsRes] = await Promise.all([
       fetch(`/api/events?limit=500${q ? `&${q}` : ""}`),
-      fetch(`/api/stats${q ? `?${q}` : ""}`),
+      fetch(`/api/stats${q ? `?${q}` : ""}`)
     ]);
 
     if (!eventsRes.ok || !statsRes.ok) {
@@ -330,24 +342,21 @@ function resetFilters() {
 function exportWithFilters(kind) {
   const filters = getFiltersFromUi();
   const q = buildQuery(filters);
-
-  const url =
-    kind === "pdf"
-      ? `/api/export.pdf${q ? `?${q}` : ""}`
-      : `/api/export.csv${q ? `?${q}` : ""}`;
-
+  const url = kind === "pdf"
+    ? `/api/export.pdf${q ? `?${q}` : ""}`
+    : `/api/export.csv${q ? `?${q}` : ""}`;
   window.open(url, "_blank");
 }
 
 // UI events
-document.getElementById("refreshBtn")?.addEventListener("click", loadAll);
-document.getElementById("applyBtn")?.addEventListener("click", loadAll);
-document.getElementById("resetBtn")?.addEventListener("click", () => {
+document.getElementById("refreshBtn").addEventListener("click", loadAll);
+document.getElementById("applyBtn").addEventListener("click", loadAll);
+document.getElementById("resetBtn").addEventListener("click", () => {
   resetFilters();
   loadAll();
 });
-document.getElementById("exportCsvBtn")?.addEventListener("click", () => exportWithFilters("csv"));
-document.getElementById("exportPdfBtn")?.addEventListener("click", () => exportWithFilters("pdf"));
+document.getElementById("exportCsvBtn").addEventListener("click", () => exportWithFilters("csv"));
+document.getElementById("exportPdfBtn").addEventListener("click", () => exportWithFilters("pdf"));
 
 // map resize
 let resizeTimer = null;
