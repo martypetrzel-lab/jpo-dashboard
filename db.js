@@ -329,17 +329,6 @@ export async function updateEventDuration(id, durationMin) {
 }
 
 // ---------- filtering ----------
-const STC_BOUNDS = { minLat: 49.2, maxLat: 50.8, minLon: 13.1, maxLon: 15.8 };
-
-function eventTimeExpr() {
-  return `COALESCE(
-    CASE
-      WHEN start_time_iso ~ '^\\d{4}-\\d{2}-\\d{2}' THEN start_time_iso::timestamptz
-      ELSE NULL
-    END,
-    pub_date
-  )`;
-}
 function normalizeDay(day) {
   const d = String(day || "all").trim().toLowerCase();
   if (d === "today" || d === "yesterday" || d === "all") return d;
@@ -363,13 +352,12 @@ export async function getEventsFiltered(filters = {}, limit = 400) {
 
   const wh = [];
   const params = [];
-  const eventTime = eventTimeExpr();
 
   // day filter: podle pub_date v timezone Praha
   if (day !== "all") {
-    // porovnáváme DATE(event_time AT TIME ZONE ...)
+    // porovnáváme DATE(pub_date AT TIME ZONE ...)
     const target = day === "today" ? "CURRENT_DATE" : "(CURRENT_DATE - INTERVAL '1 day')";
-    wh.push(`DATE(${eventTime} AT TIME ZONE 'Europe/Prague') = ${target}`);
+    wh.push(`DATE(pub_date AT TIME ZONE 'Europe/Prague') = ${target}`);
   }
 
   if (status === "open") wh.push("is_closed = FALSE");
@@ -383,7 +371,7 @@ export async function getEventsFiltered(filters = {}, limit = 400) {
   if (month && /^\\d{4}-\\d{2}$/.test(month)) {
     // měsíc podle Prahy
     params.push(month);
-    wh.push(`to_char((${eventTime} AT TIME ZONE 'Europe/Prague'), 'YYYY-MM') = $${params.length}`);
+    wh.push(`to_char((pub_date AT TIME ZONE 'Europe/Prague'), 'YYYY-MM') = $${params.length}`);
   }
 
   if (types.length > 0) {
@@ -391,18 +379,13 @@ export async function getEventsFiltered(filters = {}, limit = 400) {
     wh.push(`event_type = ANY($${params.length}::text[])`);
   }
 
-  // omez na Středočeský kraj (pokud jsou coords známé)
-  wh.push(
-    `(lat IS NULL OR lon IS NULL OR (lat BETWEEN ${STC_BOUNDS.minLat} AND ${STC_BOUNDS.maxLat} AND lon BETWEEN ${STC_BOUNDS.minLon} AND ${STC_BOUNDS.maxLon}))`
-  );
-
   const whereSql = wh.length ? `WHERE ${wh.join(" AND ")}` : "";
 
   const q = `
     SELECT *
     FROM events
     ${whereSql}
-    ORDER BY ${eventTime} DESC NULLS LAST, pub_date DESC NULLS LAST, last_seen_at DESC
+    ORDER BY pub_date DESC NULLS LAST, last_seen_at DESC
     LIMIT ${lim}
   `;
   const r = await pool.query(q, params);
@@ -419,11 +402,10 @@ export async function getStatsFiltered(filters = {}) {
 
   const wh = [];
   const params = [];
-  const eventTime = eventTimeExpr();
 
   if (day !== "all") {
     const target = day === "today" ? "CURRENT_DATE" : "(CURRENT_DATE - INTERVAL '1 day')";
-    wh.push(`DATE(${eventTime} AT TIME ZONE 'Europe/Prague') = ${target}`);
+    wh.push(`DATE(pub_date AT TIME ZONE 'Europe/Prague') = ${target}`);
   }
   if (status === "open") wh.push("is_closed = FALSE");
   if (status === "closed") wh.push("is_closed = TRUE");
@@ -433,17 +415,12 @@ export async function getStatsFiltered(filters = {}) {
   }
   if (month && /^\\d{4}-\\d{2}$/.test(month)) {
     params.push(month);
-    wh.push(`to_char((${eventTime} AT TIME ZONE 'Europe/Prague'), 'YYYY-MM') = $${params.length}`);
+    wh.push(`to_char((pub_date AT TIME ZONE 'Europe/Prague'), 'YYYY-MM') = $${params.length}`);
   }
   if (types.length > 0) {
     params.push(types);
     wh.push(`event_type = ANY($${params.length}::text[])`);
   }
-
-  // omez na Středočeský kraj (pokud jsou coords známé)
-  wh.push(
-    `(lat IS NULL OR lon IS NULL OR (lat BETWEEN ${STC_BOUNDS.minLat} AND ${STC_BOUNDS.maxLat} AND lon BETWEEN ${STC_BOUNDS.minLon} AND ${STC_BOUNDS.maxLon}))`
-  );
 
   const whereSql = wh.length ? `WHERE ${wh.join(" AND ")}` : "";
 
@@ -454,7 +431,7 @@ export async function getStatsFiltered(filters = {}) {
   // by day (respektuje filtry, ale seskupí)
   const byDayQ = `
     SELECT
-      to_char(DATE(${eventTime} AT TIME ZONE 'Europe/Prague'), 'YYYY-MM-DD') AS day,
+      to_char(DATE(pub_date AT TIME ZONE 'Europe/Prague'), 'YYYY-MM-DD') AS day,
       COUNT(*)::int AS count
     FROM events
     ${whereSql}
@@ -469,7 +446,6 @@ export async function getStatsFiltered(filters = {}) {
       COALESCE(NULLIF(TRIM(city_text), ''), NULLIF(TRIM(place_text), ''), 'Neznámé') AS city,
       COUNT(*)::int AS count
     FROM events
-    WHERE (lat IS NULL OR lon IS NULL OR (lat BETWEEN ${STC_BOUNDS.minLat} AND ${STC_BOUNDS.maxLat} AND lon BETWEEN ${STC_BOUNDS.minLon} AND ${STC_BOUNDS.maxLon}))
     GROUP BY 1
     ORDER BY count DESC, city ASC
     LIMIT 20
@@ -485,9 +461,8 @@ export async function getStatsFiltered(filters = {}) {
     longestWhere += ` AND first_seen_at >= $${longestParams.length}::timestamptz`;
     // navíc pojistka: pokud existuje start_time_iso, tak musí být také >= tracking
     longestParams.push(trackingIso);
-    longestWhere += ` AND (start_time_iso IS NULL OR (start_time_iso ~ '^\\d{4}-\\d{2}-\\d{2}' AND start_time_iso::timestamptz >= $${longestParams.length}::timestamptz))`;
+    longestWhere += ` AND (start_time_iso IS NULL OR (start_time_iso::timestamptz >= $${longestParams.length}::timestamptz))`;
   }
-  longestWhere += ` AND (lat IS NULL OR lon IS NULL OR (lat BETWEEN ${STC_BOUNDS.minLat} AND ${STC_BOUNDS.maxLat} AND lon BETWEEN ${STC_BOUNDS.minLon} AND ${STC_BOUNDS.maxLon}))`;
   const longestQ = `
     SELECT
       id, title, link, city_text, place_text, duration_min, start_time_iso, end_time_iso, pub_date
