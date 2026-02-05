@@ -139,16 +139,48 @@ function makeMarkerIcon(typeKey, isClosed) {
   });
 }
 
+// ✅ když je více událostí na stejných souřadnicích, lehce je rozprostřeme,
+// aby se emoji nepřekrývaly (bez clusterů/bublin).
+function offsetLatLon(lat, lon, index, total) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lon) || total <= 1) {
+    return { lat, lon };
+  }
+
+  // malé kolečko okolo bodu (v metrech)
+  const radiusM = 22; // ~22 m je na mapě hezky vidět a pořád to „sedí“ na město
+  const angle = (index / total) * Math.PI * 2;
+
+  // přepočet metrů na stupně
+  const dLat = (radiusM * Math.cos(angle)) / 111320;
+  const dLon = (radiusM * Math.sin(angle)) / (111320 * Math.cos((lat * Math.PI) / 180));
+
+  return { lat: lat + dLat, lon: lon + dLon };
+}
+
 function renderMap(items) {
   markersLayer.clearLayers();
 
-  const pts = [];
+  // ✅ seskup podle souřadnic (zaokrouhlení, aby se trefily stejné body)
+  const groups = new Map();
   for (const it of items) {
     if (typeof it.lat === "number" && typeof it.lon === "number") {
+      const key = `${it.lat.toFixed(5)},${it.lon.toFixed(5)}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(it);
+    }
+  }
+
+  const pts = [];
+  for (const [, group] of groups) {
+    const total = group.length;
+    for (let i = 0; i < group.length; i++) {
+      const it = group[i];
       const t = it.event_type || "other";
       const meta = typeMeta(t);
 
-      const m = L.marker([it.lat, it.lon], {
+      const shifted = offsetLatLon(it.lat, it.lon, i, total);
+
+      const m = L.marker([shifted.lat, shifted.lon], {
         icon: makeMarkerIcon(t, !!it.is_closed)
       });
 
@@ -165,6 +197,8 @@ function renderMap(items) {
       `;
       m.bindPopup(html);
       m.addTo(markersLayer);
+
+      // ✅ fitBounds bereme z původní pozice (ne z posunuté)
       pts.push([it.lat, it.lon]);
     }
   }

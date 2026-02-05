@@ -102,6 +102,30 @@ function extractCityFromDescription(descRaw = "") {
   return null;
 }
 
+function extractDistrictFromDescription(descRaw = "") {
+  if (!descRaw) return null;
+
+  const norm = String(descRaw)
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+
+  const lines = norm.split("\n").map(l => l.trim()).filter(Boolean);
+  for (const line of lines) {
+    const low = line
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/\p{Diacritic}/gu, "");
+
+    if (low.startsWith("okres ")) {
+      const district = line.replace(/^\s*okres\s+/i, "").trim();
+      return district || null;
+    }
+  }
+  return null;
+}
+
 function parseCzDateToIso(s) {
   if (!s) return null;
   const norm = String(s)
@@ -240,7 +264,13 @@ async function geocodePlace(placeText) {
   const candidates = [];
   candidates.push(String(placeText).trim());
   if (cleaned && cleaned !== String(placeText).trim()) candidates.push(cleaned);
+  // ✅ Středočeský kraj – zvyšuje přesnost u malých obcí a duplicitních názvů
+  if (cleaned) candidates.push(`${cleaned}, Středočeský kraj`);
+  if (cleaned) candidates.push(`${cleaned}, Stredocesky kraj`);
+  if (cleaned) candidates.push(`${cleaned}, Central Bohemia`);
   if (cleaned) candidates.push(`${cleaned}, Czechia`);
+  if (cleaned) candidates.push(`${cleaned}, Středočeský kraj, Czechia`);
+  if (cleaned) candidates.push(`${cleaned}, Central Bohemia, Czechia`);
   candidates.push(`${String(placeText).trim()}, Czechia`);
 
   // původní CZ viewbox byl široký – tady používáme Středočeský kraj
@@ -328,7 +358,7 @@ async function backfillDurations(rows, cutoffIso, max = 40) {
   return fixed;
 }
 
-async function backfillCoords(rows, max = 8) {
+async function backfillCoords(rows, max = 12) {
   const need = rows
     .filter(r => ((r.city_text || r.place_text) && (r.lat == null || r.lon == null)))
     .slice(0, Math.max(0, Math.min(max, 20)));
@@ -336,8 +366,19 @@ async function backfillCoords(rows, max = 8) {
   let fixed = 0;
   for (const r of need) {
     try {
-      const q = r.city_text || r.place_text;
-      const g = await geocodePlace(q);
+      const district = extractDistrictFromDescription(r.description_raw || "");
+
+      // ✅ přesnější dotaz: "MĚSTO, okres OKRES" -> pak fallback na město -> pak na place_text
+      const queries = [];
+      if (r.city_text && district) queries.push(`${r.city_text}, okres ${district}`);
+      if (r.city_text) queries.push(r.city_text);
+      if (r.place_text && r.place_text !== r.city_text) queries.push(r.place_text);
+
+      let g = null;
+      for (const q of queries) {
+        g = await geocodePlace(q);
+        if (g) break;
+      }
       if (g) {
         await updateEventCoords(r.id, g.lat, g.lon);
         r.lat = g.lat;
@@ -429,6 +470,7 @@ app.post("/api/ingest", requireKey, async (req, res) => {
       const placeText = it.placeText || null;
       const cityFromDesc = extractCityFromDescription(desc);
       const cityFromTitle = extractCityFromTitle(it.title);
+      const districtFromDesc = extractDistrictFromDescription(desc);
 
       const cityText =
         it.cityText ||
@@ -457,12 +499,18 @@ app.post("/api/ingest", requireKey, async (req, res) => {
 
       if (ev.isClosed) updatedClosed++;
 
-      const geoQuery = ev.cityText || ev.placeText;
-      if (geoQuery) {
-        const g = await geocodePlace(geoQuery);
+      // ✅ zpřesnění polohy: nejdřív zkus "MĚSTO, okres OKRES" (pokud máme), pak město, pak place_text
+      const geoQueries = [];
+      if (ev.cityText && districtFromDesc) geoQueries.push(`${ev.cityText}, okres ${districtFromDesc}`);
+      if (ev.cityText) geoQueries.push(ev.cityText);
+      if (ev.placeText && ev.placeText !== ev.cityText) geoQueries.push(ev.placeText);
+
+      for (const q of geoQueries) {
+        const g = await geocodePlace(q);
         if (g) {
           await updateEventCoords(ev.id, g.lat, g.lon);
           geocoded++;
+          break;
         }
       }
     }
@@ -487,7 +535,7 @@ app.get("/api/events", async (req, res) => {
 
   const rows = await getEventsFiltered(filters, limit);
 
-  const fixedCoords = await backfillCoords(rows, 8);
+  const fixedCoords = await backfillCoords(rows, 12);
   const cutoffIso = await getLongestCutoffIso();
   const fixedDur = await backfillDurations(rows, cutoffIso, 80);
 
