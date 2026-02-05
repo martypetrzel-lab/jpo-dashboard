@@ -283,6 +283,32 @@ async function backfillCoords(rows, limit = 8) {
   return fixed;
 }
 
+async function sanitizeCoords(rows, limit = 120) {
+  // Pokud se v DB historicky uložily špatné souřadnice (Polsko apod.),
+  // tak je při čtení automaticky vyčistíme, aby se už nikdy nevykreslily na mapě.
+  let cleared = 0;
+
+  const slice = (rows || [])
+    .filter((r) => r?.lat != null && r?.lon != null)
+    .slice(0, limit);
+
+  for (const r of slice) {
+    const lat = Number(r.lat);
+    const lon = Number(r.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+
+    // musí sedět ČR i Středočeský kraj bbox (extra pojistka)
+    if (!inBounds(lat, lon, CZ_BOUNDS) || !inBounds(lat, lon, STC_BOUNDS)) {
+      await clearEventCoords(r.id);
+      r.lat = null;
+      r.lon = null;
+      cleared++;
+    }
+  }
+
+  return cleared;
+}
+
 function normalizeFilters(req) {
   return {
     day: String(req.query.day || "all").trim(), // today|yesterday|all
@@ -378,6 +404,8 @@ app.get("/api/events", async (req, res) => {
     const rows = await getEventsFiltered(filters, limit);
 
     // malé údržby "za běhu"
+    await sanitizeCoords(rows, 120);
+
     await backfillDurations(rows, 80);
     await backfillCoords(rows, 8);
 
