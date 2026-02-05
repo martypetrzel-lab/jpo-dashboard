@@ -61,6 +61,21 @@ export async function initDb() {
     );
   `);
 
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+
+  // ✅ od kdy počítat "nejdelší zásahy" a ukládat nové délky (nezasahuje do historie)
+  await pool.query(`
+    INSERT INTO app_settings (key, value)
+    VALUES ('duration_cutoff_iso', NOW()::text)
+    ON CONFLICT (key) DO NOTHING;
+  `);
+
   const adds = [
     ["events", "city_text", "TEXT"],
     ["events", "event_type", "TEXT"],
@@ -105,6 +120,17 @@ function clampDuration(v) {
   if (n <= 0) return null;
   if (n > MAX_DURATION_MINUTES) return null;
   return n;
+}
+
+async function getSetting(key) {
+  const res = await pool.query(`SELECT value FROM app_settings WHERE key=$1`, [key]);
+  return res.rows[0]?.value ?? null;
+}
+
+export async function getDurationCutoffIso() {
+  const v = await getSetting("duration_cutoff_iso");
+  // fallback: když by tabulka nebyla ready
+  return v || new Date().toISOString();
 }
 
 export async function upsertEvent(ev) {
@@ -320,34 +346,41 @@ export async function getStatsFiltered(filters) {
   const day = String(filters?.day || "all").toLowerCase();
   const month = String(filters?.month || "").trim();
 
-  const where = [`created_at >= NOW() - INTERVAL '30 days'`];
-  const params = [];
-  let i = 1;
+  // ✅ cutoff: od tohoto okamžiku počítáme "nejdelší zásahy" a ukládáme nové délky
+  // (historie zůstává nedotčená)
+  const cutoffIso = await getDurationCutoffIso();
+
+  // ------------------------
+  // 30 dní – graf / typy / open×closed
+  // ------------------------
+  const where30 = [`created_at >= NOW() - INTERVAL '30 days'`];
+  const params30 = [];
+  let i30 = 1;
 
   if (types.length) {
-    where.push(`event_type = ANY($${i}::text[])`);
-    params.push(types);
-    i++;
+    where30.push(`event_type = ANY($${i30}::text[])`);
+    params30.push(types);
+    i30++;
   }
 
   if (city) {
-    where.push(`(COALESCE(city_text,'') ILIKE $${i} OR COALESCE(place_text,'') ILIKE $${i})`);
-    params.push(`%${city}%`);
-    i++;
+    where30.push(`(COALESCE(city_text,'') ILIKE $${i30} OR COALESCE(place_text,'') ILIKE $${i30})`);
+    params30.push(`%${city}%`);
+    i30++;
   }
 
-  if (status === "open") where.push(`is_closed = FALSE`);
-  if (status === "closed") where.push(`is_closed = TRUE`);
+  if (status === "open") where30.push(`is_closed = FALSE`);
+  if (status === "closed") where30.push(`is_closed = TRUE`);
 
-  const dayWin = buildTimeWindowSql(day, params, i);
-  where.push(...dayWin.clauses);
-  i = dayWin.nextI;
+  const dayWin30 = buildTimeWindowSql(day, params30, i30);
+  where30.push(...dayWin30.clauses);
+  i30 = dayWin30.nextI;
 
-  const mWin = buildMonthSql(month, params, i);
-  where.push(...mWin.clauses);
-  i = mWin.nextI;
+  const mWin30 = buildMonthSql(month, params30, i30);
+  where30.push(...mWin30.clauses);
+  i30 = mWin30.nextI;
 
-  const whereSql = `WHERE ${where.join(" AND ")}`;
+  const where30Sql = `WHERE ${where30.join(" AND ")}`;
 
   const byDay = await pool.query(
     `
@@ -355,34 +388,22 @@ export async function getStatsFiltered(filters) {
       to_char(((COALESCE(NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date), 'YYYY-MM-DD') AS day,
       COUNT(*)::int AS count
     FROM events
-    ${whereSql}
+    ${where30Sql}
     GROUP BY day
     ORDER BY day ASC;
     `,
-    params
+    params30
   );
 
   const byType = await pool.query(
     `
     SELECT COALESCE(event_type,'other') AS type, COUNT(*)::int AS count
     FROM events
-    ${whereSql}
+    ${where30Sql}
     GROUP BY type
     ORDER BY count DESC;
     `,
-    params
-  );
-
-  const topCities = await pool.query(
-    `
-    SELECT COALESCE(NULLIF(city_text,''), NULLIF(place_text,''), '(neznámé)') AS city, COUNT(*)::int AS count
-    FROM events
-    ${whereSql}
-    GROUP BY city
-    ORDER BY count DESC
-    LIMIT 15;
-    `,
-    params
+    params30
   );
 
   const openVsClosed = await pool.query(
@@ -391,14 +412,57 @@ export async function getStatsFiltered(filters) {
       SUM(CASE WHEN is_closed THEN 1 ELSE 0 END)::int AS closed,
       SUM(CASE WHEN NOT is_closed THEN 1 ELSE 0 END)::int AS open
     FROM events
-    ${whereSql}
+    ${where30Sql}
     `,
-    params
+    params30
   );
 
-  // ✅ Nejdelší zásahy:
-  // - ukončené: jen když máme smysluplnou duration_min (<= MAX_DURATION_MINUTES)
-  // - aktivní: "živá" délka (od start_time_iso / first_seen_at / created_at do NOW), také zastropovaná
+  // ------------------------
+  // Žebříček měst – ZE VŠECH VÝJEZDŮ (bez 30denního okna)
+  // ------------------------
+  const whereAll = [];
+  const paramsAll = [];
+  let iAll = 1;
+
+  if (types.length) {
+    whereAll.push(`event_type = ANY($${iAll}::text[])`);
+    paramsAll.push(types);
+    iAll++;
+  }
+  if (city) {
+    whereAll.push(`(COALESCE(city_text,'') ILIKE $${iAll} OR COALESCE(place_text,'') ILIKE $${iAll})`);
+    paramsAll.push(`%${city}%`);
+    iAll++;
+  }
+  if (status === "open") whereAll.push(`is_closed = FALSE`);
+  if (status === "closed") whereAll.push(`is_closed = TRUE`);
+
+  // ✅ den v žebříčku měst ignorujeme – už filtrujeme v serveru day=all, ale pro jistotu
+  const mWinAll = buildMonthSql(month, paramsAll, iAll);
+  whereAll.push(...mWinAll.clauses);
+  iAll = mWinAll.nextI;
+
+  const whereAllSql = whereAll.length ? `WHERE ${whereAll.join(" AND ")}` : "";
+
+  const topCities = await pool.query(
+    `
+    SELECT COALESCE(NULLIF(city_text,''), NULLIF(place_text,''), '(neznámé)') AS city, COUNT(*)::int AS count
+    FROM events
+    ${whereAllSql}
+    GROUP BY city
+    ORDER BY count DESC
+    LIMIT 15;
+    `,
+    paramsAll
+  );
+
+  // ------------------------
+  // Nejdelší zásahy – POUZE NOVÉ od cutoff
+  // ------------------------
+  const whereLongest = [...whereAll, `first_seen_at >= $${iAll}::timestamptz`];
+  const paramsLongest = [...paramsAll, cutoffIso];
+  const whereLongestSql = `WHERE ${whereLongest.join(" AND ")}`;
+
   const longest = await pool.query(
     `
     SELECT
@@ -407,11 +471,11 @@ export async function getStatsFiltered(filters) {
       link,
       COALESCE(NULLIF(city_text,''), place_text) AS city,
       CASE
-        WHEN duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= $${i}
+        WHEN duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= $${iAll + 1}
           THEN duration_min
         WHEN NOT is_closed
           THEN LEAST(
-            $${i},
+            $${iAll + 1},
             GREATEST(
               1,
               FLOOR(
@@ -428,15 +492,15 @@ export async function getStatsFiltered(filters) {
       is_closed,
       created_at
     FROM events
-    ${whereSql}
+    ${whereLongestSql}
       AND (
-        (duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= $${i})
+        (duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= $${iAll + 1})
         OR (NOT is_closed)
       )
     ORDER BY duration_min DESC NULLS LAST
     LIMIT 10;
     `,
-    [...params, MAX_DURATION_MINUTES]
+    [...paramsLongest, MAX_DURATION_MINUTES]
   );
 
   return {
@@ -444,6 +508,7 @@ export async function getStatsFiltered(filters) {
     byType: byType.rows,
     topCities: topCities.rows,
     openVsClosed: openVsClosed.rows[0] || { open: 0, closed: 0 },
-    longest: longest.rows
+    longest: longest.rows,
+    durationCutoffIso: cutoffIso
   };
 }

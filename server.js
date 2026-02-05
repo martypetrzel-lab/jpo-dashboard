@@ -16,7 +16,8 @@ import {
   deleteCachedGeocode,
   getEventsOutsideCz,
   getEventFirstSeen,
-  updateEventDuration
+  updateEventDuration,
+  getDurationCutoffIso
 } from "./db.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -32,6 +33,10 @@ const GEOCODE_UA = process.env.GEOCODE_USER_AGENT || "jpo-dashboard/1.7 (contact
 // ✅ sanity limit pro délku zásahu (default 3 dny)
 const MAX_DURATION_MINUTES = Math.max(60, Number(process.env.DURATION_MAX_MINUTES || 4320)); // 3 dny
 const FUTURE_END_TOLERANCE_MS = 5 * 60 * 1000; // ukončení nesmí být "v budoucnu" o víc než 5 min
+
+// ✅ Středočeský kraj – omez geocode (aby se stejnojmenná místa nehledala v Polsku apod.)
+const STC_VIEWBOX = process.env.STC_VIEWBOX || "13.25,50.71,15.65,49.30"; // left,top,right,bottom
+const STC_STATE_ALLOW = /stredocesky|central bohemia/i;
 
 // ---------------- AUTH ----------------
 function requireKey(req, res, next) {
@@ -160,7 +165,7 @@ function parseTimesFromDescription(descRaw = "") {
 }
 
 // ✅ fix na extrémní / nesmyslné délky
-async function computeDurationMin(id, startIso, endIso, createdAtFallback) {
+async function computeDurationMin(id, startIso, endIso, createdAtFallback, cutoffIso) {
   if (!endIso) return null;
 
   const nowMs = Date.now();
@@ -170,11 +175,28 @@ async function computeDurationMin(id, startIso, endIso, createdAtFallback) {
   if (!Number.isFinite(startMs)) {
     const firstSeen = await getEventFirstSeen(id);
     if (firstSeen) startMs = new Date(firstSeen).getTime();
+
+    // ✅ nepočítat délky pro historické události (před cutoff)
+    if (firstSeen && cutoffIso) {
+      const cMs = new Date(cutoffIso).getTime();
+      const fMs = new Date(firstSeen).getTime();
+      if (Number.isFinite(cMs) && Number.isFinite(fMs) && fMs < cMs) return null;
+    }
   }
 
   if (!Number.isFinite(startMs) && createdAtFallback) {
     const ca = new Date(createdAtFallback).getTime();
     if (Number.isFinite(ca)) startMs = ca;
+  }
+
+  // ✅ cutoff i pro případy, kdy jsme start brali z title/desc – rozhoduje first_seen_at
+  if (cutoffIso) {
+    const firstSeen = await getEventFirstSeen(id);
+    if (firstSeen) {
+      const cMs = new Date(cutoffIso).getTime();
+      const fMs = new Date(firstSeen).getTime();
+      if (Number.isFinite(cMs) && Number.isFinite(fMs) && fMs < cMs) return null;
+    }
   }
 
   const endMs = new Date(endIso).getTime();
@@ -214,7 +236,8 @@ async function geocodePlace(placeText) {
   if (cleaned) candidates.push(`${cleaned}, Czechia`);
   candidates.push(`${String(placeText).trim()}, Czechia`);
 
-  const CZ_VIEWBOX = "12.09,51.06,18.87,48.55";
+  // původní CZ viewbox byl široký – tady používáme Středočeský kraj
+  const CZ_VIEWBOX = STC_VIEWBOX;
 
   for (const q of candidates) {
     const url = new URL("https://nominatim.openstreetmap.org/search");
@@ -243,6 +266,17 @@ async function geocodePlace(placeText) {
       const cc = String(cand?.address?.country_code || "").toLowerCase();
       if (cc && cc !== "cz") continue;
 
+      // ✅ Středočeský kraj – ověř "state" z adresy (pokud ho Nominatim vrátí)
+      const state = String(cand?.address?.state || cand?.address?.region || "");
+      if (state && !STC_STATE_ALLOW.test(state)) continue;
+
+      // ✅ poslední brzda: bounding box Středočeského kraje (když state chybí)
+      const vb = String(STC_VIEWBOX).split(",").map(x => Number(x));
+      if (vb.length === 4 && vb.every(n => Number.isFinite(n))) {
+        const [left, top, right, bottom] = vb;
+        if (lon < left || lon > right || lat < bottom || lat > top) continue;
+      }
+
       await setCachedGeocode(placeText, lat, lon);
       return { lat, lon, cached: false, qUsed: q };
     }
@@ -268,15 +302,15 @@ function parseFilters(req) {
 }
 
 // ✅ dopočítávání délky (uložení do DB)
-async function backfillDurations(rows, max = 40) {
+async function backfillDurations(rows, cutoffIso, max = 40) {
   const candidates = rows
-    .filter(r => r?.is_closed && r?.end_time_iso && (r.duration_min == null))
+    .filter(r => r?.is_closed && r?.end_time_iso && (r.duration_min == null) && (!cutoffIso || (r.first_seen_at && new Date(r.first_seen_at).getTime() >= new Date(cutoffIso).getTime())))
     .slice(0, Math.max(0, Math.min(max, 200)));
 
   let fixed = 0;
 
   for (const r of candidates) {
-    const dur = await computeDurationMin(r.id, r.start_time_iso, r.end_time_iso, r.created_at);
+    const dur = await computeDurationMin(r.id, r.start_time_iso, r.end_time_iso, r.created_at, cutoffIso);
     if (Number.isFinite(dur) && dur > 0) {
       await updateEventDuration(r.id, dur);
       r.duration_min = dur;
@@ -370,7 +404,8 @@ app.post("/api/ingest", requireKey, async (req, res) => {
         const candidate = Math.round(it.durationMin);
         durationMin = (candidate > 0 && candidate <= MAX_DURATION_MINUTES) ? candidate : null;
       } else if (isClosed && endIso) {
-        durationMin = await computeDurationMin(it.id, startIso, endIso, null);
+        const cutoffIso = await getDurationCutoffIso();
+        durationMin = await computeDurationMin(it.id, startIso, endIso, null, cutoffIso);
       }
 
       const placeText = it.placeText || null;
@@ -435,7 +470,8 @@ app.get("/api/events", async (req, res) => {
   const rows = await getEventsFiltered(filters, limit);
 
   const fixedCoords = await backfillCoords(rows, 8);
-  const fixedDur = await backfillDurations(rows, 80);
+  const cutoffIso = await getDurationCutoffIso();
+  const fixedDur = await backfillDurations(rows, cutoffIso, 80);
 
   res.json({ ok: true, filters, backfilled_coords: fixedCoords, backfilled_durations: fixedDur, items: rows });
 });
@@ -461,7 +497,8 @@ app.get("/api/export.csv", async (req, res) => {
   const limit = Math.min(Number(req.query.limit || 2000), 5000);
   const rows = await getEventsFiltered(filters, limit);
 
-  await backfillDurations(rows, 500);
+  const cutoffIso = await getDurationCutoffIso();
+  await backfillDurations(rows, cutoffIso, 500);
 
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader("Content-Disposition", `attachment; filename="jpo_vyjezdy_export.csv"`);
@@ -517,7 +554,8 @@ app.get("/api/export.pdf", async (req, res) => {
   const limit = Math.min(Number(req.query.limit || 800), 2000);
   const rows = await getEventsFiltered(filters, limit);
 
-  await backfillDurations(rows, 500);
+  const cutoffIso = await getDurationCutoffIso();
+  await backfillDurations(rows, cutoffIso, 500);
 
   res.setHeader("Content-Type", "application/pdf");
   res.setHeader("Content-Disposition", `attachment; filename="jpo_vyjezdy_export.pdf"`);
@@ -525,130 +563,103 @@ app.get("/api/export.pdf", async (req, res) => {
   const doc = new PDFDocument({ size: "A4", layout: "landscape", margin: 24 });
   doc.pipe(res);
 
-  const font = tryApplyPdfFont(doc);
+  tryApplyPdfFont(doc);
 
   const now = new Date();
   doc.fontSize(18).fillColor("#000").text("JPO výjezdy – export");
   doc.moveDown(0.2);
   doc.fontSize(10).fillColor("#333").text(`Vygenerováno: ${now.toLocaleString("cs-CZ")}`);
-  doc.moveDown(0.4);
+  doc.moveDown(0.8);
 
-  if (!font.ok) {
-    doc.fontSize(9).fillColor("#a33").text(`Pozn.: font nelze použít (${font.reason})`);
-    doc.moveDown(0.3);
-  }
+  const col = {
+    time: 24,
+    state: 155,
+    type: 240,
+    city: 330,
+    dur: 470,
+    title: 555
+  };
 
-  const col = { time: 88, state: 62, type: 78, city: 170, dur: 70, title: 330 };
-  const startX = doc.x;
-  let y = doc.y;
-  const tableWidth = col.time + col.state + col.type + col.city + col.dur + col.title;
+  doc.fontSize(10).fillColor("#000");
+  doc.text("Čas", col.time, doc.y);
+  doc.text("Stav", col.state, doc.y);
+  doc.text("Typ", col.type, doc.y);
+  doc.text("Město", col.city, doc.y);
+  doc.text("Délka", col.dur, doc.y);
+  doc.text("Název", col.title, doc.y);
+  doc.moveDown(0.5);
+  doc.moveTo(24, doc.y).lineTo(820, doc.y).strokeColor("#ddd").stroke();
+  doc.moveDown(0.3);
 
-  function drawHeader() {
-    doc.fontSize(10).fillColor("#000");
-    doc.text("Čas", startX, y, { width: col.time });
-    doc.text("Stav", startX + col.time, y, { width: col.state });
-    doc.text("Typ", startX + col.time + col.state, y, { width: col.type });
-    doc.text("Město", startX + col.time + col.state + col.type, y, { width: col.city });
-    doc.text("Délka", startX + col.time + col.state + col.type + col.city, y, { width: col.dur });
-    doc.text("Název", startX + col.time + col.state + col.type + col.city + col.dur, y, { width: col.title });
-    y += 14;
-    doc.moveTo(startX, y).lineTo(startX + tableWidth, y).strokeColor("#999").stroke();
-    y += 8;
-    if (font.ok) doc.font("CZ");
-  }
+  const fmt = (v) => {
+    if (!v) return "";
+    const d = new Date(v);
+    if (Number.isNaN(d.getTime())) return String(v);
+    return d.toLocaleString("cs-CZ");
+  };
 
-  function rowHeightFor(rowObj) {
-    doc.fontSize(9);
-    const d = new Date(rowObj.pub_date || rowObj.created_at);
-    const timeText = Number.isNaN(d.getTime()) ? String(rowObj.pub_date || rowObj.created_at || "") : d.toLocaleString("cs-CZ");
-    const state = rowObj.is_closed ? "UKONČENO" : "AKTIVNÍ";
-    const typ = typeLabel(rowObj.event_type || "other");
-    const city = String(rowObj.city_text || rowObj.place_text || "");
-    const dur = Number.isFinite(rowObj.duration_min) ? `${rowObj.duration_min} min` : "—";
-    const ttl = String(rowObj.title || "");
-    const opts = { align: "left", lineBreak: true };
-
-    const h = Math.max(
-      doc.heightOfString(timeText, { width: col.time, ...opts }),
-      doc.heightOfString(state, { width: col.state, ...opts }),
-      doc.heightOfString(typ, { width: col.type, ...opts }),
-      doc.heightOfString(city, { width: col.city, ...opts }),
-      doc.heightOfString(dur, { width: col.dur, ...opts }),
-      doc.heightOfString(ttl, { width: col.title, ...opts })
-    );
-    return Math.max(14, Math.ceil(h) + 4);
-  }
-
-  function drawRow(rowObj) {
-    doc.fontSize(9).fillColor("#111");
-    const d = new Date(rowObj.pub_date || rowObj.created_at);
-    const timeText = Number.isNaN(d.getTime()) ? String(rowObj.pub_date || rowObj.created_at || "") : d.toLocaleString("cs-CZ");
-    const state = rowObj.is_closed ? "UKONČENO" : "AKTIVNÍ";
-    const typ = typeLabel(rowObj.event_type || "other");
-    const city = String(rowObj.city_text || rowObj.place_text || "");
-    const dur = Number.isFinite(rowObj.duration_min) ? `${rowObj.duration_min} min` : "—";
-    const ttl = String(rowObj.title || "");
-    const opts = { align: "left", lineBreak: true };
-
-    doc.text(timeText, startX, y, { width: col.time, ...opts });
-    doc.text(state, startX + col.time, y, { width: col.state, ...opts });
-    doc.text(typ, startX + col.time + col.state, y, { width: col.type, ...opts });
-    doc.text(city, startX + col.time + col.state + col.type, y, { width: col.city, ...opts });
-    doc.text(dur, startX + col.time + col.state + col.type + col.city, y, { width: col.dur, ...opts });
-    doc.text(ttl, startX + col.time + col.state + col.type + col.city + col.dur, y, { width: col.title, ...opts });
-  }
-
-  const bottomLimit = () => doc.page.height - doc.page.margins.bottom - 18;
-
-  drawHeader();
+  const fmtDur = (m) => {
+    if (!Number.isFinite(m) || m <= 0) return "—";
+    const h = Math.floor(m / 60);
+    const mm = m % 60;
+    if (h <= 0) return `${mm} min`;
+    return `${h} h ${mm} min`;
+  };
 
   for (const r of rows) {
-    const h = rowHeightFor(r);
-    if (y + h > bottomLimit()) {
-      doc.addPage({ size: "A4", layout: "landscape", margin: 24 });
-      y = doc.y;
-      drawHeader();
-    }
-    drawRow(r);
-    y += h;
+    const y = doc.y;
+
+    const time = fmt(r.pub_date || r.created_at);
+    const state = r.is_closed ? "UKONČENO" : "AKTIVNÍ";
+    const typ = typeLabel(r.event_type || "other");
+    const city = r.city_text || r.place_text || "";
+    const dur = fmtDur(r.duration_min);
+    const title = r.title || "";
+
+    doc.fillColor("#000").text(time, col.time, y, { width: 120 });
+    doc.fillColor("#000").text(state, col.state, y, { width: 80 });
+    doc.fillColor("#000").text(typ, col.type, y, { width: 85 });
+    doc.fillColor("#000").text(city, col.city, y, { width: 130 });
+    doc.fillColor("#000").text(dur, col.dur, y, { width: 70 });
+    doc.fillColor("#000").text(title, col.title, y, { width: 260 });
+
+    doc.moveDown(0.35);
+    doc.moveTo(24, doc.y).lineTo(820, doc.y).strokeColor("#f0f0f0").stroke();
+    doc.moveDown(0.25);
+
+    if (doc.y > 560) doc.addPage();
   }
 
-  doc.fontSize(9).fillColor("#444").text(`Záznamů: ${rows.length}`, startX, y + 10);
   doc.end();
 });
 
-// admin: re-geocode mimo ČR
-app.post("/api/admin/regeocode", requireKey, async (req, res) => {
+// admin: geocode cache purge + re-geocode
+app.post("/api/admin/fix-geocode", requireKey, async (req, res) => {
   try {
-    const mode = String(req.body?.mode || "outside_cz");
-    const limit = Math.max(1, Math.min(Number(req.body?.limit || 200), 2000));
-
-    if (mode !== "outside_cz") {
-      return res.status(400).json({ ok: false, error: "mode must be 'outside_cz'" });
-    }
-
-    const bad = await getEventsOutsideCz(limit);
+    const mode = String(req.body?.mode || "preview");
+    const bad = await getEventsOutsideCz(300);
 
     let cacheDeleted = 0;
     let coordsCleared = 0;
     let reGeocoded = 0;
     let failed = 0;
 
-    for (const ev of bad) {
-      const q = (ev.city_text && String(ev.city_text).trim()) ? ev.city_text : ev.place_text;
+    for (const r of bad) {
+      const q = r.city_text || r.place_text;
       if (!q) continue;
 
-      await deleteCachedGeocode(q);
-      cacheDeleted++;
-
-      await clearEventCoords(ev.id);
-      coordsCleared++;
+      if (mode !== "preview") {
+        await deleteCachedGeocode(q);
+        cacheDeleted++;
+        await clearEventCoords(r.id);
+        coordsCleared++;
+      }
 
       const g = await geocodePlace(q);
-      if (g) {
-        await updateEventCoords(ev.id, g.lat, g.lon);
+      if (g && mode !== "preview") {
+        await updateEventCoords(r.id, g.lat, g.lon);
         reGeocoded++;
-      } else {
+      } else if (!g) {
         failed++;
       }
     }

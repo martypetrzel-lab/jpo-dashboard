@@ -3,15 +3,19 @@ let inFlight = false;
 
 const TYPE = {
   fire: { emoji: "🔥", label: "požár" },
-  traffic: { emoji: "🚗", label: "nehoda" },
+  traffic: { emoji: "🚗💥", label: "nehoda" },
   tech: { emoji: "🛠️", label: "technická" },
-  rescue: { emoji: "🧍", label: "záchrana" },
-  false_alarm: { emoji: "🚨", label: "planý poplach" },
+  rescue: { emoji: "🚑", label: "záchrana" },
+  false_alarm: { emoji: "🚫", label: "planý poplach" },
   other: { emoji: "❓", label: "jiné" }
 };
 
 function typeEmoji(t) {
   return (TYPE[t] || TYPE.other).emoji;
+}
+
+function statusEmoji(isClosed) {
+  return isClosed ? "✅" : "🔴";
 }
 
 function setStatus(text, ok = true) {
@@ -99,7 +103,7 @@ function renderTable(items) {
   tbody.innerHTML = "";
   for (const it of items) {
     const t = it.event_type || "other";
-    const state = it.is_closed ? "UKONČENO" : "AKTIVNÍ";
+    const state = it.is_closed ? "Ukončeno" : "Aktivní";
 
     // ✅ použij běžící délku pro AKTIVNÍ, když duration_min není
     const durMin = getDisplayDurationMin(it);
@@ -110,7 +114,7 @@ function renderTable(items) {
       <td><span class="iconPill" title="${escapeHtml((TYPE[t]||TYPE.other).label)}">${typeEmoji(t)}</span></td>
       <td>${escapeHtml(it.title || "")}</td>
       <td>${escapeHtml(it.city_text || it.place_text || "")}</td>
-      <td>${escapeHtml(state)}</td>
+      <td>${escapeHtml(`${statusEmoji(it.is_closed)} ${state}`)}</td>
       <td>${escapeHtml(formatDuration(durMin))}</td>
       <td>${it.link ? `<a href="${it.link}" target="_blank" rel="noopener">otevřít</a>` : ""}</td>
     `;
@@ -136,16 +140,18 @@ function renderMap(items) {
       const t = it.event_type || "other";
       const emoji = typeEmoji(t);
 
-      const m = L.marker([it.lat, it.lon], { icon: makeMarkerIcon(emoji) });
+      const m = L.marker([it.lat, it.lon], {
+        icon: makeMarkerIcon(emoji)
+      });
 
-      const state = it.is_closed ? "UKONČENO" : "AKTIVNÍ";
+      const state = it.is_closed ? "Ukončeno" : "Aktivní";
       const html = `
         <div style="min-width:240px">
           <div style="font-weight:700;margin-bottom:6px">${emoji} ${escapeHtml(it.title || "")}</div>
-          <div><b>Stav:</b> ${escapeHtml(state)}</div>
+          <div><b>Stav:</b> ${escapeHtml(`${statusEmoji(it.is_closed)} ${state}`)}</div>
           <div><b>Město:</b> ${escapeHtml(it.city_text || it.place_text || "")}</div>
           <div><b>Čas:</b> ${escapeHtml(formatDate(it.pub_date || it.created_at))}</div>
-          <div><b>Délka:</b> ${escapeHtml(formatDuration(it.duration_min))}</div>
+          <div><b>Délka:</b> ${escapeHtml(formatDuration(getDisplayDurationMin(it)))}${it.is_closed ? "" : " <span style=\"opacity:.7\">(běží)</span>"}</div>
           ${it.link ? `<div style="margin-top:8px"><a href="${it.link}" target="_blank" rel="noopener">Detail</a></div>` : ""}
         </div>
       `;
