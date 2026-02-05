@@ -24,8 +24,30 @@ body {
 }
 
 .title { min-width: 0; }
-.title h1 { margin: 0; font-size: 18px; line-height: 1.2; }
-.sub { opacity: 0.75; font-size: 12px; margin-top: 2px; }
+
+/* ✅ styl textu jako na banneru (bez loga) */
+.brand {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-weight: 900;
+  letter-spacing: 0.2px;
+  line-height: 1.05;
+  font-size: 40px;
+}
+
+.brandMain {
+  color: #d7dee6; /* šedá */
+  text-shadow: 0 1px 0 rgba(0,0,0,0.25);
+}
+
+.brandCz {
+  color: #ff7a28; /* oranžová */
+  text-shadow: 0 1px 0 rgba(0,0,0,0.25);
+}
+
+.sub { opacity: 0.75; font-size: 12px; margin-top: 4px; }
 
 .actions {
   display: flex;
@@ -120,155 +142,146 @@ body {
 }
 
 .cardHeader {
-  padding: 12px 12px 8px 12px;
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
+  padding: 12px 12px 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
 }
 
-.cardHeader h2 { margin: 0; font-size: 14px; }
+.cardHeader h2 {
+  margin: 0;
+  font-size: 14px;
+}
 
 .hint {
-  opacity: 0.7;
+  opacity: 0.75;
   font-size: 12px;
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
+  margin-top: 4px;
 }
 
-/* Legend */
-.legend { align-items: center; }
-.legendItem {
-  padding: 4px 9px;
-  border-radius: 999px;
-  border: 1px solid rgba(255,255,255,0.10);
-  background: rgba(255,255,255,0.04);
-}
+.legend { display: flex; flex-wrap: wrap; gap: 10px; }
+.legendItem { opacity: 0.9; }
 
-/* Map */
-.mapCard { grid-row: span 3; }
-#map {
-  height: 640px;
-  width: 100%;
-  background: #0b0f14;
-}
+.mapCard { min-height: 420px; }
+#map { height: 420px; width: 100%; }
 
-/* Chart wrapper */
-.canvasWrap { padding: 0 10px 12px 10px; }
+.canvasWrap { padding: 10px 12px 14px; }
 
-/* Split stats */
 .splitStats {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 10px;
   padding: 12px;
 }
-
 .splitCard {
   border: 1px solid rgba(255,255,255,0.10);
   background: rgba(255,255,255,0.03);
   border-radius: 14px;
-  padding: 12px;
+  padding: 10px;
 }
+.splitValue { font-size: 24px; font-weight: 800; }
+.splitLabel { opacity: 0.75; font-size: 12px; margin-top: 4px; }
 
-.splitValue { font-size: 24px; font-weight: 700; }
-.splitLabel { opacity: 0.75; margin-top: 3px; font-size: 12px; }
-
-/* Table */
-.tableCard { grid-column: 1 / -1; }
-.tableWrap {
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-  border-top: 1px solid rgba(255,255,255,0.08);
-}
-
-table { width: 100%; border-collapse: collapse; min-width: 860px; }
-th, td {
-  padding: 10px 10px;
-  border-top: 1px solid rgba(255,255,255,0.08);
-  font-size: 12px;
-  vertical-align: top;
-}
-th {
-  text-align: left;
-  opacity: 0.85;
-  background: rgba(255,255,255,0.03);
-  position: sticky;
-  top: 0;
-  z-index: 2;
-}
-
-a { color: #9fd3ff; text-decoration: none; }
-a:hover { text-decoration: underline; }
-
-/* Lists */
-.list { padding: 10px 12px 14px 12px; display: grid; gap: 8px; }
-
+.list { padding: 10px 12px 12px; }
 .row {
   display: flex;
+  align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 8px 10px;
+  padding: 10px 10px;
   border-radius: 12px;
   border: 1px solid rgba(255,255,255,0.10);
   background: rgba(255,255,255,0.03);
+  margin-bottom: 10px;
 }
+.row:last-child { margin-bottom: 0; }
+.row .left { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.row .meta { opacity: 0.75; font-size: 12px; white-space: nowrap; }
+.row .name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.row .left { display: flex; gap: 8px; align-items: center; min-width: 0; }
-.row .name { opacity: 0.95; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 340px; }
-.row .meta { opacity: 0.75; }
+.tableCard { grid-column: 1 / -1; }
+.tableWrap { overflow: auto; }
+
+table { width: 100%; border-collapse: collapse; min-width: 900px; }
+th, td {
+  padding: 12px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.07);
+  text-align: left;
+  vertical-align: top;
+}
+th { opacity: 0.75; font-size: 12px; font-weight: 700; }
+td { font-size: 13px; }
+
+a { color: #a9d3ff; text-decoration: none; }
+a:hover { text-decoration: underline; }
 
 .iconPill {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 8px;
+  width: 32px;
+  height: 26px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.06);
   border: 1px solid rgba(255,255,255,0.12);
-  background: rgba(255,255,255,0.05);
 }
 
-.leaflet-div-icon { background: transparent; border: none; }
+/* =========================
+   ✅ Leaflet “badge” MARKERS
+   ========================= */
+.fw-marker { background: transparent !important; border: 0 !important; }
 
-/* ---------- RESPONSIVE ---------- */
-@media (max-width: 1100px) {
-  .filtersRow { grid-template-columns: 170px 160px 1fr 160px 1fr 1fr; }
+.markerBadge{
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  border: 1px solid rgba(255,255,255,0.20);
+  box-shadow: 0 10px 22px rgba(0,0,0,0.45);
+  backdrop-filter: blur(3px);
 }
 
+.markerEmoji{
+  font-size: 18px;
+  line-height: 1;
+  filter: drop-shadow(0 1px 0 rgba(0,0,0,0.35));
+}
+
+.marker-closed{
+  opacity: 0.65;
+  filter: grayscale(0.15);
+}
+
+/* barvy podle typu */
+.marker-fire{
+  background: radial-gradient(circle at 30% 25%, rgba(255,220,170,.35), rgba(255,90,30,.22) 45%, rgba(0,0,0,.15));
+  border-color: rgba(255,140,80,.45);
+}
+.marker-traffic{
+  background: radial-gradient(circle at 30% 25%, rgba(210,240,255,.35), rgba(80,160,255,.22) 45%, rgba(0,0,0,.15));
+  border-color: rgba(120,190,255,.45);
+}
+.marker-tech{
+  background: radial-gradient(circle at 30% 25%, rgba(230,230,230,.32), rgba(150,150,150,.20) 45%, rgba(0,0,0,.15));
+  border-color: rgba(210,210,210,.30);
+}
+.marker-rescue{
+  background: radial-gradient(circle at 30% 25%, rgba(210,255,230,.35), rgba(70,200,140,.20) 45%, rgba(0,0,0,.15));
+  border-color: rgba(120,240,190,.40);
+}
+.marker-false{
+  background: radial-gradient(circle at 30% 25%, rgba(255,230,230,.35), rgba(255,90,120,.18) 45%, rgba(0,0,0,.15));
+  border-color: rgba(255,140,170,.40);
+}
+.marker-other{
+  background: radial-gradient(circle at 30% 25%, rgba(255,255,255,.28), rgba(180,180,180,.18) 45%, rgba(0,0,0,.15));
+  border-color: rgba(255,255,255,.22);
+}
+
+/* Responsive */
 @media (max-width: 980px) {
+  .filtersRow { grid-template-columns: 1fr 1fr; }
   .grid { grid-template-columns: 1fr; }
-  .mapCard { grid-row: auto; }
-  #map { height: 520px; }
-  .tableCard { grid-column: auto; }
-  .row .name { max-width: 60vw; }
-
-  .filtersRow {
-    grid-template-columns: 1fr 1fr;
-  }
-}
-
-@media (max-width: 640px) {
-  .topbar { flex-wrap: wrap; align-items: flex-start; }
-  .actions { width: 100%; justify-content: space-between; }
-  .pill { width: 100%; max-width: 100%; }
-
-  .filtersRow { grid-template-columns: 1fr; }
-  .field.buttons .btnRow { flex-direction: column; }
-
-  .cardHeader { flex-direction: column; align-items: flex-start; }
-  .hint { justify-content: flex-start; }
-  .legend { overflow-x: auto; white-space: nowrap; flex-wrap: nowrap; padding-bottom: 2px; }
-  .legendItem { flex: 0 0 auto; }
-
-  #map { height: min(420px, 55vh); }
-
-  .grid { padding: 10px; gap: 10px; }
-}
-
-@media (max-width: 380px) {
-  #map { height: min(360px, 52vh); }
-  .title h1 { font-size: 16px; }
+  .brand { font-size: 30px; }
+  #map { height: 380px; }
 }

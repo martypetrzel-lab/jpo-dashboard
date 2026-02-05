@@ -2,16 +2,20 @@ let map, markersLayer, chart;
 let inFlight = false;
 
 const TYPE = {
-  fire: { emoji: "🔥", label: "požár" },
-  traffic: { emoji: "🚗💥", label: "nehoda" },
-  tech: { emoji: "🛠️", label: "technická" },
-  rescue: { emoji: "🚑", label: "záchrana" },
-  false_alarm: { emoji: "🚫", label: "planý poplach" },
-  other: { emoji: "❓", label: "jiné" }
+  fire: { emoji: "🔥", label: "požár", cls: "marker-fire" },
+  traffic: { emoji: "🚗", label: "nehoda", cls: "marker-traffic" },
+  tech: { emoji: "🛠️", label: "technická", cls: "marker-tech" },
+  rescue: { emoji: "🚑", label: "záchrana", cls: "marker-rescue" },
+  false_alarm: { emoji: "🚫", label: "planý poplach", cls: "marker-false" },
+  other: { emoji: "❓", label: "jiné", cls: "marker-other" }
 };
 
+function typeMeta(t) {
+  return TYPE[t] || TYPE.other;
+}
+
 function typeEmoji(t) {
-  return (TYPE[t] || TYPE.other).emoji;
+  return typeMeta(t).emoji;
 }
 
 function statusEmoji(isClosed) {
@@ -62,7 +66,7 @@ function escapeHtml(s) {
     .replaceAll('"', "&quot;");
 }
 
-// ✅ NOVÉ: běžící délka pro AKTIVNÍ zásah (když duration_min chybí)
+// ✅ běžící délka pro AKTIVNÍ zásah (když duration_min chybí)
 const LIVE_DURATION_MAX_MIN = 4320; // 3 dny (stejné jako server default)
 
 function getLiveDurationMin(it) {
@@ -85,7 +89,7 @@ function getLiveDurationMin(it) {
     const diffMin = Math.floor((now - startMs) / 60000);
     if (!Number.isFinite(diffMin) || diffMin < 1) return 1;
 
-    if (diffMin > LIVE_DURATION_MAX_MIN) return null; // nepouštět extrémy
+    if (diffMin > LIVE_DURATION_MAX_MIN) return null;
     return diffMin;
   } catch {
     return null;
@@ -101,17 +105,18 @@ function getDisplayDurationMin(it) {
 function renderTable(items) {
   const tbody = document.getElementById("eventsTbody");
   tbody.innerHTML = "";
+
   for (const it of items) {
     const t = it.event_type || "other";
+    const meta = typeMeta(t);
     const state = it.is_closed ? "Ukončeno" : "Aktivní";
 
-    // ✅ použij běžící délku pro AKTIVNÍ, když duration_min není
     const durMin = getDisplayDurationMin(it);
 
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${escapeHtml(formatDate(it.pub_date || it.created_at))}</td>
-      <td><span class="iconPill" title="${escapeHtml((TYPE[t]||TYPE.other).label)}">${typeEmoji(t)}</span></td>
+      <td><span class="iconPill" title="${escapeHtml(meta.label)}">${meta.emoji}</span></td>
       <td>${escapeHtml(it.title || "")}</td>
       <td>${escapeHtml(it.city_text || it.place_text || "")}</td>
       <td>${escapeHtml(`${statusEmoji(it.is_closed)} ${state}`)}</td>
@@ -122,12 +127,21 @@ function renderTable(items) {
   }
 }
 
-function makeMarkerIcon(emoji) {
+// ✅ NOVÉ: hezčí badge marker (barva podle typu + jemný stín)
+function makeMarkerIcon(typeKey, isClosed) {
+  const meta = typeMeta(typeKey);
+  const closedCls = isClosed ? "marker-closed" : "";
+
   return L.divIcon({
-    className: "leaflet-div-icon",
-    html: `<div style="transform:translate(-50%,-50%);font-size:22px;">${emoji}</div>`,
-    iconSize: [22, 22],
-    iconAnchor: [11, 11]
+    className: "fw-marker",
+    html: `
+      <div class="markerBadge ${meta.cls} ${closedCls}" title="${escapeHtml(meta.label)}">
+        <div class="markerEmoji">${meta.emoji}</div>
+      </div>
+    `,
+    iconSize: [34, 34],
+    iconAnchor: [17, 17],
+    popupAnchor: [0, -18]
   });
 }
 
@@ -138,16 +152,16 @@ function renderMap(items) {
   for (const it of items) {
     if (typeof it.lat === "number" && typeof it.lon === "number") {
       const t = it.event_type || "other";
-      const emoji = typeEmoji(t);
+      const meta = typeMeta(t);
 
       const m = L.marker([it.lat, it.lon], {
-        icon: makeMarkerIcon(emoji)
+        icon: makeMarkerIcon(t, !!it.is_closed)
       });
 
       const state = it.is_closed ? "Ukončeno" : "Aktivní";
       const html = `
         <div style="min-width:240px">
-          <div style="font-weight:700;margin-bottom:6px">${emoji} ${escapeHtml(it.title || "")}</div>
+          <div style="font-weight:700;margin-bottom:6px">${escapeHtml(meta.emoji)} ${escapeHtml(it.title || "")}</div>
           <div><b>Stav:</b> ${escapeHtml(`${statusEmoji(it.is_closed)} ${state}`)}</div>
           <div><b>Město:</b> ${escapeHtml(it.city_text || it.place_text || "")}</div>
           <div><b>Čas:</b> ${escapeHtml(formatDate(it.pub_date || it.created_at))}</div>
@@ -349,7 +363,7 @@ window.addEventListener("orientationchange", () => safeInvalidateMap());
 initMap();
 loadAll();
 
-// ✅ AUTO REFRESH každých 5 minut (zachová filtry, jen znovu načte)
+// ✅ AUTO REFRESH každé 2 minuty (nezničí filtry, jen znovu načte data)
 setInterval(() => {
   loadAll();
-}, 5 * 60 * 1000);
+}, 2 * 60 * 1000);
