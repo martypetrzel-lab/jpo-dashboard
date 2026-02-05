@@ -1,53 +1,85 @@
-:root {
-  --bg: #0b111a;
-  --card: #0f1620;
-  --text: #e9eef6;
-  --muted: rgba(233,238,246,0.72);
-  --border: rgba(255,255,255,0.10);
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  background: #0b0f14;
+  color: #e9eef6;
 }
 
-* { box-sizing: border-box; }
-html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; }
-
-a { color: #a6d3ff; text-decoration: none; }
-a:hover { text-decoration: underline; }
-
+/* TOPBAR */
 .topbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 12px;
-  border-bottom: 1px solid rgba(255,255,255,0.10);
-  background: #0b111a;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
   position: sticky;
   top: 0;
-  z-index: 20;
+  background: rgba(11,15,20,0.85);
+  backdrop-filter: blur(10px);
+  z-index: 10;
 }
 
-.brandWrap { display: flex; gap: 10px; align-items: center; }
-.logo { width: 34px; height: 34px; border-radius: 10px; }
-.brand { font-size: 26px; font-weight: 900; letter-spacing: 0.4px; }
+.title { min-width: 0; }
 
-.status {
-  font-size: 12px;
-  opacity: 0.75;
-  padding: 6px 10px;
+/* ✅ styl textu jako na banneru (bez loga) */
+.brand {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-weight: 900;
+  letter-spacing: 0.2px;
+  line-height: 1.05;
+  font-size: 40px;
+}
+
+.brandMain {
+  color: #d7dee6; /* šedá */
+  text-shadow: 0 1px 0 rgba(0,0,0,0.25);
+}
+
+.brandCz {
+  color: #ff7a28; /* oranžová */
+  text-shadow: 0 1px 0 rgba(0,0,0,0.25);
+}
+
+.sub { opacity: 0.75; font-size: 12px; margin-top: 4px; }
+
+.actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.pill {
+  padding: 7px 10px;
   border-radius: 999px;
-  border: 1px solid rgba(255,255,255,0.10);
-  background: rgba(255,255,255,0.03);
+  font-size: 12px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.06);
+  max-width: min(520px, 60vw);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
+/* BUTTONS */
 .btn {
-  cursor: pointer;
   padding: 10px 12px;
   border-radius: 12px;
   border: 1px solid rgba(255,255,255,0.12);
-  background: rgba(255,255,255,0.03);
+  background: #141b25;
   color: #e9eef6;
-  font-weight: 700;
+  cursor: pointer;
+  touch-action: manipulation;
 }
-
-.btn:hover { background: rgba(255,255,255,0.06); }
+.btn:hover { background: #1a2432; }
 .btn.primary { background: #172235; }
 .btn.primary:hover { background: #1d2b45; }
 
@@ -98,21 +130,6 @@ a:hover { text-decoration: underline; }
   grid-template-columns: 1.3fr 1fr;
   gap: 12px;
   padding: 12px;
-}
-
-/* ✅ MASONRY-LIKE COLUMNS (bez velkých mezer mezi kartami) */
-.gridCols {
-  display: grid;
-  grid-template-columns: 1.3fr 1fr;
-  gap: 12px;
-  padding: 12px;
-}
-
-.col {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  min-width: 0;
 }
 
 /* CARD */
@@ -195,34 +212,42 @@ a:hover { text-decoration: underline; }
   margin-bottom: 10px;
 }
 .row:last-child { margin-bottom: 0; }
-.row .left { display: flex; align-items: center; gap: 10px; }
+.row .left { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
 .row .meta { opacity: 0.75; font-size: 12px; white-space: nowrap; }
-.row .name { font-weight: 800; font-size: 13px; line-height: 1.25; }
+.row .name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.tableCard .tableWrap { padding: 10px 12px 12px; overflow-x: auto; }
-table { width: 100%; border-collapse: collapse; min-width: 720px; }
-th, td { border-bottom: 1px solid rgba(255,255,255,0.08); padding: 10px 8px; text-align: left; font-size: 13px; }
-th { opacity: 0.75; font-size: 12px; font-weight: 800; }
+.tableCard { grid-column: 1 / -1; }
+.tableWrap { overflow: auto; }
+
+table { width: 100%; border-collapse: collapse; min-width: 900px; }
+th, td {
+  padding: 12px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.07);
+  text-align: left;
+  vertical-align: top;
+}
+th { opacity: 0.75; font-size: 12px; font-weight: 700; }
+td { font-size: 13px; }
+
+a { color: #a9d3ff; text-decoration: none; }
+a:hover { text-decoration: underline; }
 
 .iconPill {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 30px; height: 30px;
+  width: 32px;
+  height: 26px;
   border-radius: 10px;
+  background: rgba(255,255,255,0.06);
   border: 1px solid rgba(255,255,255,0.12);
-  background: rgba(255,255,255,0.03);
 }
 
-.footer {
-  padding: 18px 12px 26px;
-  opacity: 0.65;
-  font-size: 12px;
-  text-align: center;
-}
+/* =========================
+   ✅ Leaflet MARKERS – čisté emoji (bez bublin)
+   ========================= */
 
-/* ✅ MARKERY: jen emoji bez bublin */
-.fw-emoji-wrap {
+.fw-emoji-wrap.leaflet-div-icon {
   background: transparent !important;
   border: 0 !important;
 }
@@ -246,7 +271,7 @@ th { opacity: 0.75; font-size: 12px; font-weight: 800; }
 /* Responsive */
 @media (max-width: 980px) {
   .filtersRow { grid-template-columns: 1fr 1fr; }
-  .grid, .gridCols { grid-template-columns: 1fr; }
+  .grid { grid-template-columns: 1fr; }
   .brand { font-size: 30px; }
   #map { height: 380px; }
 }

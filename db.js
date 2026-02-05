@@ -64,11 +64,12 @@ export async function initDb() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS app_settings (
       key TEXT PRIMARY KEY,
-      value TEXT
+      value TEXT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
 
-  // ✅ nový klíč pro "cutoff" výpočtu délky – aby se nepočítaly historické extrémy
+  // ✅ od kdy počítat "nejdelší zásahy" a ukládat nové délky (nezasahuje do historie)
   await pool.query(`
     INSERT INTO app_settings (key, value)
     VALUES ('duration_cutoff_iso', NOW()::text)
@@ -305,7 +306,7 @@ function buildMonthSql(month, params, iStart) {
   return { clauses, nextI: i };
 }
 
-export async function getEventsFiltered(filters, limit = 500) {
+export async function getEventsFiltered(filters, limit = 400) {
   const types = Array.isArray(filters?.types) ? filters.types : [];
   const city = String(filters?.city || "").trim();
   const status = String(filters?.status || "all").toLowerCase();
@@ -339,7 +340,8 @@ export async function getEventsFiltered(filters, limit = 500) {
   where.push(...mWin.clauses);
   i = mWin.nextI;
 
-  const sql = `
+  const sql =
+    `
     SELECT
       id, title, link, pub_date,
       place_text, city_text,
@@ -438,27 +440,49 @@ export async function getStatsFiltered(filters) {
   );
 
   // ------------------------
-  // Žebříček měst – 30 dní (stejné filtry jako graf)
+  // Žebříček měst – ZE VŠECH VÝJEZDŮ (bez 30denního okna)
   // ------------------------
+  const whereAll = [];
+  const paramsAll = [];
+  let iAll = 1;
+
+  if (types.length) {
+    whereAll.push(`event_type = ANY($${iAll}::text[])`);
+    paramsAll.push(types);
+    iAll++;
+  }
+  if (city) {
+    whereAll.push(`(COALESCE(city_text,'') ILIKE $${iAll} OR COALESCE(place_text,'') ILIKE $${iAll})`);
+    paramsAll.push(`%${city}%`);
+    iAll++;
+  }
+  if (status === "open") whereAll.push(`is_closed = FALSE`);
+  if (status === "closed") whereAll.push(`is_closed = TRUE`);
+
+  const mWinAll = buildMonthSql(month, paramsAll, iAll);
+  whereAll.push(...mWinAll.clauses);
+  iAll = mWinAll.nextI;
+
+  const whereAllSql = whereAll.length ? `WHERE ${whereAll.join(" AND ")}` : "";
+
   const topCities = await pool.query(
     `
     SELECT COALESCE(NULLIF(city_text,''), NULLIF(place_text,''), '(neznámé)') AS city, COUNT(*)::int AS count
     FROM events
-    ${where30Sql}
+    ${whereAllSql}
     GROUP BY city
     ORDER BY count DESC
     LIMIT 15;
     `,
-    params30
+    paramsAll
   );
 
   // ------------------------
-  // Nejdelší zásahy – 30 dní + pouze nové od cutoff (ochrana proti historickým extrémům)
+  // Nejdelší zásahy – POUZE NOVÉ od cutoff
   // ------------------------
-  const pLongestCutoffIdx = params30.length + 1;
-  const pLongestMaxIdx = params30.length + 2;
-
-  const whereLongestSql = `${where30Sql} AND first_seen_at >= $${pLongestCutoffIdx}::timestamptz`;
+  const whereLongest = [...whereAll, `first_seen_at >= $${iAll}::timestamptz`];
+  const paramsLongest = [...paramsAll, cutoffIso];
+  const whereLongestSql = `WHERE ${whereLongest.join(" AND ")}`;
 
   const longest = await pool.query(
     `
@@ -468,11 +492,11 @@ export async function getStatsFiltered(filters) {
       link,
       COALESCE(NULLIF(city_text,''), place_text) AS city,
       CASE
-        WHEN duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= $${pLongestMaxIdx}
+        WHEN duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= $${iAll + 1}
           THEN duration_min
         WHEN NOT is_closed
           THEN LEAST(
-            $${pLongestMaxIdx},
+            $${iAll + 1},
             GREATEST(
               1,
               FLOOR(
@@ -491,13 +515,13 @@ export async function getStatsFiltered(filters) {
     FROM events
     ${whereLongestSql}
       AND (
-        (duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= $${pLongestMaxIdx})
+        (duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= $${iAll + 1})
         OR (NOT is_closed)
       )
     ORDER BY duration_min DESC NULLS LAST
     LIMIT 10;
     `,
-    [...params30, cutoffIso, MAX_DURATION_MINUTES]
+    [...paramsLongest, MAX_DURATION_MINUTES]
   );
 
   return {
