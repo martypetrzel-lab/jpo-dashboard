@@ -139,6 +139,9 @@ body {
   border-radius: 16px;
   overflow: hidden;
   box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+
+  /* ✅ aby se karta nenatahovala výškou podle jiné karty ve stejném řádku */
+  align-self: start;
 }
 
 .cardHeader {
@@ -165,20 +168,36 @@ body {
 
 .canvasWrap { padding: 10px 12px 14px; }
 
+/* =========================
+   ✅ ZMENŠENÍ "Aktivní × ukončené"
+   ========================= */
 .splitStats {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 10px;
-  padding: 12px;
+  gap: 8px;            /* bylo 10px */
+  padding: 8px 10px;   /* bylo 12px */
 }
+
 .splitCard {
   border: 1px solid rgba(255,255,255,0.10);
   background: rgba(255,255,255,0.03);
   border-radius: 14px;
-  padding: 10px;
+  padding: 8px 10px;   /* bylo 10px */
+  min-height: 52px;    /* přidáno – drží nízké */
 }
-.splitValue { font-size: 24px; font-weight: 800; }
-.splitLabel { opacity: 0.75; font-size: 12px; margin-top: 4px; }
+
+.splitValue {
+  font-size: 20px;     /* bylo 24px */
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+.splitLabel {
+  opacity: 0.75;
+  font-size: 11px;     /* bylo 12px */
+  margin-top: 2px;     /* bylo 4px */
+}
+/* ========================= */
 
 .list { padding: 10px 12px 12px; }
 .row {
