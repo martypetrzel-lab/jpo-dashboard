@@ -13,17 +13,19 @@ function typeIcon(t) {
   // Hezčí / výraznější ikonky (pořád čisté emoji)
   switch (t) {
     case "fire":
-      return "🔥🚒";
+      return "🔥";
     case "traffic":
-      return "🚗💥";
+      return "🚗";
     case "tech":
       return "🛠️";
     case "rescue":
       return "🆘";
     case "false_alarm":
-      return "🚨❎";
-    default:
+      return "🚨";
+    case "other":
       return "📍";
+    default:
+      return "❓";
   }
 }
 

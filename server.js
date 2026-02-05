@@ -150,7 +150,7 @@ function parseTimesFromDescription(descRaw = "") {
         .toLowerCase()
         .normalize("NFD")
         .replace(/\p{Diacritic}/gu, "");
-      if (vNorm.includes("ukoncena") || vNorm.includes("ukonceno") || vNorm.includes("ukonceni")) isClosed = true;
+      if (vNorm.includes("ukoncena") || vNorm.includes("ukonceno")) isClosed = true;
       continue;
     }
 
@@ -168,16 +168,6 @@ function parseTimesFromDescription(descRaw = "") {
     endIso: isClosed ? new Date().toISOString().replace(".000Z", "Z") : null,
     isClosed,
   };
-}
-
-function isClosedStatusText(text = "") {
-  const vNorm = String(text || "")
-    .trim()
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/\p{Diacritic}/gu, "");
-  if (!vNorm) return false;
-  return vNorm.includes("ukoncena") || vNorm.includes("ukonceno") || vNorm.includes("ukonceni");
 }
 
 async function fetchJson(url) {
@@ -293,6 +283,32 @@ async function backfillCoords(rows, limit = 8) {
   return fixed;
 }
 
+async function sanitizeCoords(rows, limit = 120) {
+  // Pokud se v DB historicky uložily špatné souřadnice (Polsko apod.),
+  // tak je při čtení automaticky vyčistíme, aby se už nikdy nevykreslily na mapě.
+  let cleared = 0;
+
+  const slice = (rows || [])
+    .filter((r) => r?.lat != null && r?.lon != null)
+    .slice(0, limit);
+
+  for (const r of slice) {
+    const lat = Number(r.lat);
+    const lon = Number(r.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+
+    // musí sedět ČR i Středočeský kraj bbox (extra pojistka)
+    if (!inBounds(lat, lon, CZ_BOUNDS) || !inBounds(lat, lon, STC_BOUNDS)) {
+      await clearEventCoords(r.id);
+      r.lat = null;
+      r.lon = null;
+      cleared++;
+    }
+  }
+
+  return cleared;
+}
+
 function normalizeFilters(req) {
   return {
     day: String(req.query.day || "all").trim(), // today|yesterday|all
@@ -320,10 +336,8 @@ app.post("/api/ingest", requireKey, async (req, res) => {
       const link = String(it.link || "").trim();
       const pubDate = String(it.pubDate || it.pub_date || it.pub_date_text || "").trim();
       const descriptionRaw = String(it.description || it.description_raw || "").trim();
-      const statusText = String(it.status || it.status_text || "").trim();
 
       const times = parseTimesFromDescription(descriptionRaw);
-      const statusClosed = isClosedStatusText(statusText);
 
       // start: prefer vyhlášení/ohlášení, pak pubDate
       const startIso =
@@ -334,7 +348,7 @@ app.post("/api/ingest", requireKey, async (req, res) => {
           return d.toISOString().replace(".000Z", "Z");
         })();
 
-      const isClosed = Boolean(times.isClosed || statusClosed);
+      const isClosed = Boolean(times.isClosed);
       const endIso = isClosed ? times.endIso || null : null;
 
       // duration jen pokud zavřeno (a DB ji uloží jen při prvním uzavření)
@@ -364,7 +378,7 @@ app.post("/api/ingest", requireKey, async (req, res) => {
         pubDate: pubDate || null,
         placeText: String(it.place || it.place_text || "").trim() || null,
         cityText: String(it.city || it.city_text || "").trim() || null,
-        statusText: statusText || null,
+        statusText: String(it.status || it.status_text || "").trim() || null,
         eventType: classifyType(title),
         descriptionRaw,
         startTimeIso: startIso,
@@ -390,6 +404,8 @@ app.get("/api/events", async (req, res) => {
     const rows = await getEventsFiltered(filters, limit);
 
     // malé údržby "za běhu"
+    await sanitizeCoords(rows, 120);
+
     await backfillDurations(rows, 80);
     await backfillCoords(rows, 8);
 
