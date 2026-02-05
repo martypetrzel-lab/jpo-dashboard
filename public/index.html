@@ -73,6 +73,16 @@
       </div>
 
       <div class="field">
+        <label class="ghost">Vrstvy</label>
+        <div class="checkRow">
+          <label class="check">
+            <input id="hzsStationsToggle" type="checkbox" />
+            <span>Stanice HZS</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="field">
         <label for="monthInput">Měsíc (statistika měst)</label>
         <input id="monthInput" type="month" />
       </div>
@@ -109,6 +119,9 @@
         </div>
       </div>
       <div id="map"></div>
+      <div class="mapDisclaimer">
+        Stanice, trasy i pohyb vozidel jsou pouze orientační a simulované. Nejde o reálné sledování jednotek ani o neveřejná data.
+      </div>
     </section>
 
     <section class="card">
@@ -167,7 +180,7 @@
             <th>Čas</th>
             <th>Typ</th>
             <th>Název</th>
-            <th>Město</th>
+            <th>Místo</th>
             <th>Stav</th>
             <th>Délka</th>
             <th>Odkaz</th>
@@ -179,8 +192,8 @@
     </section>
   </main>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
   <script src="app.js"></script>
 </body>
 </html>

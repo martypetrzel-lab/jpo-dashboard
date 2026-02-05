@@ -1,5 +1,12 @@
-let map, markersLayer, chart;
+let map, markersLayer, hzsStationsLayer, dispatchLayer, chart;
 let inFlight = false;
+
+// ===== Simulované výjezdy HZS (pouze orientační) =====
+const HZS_MAX_STRAIGHT_KM = 20;
+const OSRM_ENDPOINT = "https://router.project-osrm.org/route/v1/driving";
+const knownEventIds = new Set();
+let hasLoadedOnce = false;
+const activeDispatch = new Map(); // eventId -> { marker, polyline, raf, startedAt, durationMs }
 
 const TYPE = {
   fire: { emoji: "🔥", label: "požár", cls: "marker-fire" },
@@ -9,6 +16,38 @@ const TYPE = {
   false_alarm: { emoji: "🚫", label: "planý poplach", cls: "marker-false" },
   other: { emoji: "❓", label: "jiné", cls: "marker-other" }
 };
+
+
+// --- Statická vrstva stanic HZS (Středočeský kraj – orientační body) ---
+// Pozn.: seznam můžeš kdykoliv rozšířit/upravit. Souřadnice jsou pouze přibližné.
+const HZS_STATIONS = [
+  { id: "kladno", name: "HZS Kladno", lat: 50.147, lon: 14.104 },
+  { id: "slany", name: "HZS Slaný", lat: 50.230, lon: 14.086 },
+  { id: "rakovnik", name: "HZS Rakovník", lat: 50.103, lon: 13.733 },
+  { id: "beroun", name: "HZS Beroun", lat: 49.963, lon: 14.072 },
+  { id: "horovice", name: "HZS Hořovice", lat: 49.836, lon: 13.902 },
+  { id: "pribram", name: "HZS Příbram", lat: 49.690, lon: 14.011 },
+  { id: "benesov", name: "HZS Benešov", lat: 49.781, lon: 14.687 },
+  { id: "ricany", name: "HZS Říčany", lat: 49.992, lon: 14.654 },
+  { id: "brandys", name: "HZS Brandýs n. L.–St. Boleslav", lat: 50.187, lon: 14.663 },
+  { id: "melnik", name: "HZS Mělník", lat: 50.350, lon: 14.474 },
+  { id: "nymburk", name: "HZS Nymburk", lat: 50.186, lon: 15.041 },
+  { id: "mlada_boleslav", name: "HZS Mladá Boleslav", lat: 50.411, lon: 14.903 },
+  { id: "kolin", name: "HZS Kolín", lat: 50.028, lon: 15.200 },
+  { id: "kutna_hora", name: "HZS Kutná Hora", lat: 49.949, lon: 15.268 }
+];
+
+function toRad(x) { return (x * Math.PI) / 180; }
+function haversineKm(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+
 
 function typeMeta(t) {
   return TYPE[t] || TYPE.other;
@@ -33,6 +72,28 @@ function initMap() {
   }).addTo(map);
 
   markersLayer = L.layerGroup().addTo(map);
+
+  // Statické stanice HZS (skryté ve filtru – default OFF)
+  hzsStationsLayer = L.layerGroup();
+
+  // Simulované trasy + vozidla
+  dispatchLayer = L.layerGroup().addTo(map);
+
+  // UI: přepínač vrstvy stanic
+  const toggle = document.getElementById("hzsStationsToggle");
+  if (toggle) {
+    toggle.checked = false;
+    toggle.addEventListener("change", () => {
+      try {
+        if (toggle.checked) {
+          hzsStationsLayer.addTo(map);
+          renderHzsStationsLayer();
+        } else {
+          hzsStationsLayer.remove();
+        }
+      } catch { /* ignore */ }
+    });
+  }
 }
 
 function formatDate(d) {
@@ -137,6 +198,171 @@ function makeMarkerIcon(typeKey, isClosed) {
     iconAnchor: [13, 13],
     popupAnchor: [0, -14]
   });
+}
+
+/**
+ * ✅ HZS STANICE – statická vrstva
+ */
+function makeStationIcon(name) {
+  return L.divIcon({
+    className: "fw-station-wrap",
+    html: `<div class="fw-station" title="${escapeHtml(name)}">🏢</div>`,
+    iconSize: [18, 18],
+    iconAnchor: [9, 9]
+  });
+}
+
+function renderHzsStationsLayer() {
+  try {
+    if (!hzsStationsLayer || !map) return;
+    hzsStationsLayer.clearLayers();
+
+    for (const s of HZS_STATIONS) {
+      const m = L.marker([s.lat, s.lon], { icon: makeStationIcon(s.name) });
+      m.bindTooltip(escapeHtml(s.name), { direction: "top", offset: [0, -6], opacity: 0.95 });
+      m.addTo(hzsStationsLayer);
+    }
+  } catch { /* ignore */ }
+}
+
+/**
+ * ✅ SIMULOVANÝ VÝJEZD – routing přes OSRM (nejrychlejší ETA)
+ * - nejdřív filtr 20 km vzdušně
+ * - poté pro kandidáty zjisti ETA po silnici a vyber nejrychlejší
+ */
+async function osrmRoute(fromLat, fromLon, toLat, toLon, abortSignal) {
+  const url = `${OSRM_ENDPOINT}/${fromLon},${fromLat};${toLon},${toLat}?overview=full&geometries=geojson`;
+  const res = await fetch(url, { signal: abortSignal });
+  if (!res.ok) throw new Error("osrm_error");
+  const json = await res.json();
+  const r = json?.routes?.[0];
+  if (!r || !r.geometry || !Array.isArray(r.geometry.coordinates)) throw new Error("osrm_no_route");
+
+  const coords = r.geometry.coordinates.map(([lon, lat]) => [lat, lon]); // Leaflet [lat,lon]
+  return { durationSec: Number(r.duration || 0), distanceM: Number(r.distance || 0), coords };
+}
+
+function makeVehicleIcon() {
+  return L.divIcon({
+    className: "fw-vehicle-wrap",
+    html: `<div class="fw-vehicle" title="Simulované vozidlo HZS">🚒</div>`,
+    iconSize: [22, 22],
+    iconAnchor: [11, 11]
+  });
+}
+
+function stopDispatchSimulation(eventId) {
+  const sim = activeDispatch.get(eventId);
+  if (!sim) return;
+  try { if (sim.raf) cancelAnimationFrame(sim.raf); } catch { /* ignore */ }
+  try { if (sim.marker) dispatchLayer.removeLayer(sim.marker); } catch { /* ignore */ }
+  try { if (sim.polyline) dispatchLayer.removeLayer(sim.polyline); } catch { /* ignore */ }
+  activeDispatch.delete(eventId);
+}
+
+function computeCumDistancesKm(latlngs) {
+  const cum = [0];
+  for (let i = 1; i < latlngs.length; i++) {
+    const [lat1, lon1] = latlngs[i - 1];
+    const [lat2, lon2] = latlngs[i];
+    cum.push(cum[i - 1] + haversineKm(lat1, lon1, lat2, lon2));
+  }
+  return cum;
+}
+
+function interpolateOnPath(latlngs, cumKm, t01) {
+  const total = cumKm[cumKm.length - 1] || 0;
+  if (total <= 0 || latlngs.length === 0) return latlngs[0] || [0, 0];
+
+  const target = total * Math.min(1, Math.max(0, t01));
+  let i = 1;
+  while (i < cumKm.length && cumKm[i] < target) i++;
+
+  if (i >= cumKm.length) return latlngs[latlngs.length - 1];
+
+  const prev = cumKm[i - 1];
+  const next = cumKm[i];
+  const seg = Math.max(1e-9, next - prev);
+  const k = (target - prev) / seg;
+
+  const [lat1, lon1] = latlngs[i - 1];
+  const [lat2, lon2] = latlngs[i];
+  return [lat1 + (lat2 - lat1) * k, lon1 + (lon2 - lon1) * k];
+}
+
+async function startDispatchSimulationForEvent(it) {
+  try {
+    if (!it || it.is_closed) return;
+    if (!Number.isFinite(it.lat) || !Number.isFinite(it.lon)) return;
+    if (activeDispatch.has(it.id)) return; // už běží
+
+    // Kandidáti do 20 km vzdušně
+    const candidates = HZS_STATIONS
+      .map(s => ({ ...s, km: haversineKm(s.lat, s.lon, it.lat, it.lon) }))
+      .filter(s => s.km <= HZS_MAX_STRAIGHT_KM)
+      .sort((a, b) => a.km - b.km);
+
+    if (candidates.length === 0) return;
+
+    // Routing – vyber nejrychlejší ETA
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 8000);
+
+    let best = null;
+    for (const s of candidates.slice(0, 6)) { // limit kvůli rate-limitům
+      try {
+        const route = await osrmRoute(s.lat, s.lon, it.lat, it.lon, controller.signal);
+        const eta = route.durationSec;
+        if (!Number.isFinite(eta) || eta <= 0) continue;
+        if (!best || eta < best.etaSec) best = { station: s, route, etaSec: eta };
+      } catch {
+        // zkoušíme další kandidáty
+      }
+    }
+
+    clearTimeout(t);
+    if (!best) return;
+
+    const latlngs = best.route.coords;
+    if (!Array.isArray(latlngs) || latlngs.length < 2) return;
+
+    // Vykresli trasu + vozidlo
+    const poly = L.polyline(latlngs, { weight: 4, opacity: 0.75 });
+    poly.addTo(dispatchLayer);
+
+    const vehicle = L.marker(latlngs[0], { icon: makeVehicleIcon(), interactive: false });
+    vehicle.addTo(dispatchLayer);
+
+    const cumKm = computeCumDistancesKm(latlngs);
+    const durationMs = Math.max(10_000, Math.round(best.etaSec * 1000)); // min 10 s aby to bylo vidět
+    const startedAt = performance.now();
+
+    const sim = { marker: vehicle, polyline: poly, raf: null, startedAt, durationMs, cumKm, latlngs };
+    activeDispatch.set(it.id, sim);
+
+    const step = (now) => {
+      // kdyby se mezitím ukončilo (zastaví se při loadAll)
+      const s = activeDispatch.get(it.id);
+      if (!s) return;
+
+      const elapsed = now - s.startedAt;
+      const t01 = Math.min(1, elapsed / s.durationMs);
+      const [lat, lon] = interpolateOnPath(s.latlngs, s.cumKm, t01);
+      try { s.marker.setLatLng([lat, lon]); } catch { /* ignore */ }
+
+      if (t01 < 1) {
+        s.raf = requestAnimationFrame(step);
+      } else {
+        // dojezd – necháme trasu + vozidlo ještě chvíli a pak uklidíme,
+        // aby nebyla mapa přeplácaná
+        setTimeout(() => stopDispatchSimulation(it.id), 15_000);
+      }
+    };
+
+    sim.raf = requestAnimationFrame(step);
+  } catch {
+    // ticho – simulace nesmí rozbít zbytek dashboardu
+  }
 }
 
 // ✅ když je více událostí na stejných souřadnicích, lehce je rozprostřeme,
@@ -336,6 +562,26 @@ async function loadAll() {
     const statsJson = await statsRes.json();
 
     const items = (eventsJson.items || []);
+
+    // --- Simulované výjezdy HZS: jen NOVÉ + AKTIVNÍ události ---
+    // 1) zastav, co se ukončilo
+    for (const [eventId] of activeDispatch) {
+      const it = items.find(x => x.id === eventId);
+      if (!it || it.is_closed) stopDispatchSimulation(eventId);
+    }
+
+    // 2) spust pro nové aktivní (až po prvním načtení, aby se nespouštělo na historických)
+    const allowSim = hasLoadedOnce;
+    for (const it of items) {
+      if (!it?.id) continue;
+      const isNew = !knownEventIds.has(it.id);
+      if (allowSim && isNew && !it.is_closed) {
+        startDispatchSimulationForEvent(it);
+      }
+      knownEventIds.add(it.id);
+    }
+
+    hasLoadedOnce = true;
 
     renderTable(items);
     renderMap(items);
