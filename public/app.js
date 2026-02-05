@@ -1,307 +1,267 @@
-// FireWatch CZ - frontend (App.js)
 let map, markersLayer, chart;
 let inFlight = false;
 
-function setStatus(text, ok) {
+const TYPE = {
+  fire: { emoji: "🔥", label: "požár" },
+  traffic: { emoji: "🚗", label: "nehoda" },
+  tech: { emoji: "🛠️", label: "technická" },
+  rescue: { emoji: "🧍", label: "záchrana" },
+  false_alarm: { emoji: "🚨", label: "planý poplach" },
+  other: { emoji: "❓", label: "jiné" }
+};
+
+function typeEmoji(t) {
+  return (TYPE[t] || TYPE.other).emoji;
+}
+
+function setStatus(text, ok = true) {
   const pill = document.getElementById("statusPill");
   pill.textContent = text;
-  pill.classList.toggle("ok", !!ok);
-  pill.classList.toggle("bad", !ok);
+  pill.style.background = ok ? "rgba(60, 180, 120, 0.20)" : "rgba(220, 80, 80, 0.20)";
+  pill.style.borderColor = ok ? "rgba(60, 180, 120, 0.35)" : "rgba(220, 80, 80, 0.35)";
 }
 
-function typeIcon(t) {
-  // Hezčí / výraznější ikonky (pořád čisté emoji)
-  switch (t) {
-    case "fire":
-      return "🔥";
-    case "traffic":
-      return "🚗";
-    case "tech":
-      return "🛠️";
-    case "rescue":
-      return "🆘";
-    case "false_alarm":
-      return "🚨";
-    case "other":
-      return "📍";
-    default:
-      return "❓";
-  }
-}
-
-function fmtDT(iso) {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString("cs-CZ", { timeZone: "Europe/Prague" });
-}
-
-function fmtDateOnly(iso) {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleDateString("cs-CZ", { timeZone: "Europe/Prague" });
-}
-
-function fmtMin(min) {
-  const n = Number(min);
-  if (!Number.isFinite(n) || n <= 0) return "—";
-  if (n < 60) return `${Math.round(n)} min`;
-  const h = Math.floor(n / 60);
-  const m = Math.round(n % 60);
-  return `${h} h ${m} min`;
-}
-
-function qs(id) {
-  return document.getElementById(id);
-}
-
-function currentFilters() {
-  const day = qs("daySelect")?.value || "all";
-  const type = qs("typeSelect")?.value || "";
-  const status = qs("statusSelect")?.value || "all";
-  const city = qs("cityInput")?.value?.trim() || "";
-  const month = qs("monthSelect")?.value || "";
-  return { day, type, status, city, month };
-}
-
-function buildQuery(params) {
-  const usp = new URLSearchParams();
-  Object.entries(params || {}).forEach(([k, v]) => {
-    if (v === undefined || v === null) return;
-    const s = String(v).trim();
-    if (!s) return;
-    usp.set(k, s);
-  });
-  return usp.toString();
-}
-
-async function fetchJSON(url) {
-  const r = await fetch(url);
-  if (!r.ok) {
-    const t = await r.text().catch(() => "");
-    throw new Error(`HTTP ${r.status}: ${t}`);
-  }
-  return await r.json();
-}
-
-function ensureMap() {
-  if (map) return;
-
-  map = L.map("map", {
-    zoomControl: true,
-    scrollWheelZoom: true,
-  }).setView([49.95, 14.6], 9);
-
+function initMap() {
+  map = L.map("map").setView([49.8, 15.3], 7);
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    attribution: "&copy; OpenStreetMap",
     maxZoom: 18,
+    attribution: "&copy; OpenStreetMap"
   }).addTo(map);
 
   markersLayer = L.layerGroup().addTo(map);
 }
 
-function clearMarkers() {
-  if (!markersLayer) return;
-  markersLayer.clearLayers();
+function formatDate(d) {
+  if (!d) return "";
+  try {
+    const dt = new Date(d);
+    if (isNaN(dt.getTime())) return d;
+    return dt.toLocaleString("cs-CZ");
+  } catch {
+    return d;
+  }
 }
 
-function addMarkers(items) {
-  ensureMap();
-  clearMarkers();
+function formatDuration(min) {
+  if (!Number.isFinite(min) || min <= 0) return "—";
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  if (h <= 0) return `${m} min`;
+  return `${h} h ${m} min`;
+}
 
-  const bounds = [];
-  for (const it of items || []) {
-    const lat = Number(it.lat);
-    const lon = Number(it.lon);
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+function escapeHtml(s) {
+  return String(s ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
 
-    const icon = typeIcon(it.event_type);
-    const title = it.title || "—";
-    const place = it.city_text || it.place_text || "";
+// ✅ NOVÉ: běžící délka pro AKTIVNÍ zásah (když duration_min chybí)
+const LIVE_DURATION_MAX_MIN = 4320; // 3 dny (stejné jako server default)
+
+function getLiveDurationMin(it) {
+  try {
+    if (!it || it.is_closed) return null;
+
+    const now = Date.now();
+    const startCandidate =
+      it.start_time_iso ||
+      it.first_seen_at ||
+      it.created_at ||
+      it.pub_date ||
+      null;
+
+    if (!startCandidate) return null;
+
+    const startMs = new Date(startCandidate).getTime();
+    if (!Number.isFinite(startMs)) return null;
+
+    const diffMin = Math.floor((now - startMs) / 60000);
+    if (!Number.isFinite(diffMin) || diffMin < 1) return 1;
+
+    if (diffMin > LIVE_DURATION_MAX_MIN) return null; // nepouštět extrémy
+    return diffMin;
+  } catch {
+    return null;
+  }
+}
+
+function getDisplayDurationMin(it) {
+  if (Number.isFinite(it?.duration_min) && it.duration_min > 0) return it.duration_min;
+  const live = getLiveDurationMin(it);
+  return Number.isFinite(live) ? live : null;
+}
+
+function renderTable(items) {
+  const tbody = document.getElementById("eventsTbody");
+  tbody.innerHTML = "";
+  for (const it of items) {
+    const t = it.event_type || "other";
     const state = it.is_closed ? "UKONČENO" : "AKTIVNÍ";
-    const dur = fmtMin(it.duration_min);
 
-    const popup = `
-      <div style="min-width:220px">
-        <div style="font-weight:700; margin-bottom:4px;">${icon} ${escapeHtml(title)}</div>
-        <div style="opacity:.9">${escapeHtml(place)}</div>
-        <div style="margin-top:6px;">
-          <span style="padding:2px 6px;border-radius:10px;background:${it.is_closed ? "#203322" : "#2a2231"};color:#d7e2ff;">
-            ${state}
-          </span>
-        </div>
-        <div style="margin-top:6px;opacity:.85">
-          Zahájení: ${escapeHtml(fmtDT(it.start_time_iso || it.pub_date))}<br/>
-          Ukončení: ${it.is_closed ? escapeHtml(fmtDT(it.end_time_iso)) : "—"}<br/>
-          Délka: ${escapeHtml(dur)}
-        </div>
-        ${it.link ? `<div style="margin-top:8px"><a href="${it.link}" target="_blank" rel="noopener">Detail</a></div>` : ""}
-      </div>
+    // ✅ použij běžící délku pro AKTIVNÍ, když duration_min není
+    const durMin = getDisplayDurationMin(it);
+
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${escapeHtml(formatDate(it.pub_date || it.created_at))}</td>
+      <td><span class="iconPill" title="${escapeHtml((TYPE[t]||TYPE.other).label)}">${typeEmoji(t)}</span></td>
+      <td>${escapeHtml(it.title || "")}</td>
+      <td>${escapeHtml(it.city_text || it.place_text || "")}</td>
+      <td>${escapeHtml(state)}</td>
+      <td>${escapeHtml(formatDuration(durMin))}</td>
+      <td>${it.link ? `<a href="${it.link}" target="_blank" rel="noopener">otevřít</a>` : ""}</td>
     `;
-
-    const marker = L.marker([lat, lon], {
-      title: `${icon} ${title}`,
-    }).bindPopup(popup);
-
-    marker.addTo(markersLayer);
-    bounds.push([lat, lon]);
-  }
-
-  if (bounds.length > 0) {
-    map.fitBounds(bounds, { padding: [30, 30] });
+    tbody.appendChild(tr);
   }
 }
 
-function escapeHtml(str) {
-  return String(str || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
-
-function renderList(items) {
-  const el = qs("list");
-  if (!el) return;
-
-  el.innerHTML = "";
-
-  for (const it of items || []) {
-    const row = document.createElement("div");
-    row.className = "itemRow";
-
-    const icon = typeIcon(it.event_type);
-    const title = it.title || "—";
-    const place = it.city_text || it.place_text || "";
-    const state = it.is_closed ? "UKONČENO" : "AKTIVNÍ";
-    const dur = fmtMin(it.duration_min);
-
-    row.innerHTML = `
-      <div class="itemTop">
-        <div class="itemTitle">${icon} ${escapeHtml(title)}</div>
-        <div class="itemPill ${it.is_closed ? "pillClosed" : "pillOpen"}">${state}</div>
-      </div>
-      <div class="itemMeta">
-        <div class="itemPlace">${escapeHtml(place)}</div>
-        <div class="itemTime">
-          <span>Zahájení:</span> ${escapeHtml(fmtDT(it.start_time_iso || it.pub_date))}
-          <span class="sep">•</span>
-          <span>Délka:</span> ${escapeHtml(dur)}
-        </div>
-      </div>
-      <div class="itemActions">
-        ${it.link ? `<a class="linkBtn" href="${it.link}" target="_blank" rel="noopener">Detail</a>` : ""}
-        <button class="zoomBtn" data-lat="${it.lat}" data-lon="${it.lon}">Na mapě</button>
-      </div>
-    `;
-
-    el.appendChild(row);
-  }
-
-  // map zoom buttons
-  el.querySelectorAll(".zoomBtn").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const lat = Number(btn.getAttribute("data-lat"));
-      const lon = Number(btn.getAttribute("data-lon"));
-      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
-      ensureMap();
-      map.setView([lat, lon], 14, { animate: true });
-    });
+function makeMarkerIcon(emoji) {
+  return L.divIcon({
+    className: "leaflet-div-icon",
+    html: `<div style="transform:translate(-50%,-50%);font-size:22px;">${emoji}</div>`,
+    iconSize: [22, 22],
+    iconAnchor: [11, 11]
   });
 }
 
-function renderCounts(stats) {
-  const openEl = qs("openCount");
-  const closedEl = qs("closedCount");
-  if (openEl) openEl.textContent = stats?.openCount ?? 0;
-  if (closedEl) closedEl.textContent = stats?.closedCount ?? 0;
-}
+function renderMap(items) {
+  markersLayer.clearLayers();
 
-function renderTopCities(stats) {
-  const el = qs("topCities");
-  if (!el) return;
-  el.innerHTML = "";
+  const pts = [];
+  for (const it of items) {
+    if (typeof it.lat === "number" && typeof it.lon === "number") {
+      const t = it.event_type || "other";
+      const emoji = typeEmoji(t);
 
-  for (const row of stats?.topCities || []) {
-    const div = document.createElement("div");
-    div.className = "topRow";
-    div.innerHTML = `
-      <div class="topCity">${escapeHtml(row.city)}</div>
-      <div class="topCount">${row.count}</div>
-    `;
-    el.appendChild(div);
+      const m = L.marker([it.lat, it.lon], { icon: makeMarkerIcon(emoji) });
+
+      const state = it.is_closed ? "UKONČENO" : "AKTIVNÍ";
+      const html = `
+        <div style="min-width:240px">
+          <div style="font-weight:700;margin-bottom:6px">${emoji} ${escapeHtml(it.title || "")}</div>
+          <div><b>Stav:</b> ${escapeHtml(state)}</div>
+          <div><b>Město:</b> ${escapeHtml(it.city_text || it.place_text || "")}</div>
+          <div><b>Čas:</b> ${escapeHtml(formatDate(it.pub_date || it.created_at))}</div>
+          <div><b>Délka:</b> ${escapeHtml(formatDuration(it.duration_min))}</div>
+          ${it.link ? `<div style="margin-top:8px"><a href="${it.link}" target="_blank" rel="noopener">Detail</a></div>` : ""}
+        </div>
+      `;
+      m.bindPopup(html);
+      m.addTo(markersLayer);
+      pts.push([it.lat, it.lon]);
+    }
   }
+
+  if (pts.length > 0) {
+    const bounds = L.latLngBounds(pts);
+    map.fitBounds(bounds.pad(0.2));
+  } else {
+    map.setView([49.8, 15.3], 7);
+  }
+
+  safeInvalidateMap();
 }
 
-function renderLongest(stats) {
-  const el = qs("longest");
-  if (!el) return;
-  el.innerHTML = "";
+function safeInvalidateMap() {
+  try {
+    if (!map) return;
+    setTimeout(() => {
+      try { map.invalidateSize(true); } catch { /* ignore */ }
+    }, 80);
+  } catch { /* ignore */ }
+}
 
-  for (const it of stats?.longest || []) {
+function renderTopCities(rows) {
+  const wrap = document.getElementById("topCities");
+  wrap.innerHTML = "";
+  rows.forEach((r, idx) => {
     const div = document.createElement("div");
-    div.className = "longRow";
-    const title = it.title || "—";
-    const place = it.city_text || it.place_text || "";
+    div.className = "row";
     div.innerHTML = `
-      <div class="longTitle">${escapeHtml(title)}</div>
-      <div class="longMeta">
-        <span class="longPlace">${escapeHtml(place)}</span>
-        <span class="sep">•</span>
-        <span class="longDur">${escapeHtml(fmtMin(it.duration_min))}</span>
+      <div class="left">
+        <div class="meta">#${idx + 1}</div>
+        <div class="name">${escapeHtml(r.city)}</div>
       </div>
+      <div class="meta">${r.count}×</div>
     `;
-    el.appendChild(div);
-  }
+    wrap.appendChild(div);
+  });
 }
 
-function renderChart(stats) {
-  const canvas = qs("chart");
-  if (!canvas) return;
+function renderLongest(rows) {
+  const wrap = document.getElementById("longestList");
+  wrap.innerHTML = "";
+  rows.forEach((r, idx) => {
+    const div = document.createElement("div");
+    div.className = "row";
+    div.style.cursor = r.link ? "pointer" : "default";
+    div.innerHTML = `
+      <div class="left">
+        <div class="meta">#${idx + 1}</div>
+        <div class="name">${escapeHtml(r.title || "")}</div>
+      </div>
+      <div class="meta">${escapeHtml(formatDuration(r.duration_min))}</div>
+    `;
+    if (r.link) {
+      div.addEventListener("click", () => window.open(r.link, "_blank", "noopener"));
+    }
+    wrap.appendChild(div);
+  });
+}
 
-  const labels = [];
-  const data = [];
+function renderCounts(openCount, closedCount) {
+  document.getElementById("openCount").textContent = String(openCount ?? "—");
+  document.getElementById("closedCount").textContent = String(closedCount ?? "—");
+}
 
-  const rows = (stats?.byDay || []).slice().reverse(); // od nejstaršího
-  for (const r of rows) {
-    labels.push(r.day);
-    data.push(Number(r.count) || 0);
-  }
+function renderChart(byDay) {
+  const labels = byDay.map(x => x.day);
+  const data = byDay.map(x => x.count);
 
-  if (chart) {
-    chart.data.labels = labels;
-    chart.data.datasets[0].data = data;
-    chart.update();
-    return;
-  }
+  const ctx = document.getElementById("chartByDay");
+  if (chart) chart.destroy();
 
-  chart = new Chart(canvas, {
+  chart = new Chart(ctx, {
     type: "line",
-    data: {
-      labels,
-      datasets: [
-        {
-          label: "Počet výjezdů",
-          data,
-          tension: 0.25,
-        },
-      ],
-    },
+    data: { labels, datasets: [{ label: "Výjezdy", data }] },
     options: {
       responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: { display: false },
-      },
+      plugins: { legend: { display: false } },
       scales: {
-        x: {
-          ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 7 },
-        },
-      },
-    },
+        x: { ticks: { maxRotation: 0, autoSkip: true } },
+        y: { beginAtZero: true }
+      }
+    }
   });
+}
+
+function getFiltersFromUi() {
+  const day = (document.getElementById("daySelect")?.value || "today").trim();
+  const type = document.getElementById("typeSelect").value.trim();
+  const city = document.getElementById("cityInput").value.trim();
+  const status = document.getElementById("statusSelect").value.trim();
+  const month = (document.getElementById("monthInput")?.value || "").trim();
+
+  return {
+    day: day || "today",
+    type: type || "",
+    city: city || "",
+    status: status || "all",
+    month: month || ""
+  };
+}
+
+function buildQuery(filters) {
+  const qs = new URLSearchParams();
+  if (filters.day && filters.day !== "today") qs.set("day", filters.day);
+  if (filters.type) qs.set("type", filters.type);
+  if (filters.city) qs.set("city", filters.city);
+  if (filters.status && filters.status !== "all") qs.set("status", filters.status);
+  if (filters.month) qs.set("month", filters.month);
+  return qs.toString();
 }
 
 async function loadAll() {
@@ -309,85 +269,81 @@ async function loadAll() {
   inFlight = true;
 
   try {
-    setStatus("Načítám…", true);
+    const filters = getFiltersFromUi();
+    const q = buildQuery(filters);
 
-    const f = currentFilters();
-    const qEvents = buildQuery({
-      day: f.day,
-      status: f.status,
-      city: f.city,
-      month: f.month,
-      type: f.type,
-      limit: 500,
-    });
+    setStatus("načítám…", true);
 
-    const qStats = buildQuery({
-      day: f.day,
-      status: f.status,
-      city: f.city,
-      month: f.month,
-      type: f.type,
-    });
-
-    const [events, stats] = await Promise.all([
-      fetchJSON(`/api/events?${qEvents}`),
-      fetchJSON(`/api/stats?${qStats}`),
+    const [eventsRes, statsRes] = await Promise.all([
+      fetch(`/api/events?limit=500${q ? `&${q}` : ""}`),
+      fetch(`/api/stats${q ? `?${q}` : ""}`)
     ]);
 
-    const items = events?.items || [];
-    addMarkers(items);
-    renderList(items);
+    if (!eventsRes.ok || !statsRes.ok) {
+      setStatus("chyba API", false);
+      return;
+    }
 
-    renderCounts(stats);
-    renderTopCities(stats);
-    renderLongest(stats);
-    renderChart(stats);
+    const eventsJson = await eventsRes.json();
+    const statsJson = await statsRes.json();
 
-    setStatus(`OK (${items.length} položek)`, true);
-  } catch (e) {
-    console.error(e);
-    setStatus(`Chyba: ${e?.message || "neznámá"}`, false);
+    const items = (eventsJson.items || []);
+
+    renderTable(items);
+    renderMap(items);
+
+    renderChart(statsJson.byDay || []);
+    renderCounts(statsJson.openCount, statsJson.closedCount);
+    renderTopCities(statsJson.topCities || []);
+    renderLongest(statsJson.longest || []);
+
+    const missing = items.filter(x => x.lat == null || x.lon == null).length;
+    setStatus(`OK • ${items.length} záznamů • bez souřadnic ${missing}`, true);
+  } catch {
+    setStatus("chyba načítání", false);
   } finally {
     inFlight = false;
   }
 }
 
-function setupUI() {
-  const refreshBtn = qs("refreshBtn");
-  if (refreshBtn) refreshBtn.addEventListener("click", loadAll);
-
-  ["daySelect", "typeSelect", "statusSelect", "monthSelect"].forEach((id) => {
-    const el = qs(id);
-    if (el) el.addEventListener("change", loadAll);
-  });
-
-  const cityInput = qs("cityInput");
-  if (cityInput) {
-    let t = null;
-    cityInput.addEventListener("input", () => {
-      if (t) clearTimeout(t);
-      t = setTimeout(loadAll, 350);
-    });
-  }
-
-  const exportPdfBtn = qs("exportPdfBtn");
-  if (exportPdfBtn) {
-    exportPdfBtn.addEventListener("click", () => {
-      const f = currentFilters();
-      const q = buildQuery({
-        day: f.day,
-        status: f.status,
-        city: f.city,
-        month: f.month,
-        type: f.type,
-      });
-      window.open(`/api/export/pdf?${q}`, "_blank");
-    });
-  }
+function resetFilters() {
+  const dayEl = document.getElementById("daySelect");
+  if (dayEl) dayEl.value = "today";
+  document.getElementById("typeSelect").value = "";
+  document.getElementById("cityInput").value = "";
+  document.getElementById("statusSelect").value = "all";
+  const monthEl = document.getElementById("monthInput");
+  if (monthEl) monthEl.value = "";
 }
 
-window.addEventListener("load", () => {
-  ensureMap();
-  setupUI();
-  loadAll();
+function exportWithFilters(kind) {
+  const filters = getFiltersFromUi();
+  const q = buildQuery(filters);
+  const url = kind === "pdf"
+    ? `/api/export.pdf${q ? `?${q}` : ""}`
+    : `/api/export.csv${q ? `?${q}` : ""}`;
+  window.open(url, "_blank");
+}
+
+// UI events
+document.getElementById("refreshBtn").addEventListener("click", loadAll);
+document.getElementById("applyBtn").addEventListener("click", loadAll);
+document.getElementById("resetBtn").addEventListener("click", () => { resetFilters(); loadAll(); });
+document.getElementById("exportCsvBtn").addEventListener("click", () => exportWithFilters("csv"));
+document.getElementById("exportPdfBtn").addEventListener("click", () => exportWithFilters("pdf"));
+
+// map resize on responsive changes
+let resizeTimer = null;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => safeInvalidateMap(), 120);
 });
+window.addEventListener("orientationchange", () => safeInvalidateMap());
+
+initMap();
+loadAll();
+
+// ✅ AUTO REFRESH každých 5 minut (zachová filtry, jen znovu načte)
+setInterval(() => {
+  loadAll();
+}, 5 * 60 * 1000);

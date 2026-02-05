@@ -12,7 +12,6 @@
   },
   "dependencies": {
     "express": "^4.19.2",
-    "fast-xml-parser": "^4.5.3",
     "pg": "^8.11.5",
     "pdfkit": "^0.15.0"
   }

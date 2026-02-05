@@ -1,8 +1,8 @@
 import express from "express";
+import PDFDocument from "pdfkit";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import PDFDocument from "pdfkit";
 
 import {
   initDb,
@@ -16,8 +16,7 @@ import {
   deleteCachedGeocode,
   getEventsOutsideCz,
   getEventFirstSeen,
-  updateEventDuration,
-  getTrackingStartIso,
+  updateEventDuration
 } from "./db.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -25,27 +24,14 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
-app.use(express.static(path.join(__dirname, "public")));
+app.use(express.static("public"));
 
 const API_KEY = process.env.API_KEY || "";
-const GEOCODE_UA = process.env.GEOCODE_USER_AGENT || "jpo-dashboard/1.1 (contact: missing)";
+const GEOCODE_UA = process.env.GEOCODE_USER_AGENT || "jpo-dashboard/1.7 (contact: missing)";
 
 // ✅ sanity limit pro délku zásahu (default 3 dny)
 const MAX_DURATION_MINUTES = Math.max(60, Number(process.env.DURATION_MAX_MINUTES || 4320)); // 3 dny
-
-// ✅ hrubé hranice ČR (bbox) – ochrana proti chybnému geocodu
-const CZ_BOUNDS = { minLat: 48.55, maxLat: 51.06, minLon: 12.09, maxLon: 18.87 };
-
-// ✅ hrubé hranice Středočeského kraje (bbox) – extra ochrana proti chybné geokódaci (Polsko apod.)
-const STC_BOUNDS = { minLat: 49.20, maxLat: 50.80, minLon: 13.10, maxLon: 15.80 };
-
-let TRACKING_START_ISO = null;
-
-// PDF font (TTF) — prefer ENV, fallback na /public/fonts/DejaVuSans.ttf
-const PDF_FONT_PATH =
-  process.env.PDF_FONT_PATH || path.join(__dirname, "public", "fonts", "DejaVuSans.ttf");
-const PDF_FONT_BOLD_PATH =
-  process.env.PDF_FONT_BOLD_PATH || path.join(__dirname, "public", "fonts", "DejaVuSans-Bold.ttf");
+const FUTURE_END_TOLERANCE_MS = 5 * 60 * 1000; // ukončení nesmí být "v budoucnu" o víc než 5 min
 
 // ---------------- AUTH ----------------
 function requireKey(req, res, next) {
@@ -60,23 +46,53 @@ function classifyType(title = "") {
   const t = title.toLowerCase();
   if (t.includes("požár") || t.includes("pozar")) return "fire";
   if (t.includes("doprav") || t.includes("nehoda") || t.includes("dn")) return "traffic";
-  if (t.includes("technick") || t.includes("technicka") || t.includes("odstranění") || t.includes("odstraneni"))
-    return "tech";
-  if (t.includes("záchrana") || t.includes("zachrana") || t.includes("transport") || t.includes("zvířat") || t.includes("zvirat"))
-    return "rescue";
+  if (t.includes("technick") || t.includes("čerpad") || t.includes("cerpad") || t.includes("strom")) return "tech";
+  if (t.includes("záchrana") || t.includes("zachrana") || t.includes("transport") || t.includes("resusc")) return "rescue";
   if (t.includes("planý poplach") || t.includes("plany poplach")) return "false_alarm";
   return "other";
 }
 
-function inBounds(lat, lon, b) {
-  return (
-    Number.isFinite(lat) &&
-    Number.isFinite(lon) &&
-    lat >= b.minLat &&
-    lat <= b.maxLat &&
-    lon >= b.minLon &&
-    lon <= b.maxLon
-  );
+function isDistrictPlace(placeText = "") {
+  return /^\s*okres\s+/i.test(String(placeText || ""));
+}
+
+function extractCityFromTitle(title = "") {
+  const s = String(title || "").trim();
+  if (!s.includes(" - ")) return null;
+  const parts = s.split(" - ").map(x => x.trim()).filter(Boolean);
+  if (parts.length < 2) return null;
+  const last = parts[parts.length - 1];
+  if (last.length < 2) return null;
+  return last;
+}
+
+function extractCityFromDescription(descRaw = "") {
+  if (!descRaw) return null;
+
+  const norm = String(descRaw)
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+
+  const lines = norm.split("\n").map(l => l.trim()).filter(Boolean);
+
+  for (const line of lines) {
+    const low = line
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/\p{Diacritic}/gu, "");
+
+    if (low.startsWith("stav:")) continue;
+    if (low.startsWith("ukonceni:")) continue;
+    if (low.startsWith("vyhlaseni:")) continue;
+    if (low.startsWith("ohlaseni:")) continue;
+    if (low.startsWith("okres ")) continue;
+    if (line.length < 2) continue;
+
+    return line;
+  }
+  return null;
 }
 
 function parseCzDateToIso(s) {
@@ -87,444 +103,573 @@ function parseCzDateToIso(s) {
     .normalize("NFD")
     .replace(/\p{Diacritic}/gu, "");
 
-  // očekávaný formát např. "2. února 2026, 17:27"
-  const m = norm.match(/(\d{1,2})\.\s*([a-z]+)\s*(\d{4}).*?(\d{1,2}):(\d{2})/i);
+  const months = {
+    ledna: 1, unora: 2, brezna: 3, dubna: 4, kvetna: 5, cervna: 6,
+    cervence: 7, srpna: 8, zari: 9, rijna: 10, listopadu: 11, prosince: 12
+  };
+
+  const m = norm.match(/(\d{1,2})\.?\s+([a-z]+)\s+(\d{4}),\s*(\d{1,2}):(\d{2})/);
   if (!m) return null;
 
-  const d = Number(m[1]);
+  const day = Number(m[1]);
   const monName = m[2];
-  const y = Number(m[3]);
+  const year = Number(m[3]);
   const hh = Number(m[4]);
   const mm = Number(m[5]);
 
-  const months = {
-    ledna: 0,
-    unora: 1,
-    brezna: 2,
-    dubna: 3,
-    kvetna: 4,
-    cervna: 5,
-    cervence: 6,
-    srpna: 7,
-    zari: 8,
-    rijna: 9,
-    listopadu: 10,
-    prosince: 11,
-  };
+  const month = months[monName];
+  if (!month) return null;
 
-  const mon = months[monName];
-  if (mon == null) return null;
-
-  // Czech local time -> ISO (Z)
-  const dt = new Date(Date.UTC(y, mon, d, hh - 1, mm, 0)); // Prague ~ CET/CEST; jednoduchý posun (funguje pro náš případ)
+  const dt = new Date(Date.UTC(year, month - 1, day, hh, mm, 0));
   if (Number.isNaN(dt.getTime())) return null;
-  return dt.toISOString().replace(".000Z", "Z");
+  return dt.toISOString();
 }
 
 function parseTimesFromDescription(descRaw = "") {
-  // RSS description mívá entity + <br>. Převod na řádky.
   const norm = String(descRaw)
+    .replace(/<br\s*\/?>/gi, "\n")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
-    .replace(/&amp;/g, "&")
-    .replace(/<br\s*\/?>/gi, "\n");
+    .replace(/&amp;/g, "&");
 
-  const lines = norm
-    .split("\n")
-    .map((l) => String(l).trim())
-    .filter(Boolean);
+  const lines = norm.split("\n").map(l => l.trim()).filter(Boolean);
 
   let startText = null;
+  let endText = null;
   let isClosed = false;
 
   for (const line of lines) {
-    const low = line
+    const n = line
       .toLowerCase()
       .normalize("NFD")
       .replace(/\p{Diacritic}/gu, "");
 
-    // ✅ uzavření bereme jen ze "stav:"
-    if (low.startsWith("stav:")) {
-      const v = line.split(":").slice(1).join(":").trim();
-      const vNorm = v
-        .toLowerCase()
-        .normalize("NFD")
-        .replace(/\p{Diacritic}/gu, "");
-      if (vNorm.includes("ukoncena") || vNorm.includes("ukonceno")) isClosed = true;
-      continue;
-    }
-
-    if (low.startsWith("vyhlaseni:") || low.startsWith("ohlaseni:")) {
-      startText = line.split(":").slice(1).join(":").trim();
-      continue;
+    if (n.startsWith("vyhlaseni:")) startText = line.split(":").slice(1).join(":").trim();
+    if (n.startsWith("ohlaseni:")) startText = startText || line.split(":").slice(1).join(":").trim();
+    if (n.startsWith("ukonceni:")) {
+      endText = line.split(":").slice(1).join(":").trim();
+      isClosed = true;
     }
   }
 
-  const startIso = parseCzDateToIso(startText);
-
   return {
-    startIso,
-    // ✅ end_time posíláme jako NOW, ale DB ho použije jen při prvním uzavření
-    endIso: isClosed ? new Date().toISOString().replace(".000Z", "Z") : null,
-    isClosed,
+    startIso: parseCzDateToIso(startText),
+    endIso: parseCzDateToIso(endText),
+    isClosed
   };
 }
 
-async function fetchJson(url) {
-  const r = await fetch(url, { headers: { "User-Agent": GEOCODE_UA, Accept: "application/json" } });
-  if (!r.ok) return null;
-  return await r.json();
-}
-
-async function geocodePlace(q) {
-  if (!q) return null;
-
-  const cached = await getCachedGeocode(q);
-  if (cached && typeof cached.lat === "number" && typeof cached.lon === "number") {
-    if (!inBounds(cached.lat, cached.lon, CZ_BOUNDS) || !inBounds(cached.lat, cached.lon, STC_BOUNDS)) {
-      await deleteCachedGeocode(q);
-    } else {
-      return cached;
-    }
-  }
-
-  const base = "https://nominatim.openstreetmap.org/search";
-  const url = `${base}?format=json&limit=1&addressdetails=1&q=${encodeURIComponent(
-    q + ", Středočeský kraj, Czechia"
-  )}`;
-  const j = await fetchJson(url);
-  if (!j || !Array.isArray(j) || j.length === 0) return null;
-
-  const item = j[0];
-  const lat = Number(item.lat);
-  const lon = Number(item.lon);
-  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
-  if (!inBounds(lat, lon, CZ_BOUNDS) || !inBounds(lat, lon, STC_BOUNDS)) return null;
-
-  await setCachedGeocode(q, lat, lon);
-  return { lat, lon };
-}
-
-function minutesBetweenIso(startIso, endIso) {
-  const a = new Date(startIso);
-  const b = new Date(endIso);
-  const ta = a.getTime();
-  const tb = b.getTime();
-  if (!Number.isFinite(ta) || !Number.isFinite(tb)) return null;
-
-  const diffMin = Math.round((tb - ta) / 60000);
-  if (diffMin <= 0) return null;
-  if (diffMin > MAX_DURATION_MINUTES) return null;
-  return diffMin;
-}
-
-async function computeDurationMin(evId, startIso, endIso) {
+// ✅ fix na extrémní / nesmyslné délky
+async function computeDurationMin(id, startIso, endIso, createdAtFallback) {
   if (!endIso) return null;
 
-  // pokud startIso chybí, zkus DB first_seen
-  let start = startIso;
-  if (!start) {
-    const firstSeen = await getEventFirstSeen(evId);
-    if (firstSeen) start = new Date(firstSeen).toISOString().replace(".000Z", "Z");
-  }
-  if (!start) return null;
+  const nowMs = Date.now();
 
-  return minutesBetweenIso(start, endIso);
-}
+  let startMs = startIso ? new Date(startIso).getTime() : NaN;
 
-async function backfillDurations(rows, limit = 80) {
-  let fixed = 0;
-  const slice = rows
-    .filter((r) => {
-      if (!(r?.is_closed && r?.closed_detected_at && (!Number.isFinite(r.duration_min) || r.duration_min <= 0)))
-        return false;
-      if (!TRACKING_START_ISO) return true;
-      const ts = new Date(TRACKING_START_ISO).getTime();
-      const st = r.start_time_iso ? new Date(r.start_time_iso).getTime() : NaN;
-      if (Number.isFinite(st) && st < ts) return false;
-      return true;
-    })
-    .slice(0, limit);
-
-  for (const r of slice) {
-    const startIso = r.start_time_iso || r.pub_date;
-    const endIso = r.end_time_iso;
-    if (!startIso || !endIso) continue;
-
-    const durMin = minutesBetweenIso(startIso, endIso);
-    if (!durMin) continue;
-
-    await updateEventDuration(r.id, durMin);
-    r.duration_min = durMin;
-    fixed++;
+  if (!Number.isFinite(startMs)) {
+    const firstSeen = await getEventFirstSeen(id);
+    if (firstSeen) startMs = new Date(firstSeen).getTime();
   }
 
-  return fixed;
-}
-
-async function backfillCoords(rows, limit = 8) {
-  let fixed = 0;
-  const slice = rows.filter((r) => r.lat == null || r.lon == null).slice(0, limit);
-
-  for (const r of slice) {
-    const q = r.city_text && String(r.city_text).trim() ? String(r.city_text).trim() : null;
-    const place = q || (r.place_text ? String(r.place_text).trim() : null);
-    if (!place) continue;
-
-    const geo = await geocodePlace(place);
-    if (!geo) continue;
-
-    await updateEventCoords(r.id, geo.lat, geo.lon);
-    r.lat = geo.lat;
-    r.lon = geo.lon;
-    fixed++;
+  if (!Number.isFinite(startMs) && createdAtFallback) {
+    const ca = new Date(createdAtFallback).getTime();
+    if (Number.isFinite(ca)) startMs = ca;
   }
 
-  return fixed;
+  const endMs = new Date(endIso).getTime();
+
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return null;
+
+  if (endMs > nowMs + FUTURE_END_TOLERANCE_MS) return null;
+
+  const dur = Math.round((endMs - startMs) / 60000);
+
+  if (!Number.isFinite(dur) || dur <= 0) return null;
+  if (dur > MAX_DURATION_MINUTES) return null;
+
+  return dur;
 }
 
-async function sanitizeCoords(rows, limit = 120) {
-  // Pokud se v DB historicky uložily špatné souřadnice (Polsko apod.),
-  // tak je při čtení automaticky vyčistíme, aby se už nikdy nevykreslily na mapě.
-  let cleared = 0;
+function normalizePlaceQuery(placeText) {
+  const raw = String(placeText || "").trim();
+  if (!raw) return "";
+  return raw.replace(/^okres\s+/i, "").replace(/^ok\.\s*/i, "").trim();
+}
 
-  const slice = (rows || [])
-    .filter((r) => r?.lat != null && r?.lon != null)
-    .slice(0, limit);
+// ---------------- GEOCODE (CZ ONLY) ----------------
+async function geocodePlace(placeText) {
+  if (!placeText || placeText.trim().length < 2) return null;
 
-  for (const r of slice) {
-    const lat = Number(r.lat);
-    const lon = Number(r.lon);
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+  const cached = await getCachedGeocode(placeText);
+  if (cached && typeof cached.lat === "number" && typeof cached.lon === "number") {
+    return { lat: cached.lat, lon: cached.lon, cached: true };
+  }
 
-    // musí sedět ČR i Středočeský kraj bbox (extra pojistka)
-    if (!inBounds(lat, lon, CZ_BOUNDS) || !inBounds(lat, lon, STC_BOUNDS)) {
-      await clearEventCoords(r.id);
-      r.lat = null;
-      r.lon = null;
-      cleared++;
+  const cleaned = normalizePlaceQuery(placeText);
+
+  const candidates = [];
+  candidates.push(String(placeText).trim());
+  if (cleaned && cleaned !== String(placeText).trim()) candidates.push(cleaned);
+  if (cleaned) candidates.push(`${cleaned}, Czechia`);
+  candidates.push(`${String(placeText).trim()}, Czechia`);
+
+  const CZ_VIEWBOX = "12.09,51.06,18.87,48.55";
+
+  for (const q of candidates) {
+    const url = new URL("https://nominatim.openstreetmap.org/search");
+    url.searchParams.set("format", "json");
+    url.searchParams.set("limit", "3");
+    url.searchParams.set("q", q);
+
+    url.searchParams.set("countrycodes", "cz");
+    url.searchParams.set("addressdetails", "1");
+    url.searchParams.set("bounded", "1");
+    url.searchParams.set("viewbox", CZ_VIEWBOX);
+
+    const r = await fetch(url.toString(), {
+      headers: { "User-Agent": GEOCODE_UA, "Accept-Language": "cs,en;q=0.8" }
+    });
+    if (!r.ok) continue;
+
+    const data = await r.json();
+    if (!Array.isArray(data) || data.length === 0) continue;
+
+    for (const cand of data) {
+      const lat = Number(cand.lat);
+      const lon = Number(cand.lon);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+
+      const cc = String(cand?.address?.country_code || "").toLowerCase();
+      if (cc && cc !== "cz") continue;
+
+      await setCachedGeocode(placeText, lat, lon);
+      return { lat, lon, cached: false, qUsed: q };
     }
   }
 
-  return cleared;
+  return null;
 }
 
-function normalizeFilters(req) {
-  return {
-    day: String(req.query.day || "all").trim(), // today|yesterday|all
-    status: String(req.query.status || "all").trim(), // all|open|closed
-    city: String(req.query.city || "").trim(),
-    month: String(req.query.month || "").trim(), // YYYY-MM
-    types: req.query.type ? [String(req.query.type).trim()] : [],
-  };
+function parseFilters(req) {
+  const typeQ = String(req.query.type || "").trim();
+  const city = String(req.query.city || "").trim();
+  const status = String(req.query.status || "all").trim().toLowerCase();
+
+  const day = String(req.query.day || "today").trim().toLowerCase();
+  const month = String(req.query.month || "").trim();
+
+  const types = typeQ ? typeQ.split(",").map(s => s.trim()).filter(Boolean) : [];
+  const normStatus = ["all", "open", "closed"].includes(status) ? status : "all";
+  const normDay = ["today", "yesterday", "all"].includes(day) ? day : "today";
+  const normMonth = /^\d{4}-\d{2}$/.test(month) ? month : "";
+
+  return { types, city, status: normStatus, day: normDay, month: normMonth };
 }
 
-// ---------------- API ----------------
+// ✅ dopočítávání délky (uložení do DB)
+async function backfillDurations(rows, max = 40) {
+  const candidates = rows
+    .filter(r => r?.is_closed && r?.end_time_iso && (r.duration_min == null))
+    .slice(0, Math.max(0, Math.min(max, 200)));
+
+  let fixed = 0;
+
+  for (const r of candidates) {
+    const dur = await computeDurationMin(r.id, r.start_time_iso, r.end_time_iso, r.created_at);
+    if (Number.isFinite(dur) && dur > 0) {
+      await updateEventDuration(r.id, dur);
+      r.duration_min = dur;
+      fixed++;
+    }
+  }
+
+  return fixed;
+}
+
+async function backfillCoords(rows, max = 8) {
+  const need = rows
+    .filter(r => ((r.city_text || r.place_text) && (r.lat == null || r.lon == null)))
+    .slice(0, Math.max(0, Math.min(max, 20)));
+
+  let fixed = 0;
+  for (const r of need) {
+    try {
+      const q = r.city_text || r.place_text;
+      const g = await geocodePlace(q);
+      if (g) {
+        await updateEventCoords(r.id, g.lat, g.lon);
+        r.lat = g.lat;
+        r.lon = g.lon;
+        fixed++;
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return fixed;
+}
+
+// ---------------- PDF FONT (robust minimal) ----------------
+function findFontPath() {
+  const p = path.join(__dirname, "assets", "DejaVuSans.ttf");
+  if (fs.existsSync(p)) return p;
+  return null;
+}
+
+function tryApplyPdfFont(doc) {
+  const p = findFontPath();
+  if (!p) return { ok: false, fontPath: null, reason: "not_found" };
+  try {
+    doc.registerFont("CZ", p);
+    doc.font("CZ");
+    return { ok: true, fontPath: p, reason: "ok" };
+  } catch (e) {
+    return { ok: false, fontPath: p, reason: `load_failed_${e?.message || "unknown"}` };
+  }
+}
+
+function typeLabel(t) {
+  switch (t) {
+    case "fire": return "požár";
+    case "traffic": return "nehoda";
+    case "tech": return "technická";
+    case "rescue": return "záchrana";
+    case "false_alarm": return "planý poplach";
+    default: return "jiné";
+  }
+}
+
+// ---------------- ROUTES ----------------
+
+// ingest (data z ESP)
 app.post("/api/ingest", requireKey, async (req, res) => {
   try {
-    const items = Array.isArray(req.body?.items) ? req.body.items : [];
-    let accepted = 0;
+    const { source, items } = req.body || {};
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ ok: false, error: "items missing" });
+    }
 
-    // tracking start (persistuje v DB) – jen odtud počítáme "nejdelší zásahy" aby historické backlogy nedělaly extrémy
-    if (!TRACKING_START_ISO) TRACKING_START_ISO = await getTrackingStartIso();
+    let accepted = 0;
+    let updatedClosed = 0;
+    let geocoded = 0;
 
     for (const it of items) {
-      const id = String(it.guid || it.id || it.link || it.title || "").trim();
-      if (!id) continue;
+      if (!it?.id || !it?.title || !it?.link) continue;
 
-      const title = String(it.title || "").trim();
-      const link = String(it.link || "").trim();
-      const pubDate = String(it.pubDate || it.pub_date || it.pub_date_text || "").trim();
-      const descriptionRaw = String(it.description || it.description_raw || "").trim();
+      const eventType = it.eventType || classifyType(it.title);
+      const desc = it.descriptionRaw || it.descRaw || it.description || "";
+      const times = parseTimesFromDescription(desc);
 
-      const times = parseTimesFromDescription(descriptionRaw);
+      const startIso = it.startTimeIso || times.startIso || null;
+      const endIso = it.endTimeIso || times.endIso || null;
+      const isClosed = !!times.isClosed;
 
-      // start: prefer vyhlášení/ohlášení, pak pubDate
-      const startIso =
-        times.startIso ||
-        (() => {
-          const d = new Date(pubDate);
-          if (Number.isNaN(d.getTime())) return null;
-          return d.toISOString().replace(".000Z", "Z");
-        })();
-
-      const isClosed = Boolean(times.isClosed);
-      const endIso = isClosed ? times.endIso || null : null;
-
-      // duration jen pokud zavřeno (a DB ji uloží jen při prvním uzavření)
       let durationMin = null;
-      if (isClosed) {
-        // jen nové události od TRACKING_START (historické necháme bez délky)
-        const ts = TRACKING_START_ISO ? new Date(TRACKING_START_ISO).getTime() : null;
-        const st = startIso ? new Date(startIso).getTime() : null;
-        const pb = pubDate ? new Date(pubDate).getTime() : null;
-
-        const isNewEnough =
-          ts == null ||
-          (Number.isFinite(st) && st >= ts) ||
-          (!Number.isFinite(st) && Number.isFinite(pb) && pb >= ts);
-
-        if (isNewEnough) {
-          durationMin = await computeDurationMin(id, startIso, endIso);
-        } else {
-          durationMin = null;
-        }
+      if (Number.isFinite(it.durationMin)) {
+        const candidate = Math.round(it.durationMin);
+        durationMin = (candidate > 0 && candidate <= MAX_DURATION_MINUTES) ? candidate : null;
+      } else if (isClosed && endIso) {
+        durationMin = await computeDurationMin(it.id, startIso, endIso, null);
       }
 
-      await upsertEvent({
-        id,
-        title,
-        link,
-        pubDate: pubDate || null,
-        placeText: String(it.place || it.place_text || "").trim() || null,
-        cityText: String(it.city || it.city_text || "").trim() || null,
-        statusText: String(it.status || it.status_text || "").trim() || null,
-        eventType: classifyType(title),
-        descriptionRaw,
+      const placeText = it.placeText || null;
+      const cityFromDesc = extractCityFromDescription(desc);
+      const cityFromTitle = extractCityFromTitle(it.title);
+
+      const cityText =
+        it.cityText ||
+        cityFromDesc ||
+        (!placeText ? cityFromTitle : (isDistrictPlace(placeText) ? cityFromTitle : placeText)) ||
+        null;
+
+      const ev = {
+        id: it.id,
+        title: it.title,
+        link: it.link,
+        pubDate: it.pubDate || null,
+        placeText,
+        cityText,
+        statusText: it.statusText || null,
+        eventType,
+        descriptionRaw: desc || null,
         startTimeIso: startIso,
         endTimeIso: endIso,
         durationMin,
-        isClosed,
-      });
+        isClosed
+      };
 
+      await upsertEvent(ev);
       accepted++;
+
+      if (ev.isClosed) updatedClosed++;
+
+      const geoQuery = ev.cityText || ev.placeText;
+      if (geoQuery) {
+        const g = await geocodePlace(geoQuery);
+        if (g) {
+          await updateEventCoords(ev.id, g.lat, g.lon);
+          geocoded++;
+        }
+      }
     }
 
-    res.json({ ok: true, accepted });
+    res.json({
+      ok: true,
+      source: source || "unknown",
+      accepted,
+      closed_seen_in_batch: updatedClosed,
+      geocoded
+    });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e?.message || "ingest failed" });
+    console.error(e);
+    res.status(500).json({ ok: false, error: "server error" });
   }
 });
 
+// events (filters) + backfill coords + backfill duration
 app.get("/api/events", async (req, res) => {
-  try {
-    const limit = Math.max(1, Math.min(5000, Number(req.query.limit || 400)));
-    const filters = normalizeFilters(req);
+  const limit = Math.min(Number(req.query.limit || 400), 2000);
+  const filters = parseFilters(req);
 
-    const rows = await getEventsFiltered(filters, limit);
+  const rows = await getEventsFiltered(filters, limit);
 
-    // malé údržby "za běhu"
-    await sanitizeCoords(rows, 120);
+  const fixedCoords = await backfillCoords(rows, 8);
+  const fixedDur = await backfillDurations(rows, 80);
 
-    await backfillDurations(rows, 80);
-    await backfillCoords(rows, 8);
-
-    res.json({ ok: true, items: rows });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e?.message || "events failed" });
-  }
+  res.json({ ok: true, filters, backfilled_coords: fixedCoords, backfilled_durations: fixedDur, items: rows });
 });
 
+// ✅ stats (30 dní) – vždy ze všech dnů (ignoruje filtr "Den")
 app.get("/api/stats", async (req, res) => {
-  try {
-    const filters = normalizeFilters(req);
-    const stats = await getStatsFiltered(filters);
-    res.json({ ok: true, ...stats });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e?.message || "stats failed" });
-  }
+  const filters = parseFilters(req);
+
+  // ✅ klíčová změna: statistika se nikdy nefiltruje podle dne
+  const statsFilters = { ...filters, day: "all" };
+
+  const stats = await getStatsFiltered(statsFilters);
+
+  const openCount = stats?.openVsClosed?.open ?? 0;
+  const closedCount = stats?.openVsClosed?.closed ?? 0;
+
+  res.json({ ok: true, filters: statsFilters, ...stats, openCount, closedCount });
 });
 
-// -------- PDF EXPORT --------
-app.get("/api/export/pdf", async (req, res) => {
+// export CSV
+app.get("/api/export.csv", async (req, res) => {
+  const filters = parseFilters(req);
+  const limit = Math.min(Number(req.query.limit || 2000), 5000);
+  const rows = await getEventsFiltered(filters, limit);
+
+  await backfillDurations(rows, 500);
+
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="jpo_vyjezdy_export.csv"`);
+
+  const csvEscape = (v) => {
+    const s = String(v ?? "");
+    if (/[",\n\r;]/.test(s)) return `"${s.replaceAll('"', '""')}"`;
+    return s;
+  };
+
+  const formatDateForCsv = (v) => {
+    if (!v) return "";
+    const d = new Date(v);
+    if (Number.isNaN(d.getTime())) return String(v);
+    return d.toISOString();
+  };
+
+  const header = [
+    "time_iso",
+    "state",
+    "type",
+    "title",
+    "city",
+    "place_text",
+    "status_text",
+    "duration_min",
+    "link"
+  ].join(";");
+
+  const lines = rows.map(r => {
+    const timeIso = formatDateForCsv(r.pub_date || r.created_at);
+    const state = r.is_closed ? "UKONCENO" : "AKTIVNI";
+    const typ = typeLabel(r.event_type || "other");
+    return [
+      csvEscape(timeIso),
+      csvEscape(state),
+      csvEscape(typ),
+      csvEscape(r.title || ""),
+      csvEscape(r.city_text || ""),
+      csvEscape(r.place_text || ""),
+      csvEscape(r.status_text || ""),
+      csvEscape(Number.isFinite(r.duration_min) ? r.duration_min : ""),
+      csvEscape(r.link || "")
+    ].join(";");
+  });
+
+  res.send([header, ...lines].join("\n"));
+});
+
+// export PDF
+app.get("/api/export.pdf", async (req, res) => {
+  const filters = parseFilters(req);
+  const limit = Math.min(Number(req.query.limit || 800), 2000);
+  const rows = await getEventsFiltered(filters, limit);
+
+  await backfillDurations(rows, 500);
+
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `attachment; filename="jpo_vyjezdy_export.pdf"`);
+
+  const doc = new PDFDocument({ size: "A4", layout: "landscape", margin: 24 });
+  doc.pipe(res);
+
+  const font = tryApplyPdfFont(doc);
+
+  const now = new Date();
+  doc.fontSize(18).fillColor("#000").text("JPO výjezdy – export");
+  doc.moveDown(0.2);
+  doc.fontSize(10).fillColor("#333").text(`Vygenerováno: ${now.toLocaleString("cs-CZ")}`);
+  doc.moveDown(0.4);
+
+  if (!font.ok) {
+    doc.fontSize(9).fillColor("#a33").text(`Pozn.: font nelze použít (${font.reason})`);
+    doc.moveDown(0.3);
+  }
+
+  const col = { time: 88, state: 62, type: 78, city: 170, dur: 70, title: 330 };
+  const startX = doc.x;
+  let y = doc.y;
+  const tableWidth = col.time + col.state + col.type + col.city + col.dur + col.title;
+
+  function drawHeader() {
+    doc.fontSize(10).fillColor("#000");
+    doc.text("Čas", startX, y, { width: col.time });
+    doc.text("Stav", startX + col.time, y, { width: col.state });
+    doc.text("Typ", startX + col.time + col.state, y, { width: col.type });
+    doc.text("Město", startX + col.time + col.state + col.type, y, { width: col.city });
+    doc.text("Délka", startX + col.time + col.state + col.type + col.city, y, { width: col.dur });
+    doc.text("Název", startX + col.time + col.state + col.type + col.city + col.dur, y, { width: col.title });
+    y += 14;
+    doc.moveTo(startX, y).lineTo(startX + tableWidth, y).strokeColor("#999").stroke();
+    y += 8;
+    if (font.ok) doc.font("CZ");
+  }
+
+  function rowHeightFor(rowObj) {
+    doc.fontSize(9);
+    const d = new Date(rowObj.pub_date || rowObj.created_at);
+    const timeText = Number.isNaN(d.getTime()) ? String(rowObj.pub_date || rowObj.created_at || "") : d.toLocaleString("cs-CZ");
+    const state = rowObj.is_closed ? "UKONČENO" : "AKTIVNÍ";
+    const typ = typeLabel(rowObj.event_type || "other");
+    const city = String(rowObj.city_text || rowObj.place_text || "");
+    const dur = Number.isFinite(rowObj.duration_min) ? `${rowObj.duration_min} min` : "—";
+    const ttl = String(rowObj.title || "");
+    const opts = { align: "left", lineBreak: true };
+
+    const h = Math.max(
+      doc.heightOfString(timeText, { width: col.time, ...opts }),
+      doc.heightOfString(state, { width: col.state, ...opts }),
+      doc.heightOfString(typ, { width: col.type, ...opts }),
+      doc.heightOfString(city, { width: col.city, ...opts }),
+      doc.heightOfString(dur, { width: col.dur, ...opts }),
+      doc.heightOfString(ttl, { width: col.title, ...opts })
+    );
+    return Math.max(14, Math.ceil(h) + 4);
+  }
+
+  function drawRow(rowObj) {
+    doc.fontSize(9).fillColor("#111");
+    const d = new Date(rowObj.pub_date || rowObj.created_at);
+    const timeText = Number.isNaN(d.getTime()) ? String(rowObj.pub_date || rowObj.created_at || "") : d.toLocaleString("cs-CZ");
+    const state = rowObj.is_closed ? "UKONČENO" : "AKTIVNÍ";
+    const typ = typeLabel(rowObj.event_type || "other");
+    const city = String(rowObj.city_text || rowObj.place_text || "");
+    const dur = Number.isFinite(rowObj.duration_min) ? `${rowObj.duration_min} min` : "—";
+    const ttl = String(rowObj.title || "");
+    const opts = { align: "left", lineBreak: true };
+
+    doc.text(timeText, startX, y, { width: col.time, ...opts });
+    doc.text(state, startX + col.time, y, { width: col.state, ...opts });
+    doc.text(typ, startX + col.time + col.state, y, { width: col.type, ...opts });
+    doc.text(city, startX + col.time + col.state + col.type, y, { width: col.city, ...opts });
+    doc.text(dur, startX + col.time + col.state + col.type + col.city, y, { width: col.dur, ...opts });
+    doc.text(ttl, startX + col.time + col.state + col.type + col.city + col.dur, y, { width: col.title, ...opts });
+  }
+
+  const bottomLimit = () => doc.page.height - doc.page.margins.bottom - 18;
+
+  drawHeader();
+
+  for (const r of rows) {
+    const h = rowHeightFor(r);
+    if (y + h > bottomLimit()) {
+      doc.addPage({ size: "A4", layout: "landscape", margin: 24 });
+      y = doc.y;
+      drawHeader();
+    }
+    drawRow(r);
+    y += h;
+  }
+
+  doc.fontSize(9).fillColor("#444").text(`Záznamů: ${rows.length}`, startX, y + 10);
+  doc.end();
+});
+
+// admin: re-geocode mimo ČR
+app.post("/api/admin/regeocode", requireKey, async (req, res) => {
   try {
-    const filters = normalizeFilters(req);
-    const items = await getEventsFiltered(filters, 5000);
+    const mode = String(req.body?.mode || "outside_cz");
+    const limit = Math.max(1, Math.min(Number(req.body?.limit || 200), 2000));
 
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename="firewatchcz_export.pdf"`);
-
-    const doc = new PDFDocument({ margin: 24, size: "A4" });
-    doc.pipe(res);
-
-    // TTF fonty kvůli diakritice
-    if (fs.existsSync(PDF_FONT_PATH)) doc.font(PDF_FONT_PATH);
-    const fontBoldOk = fs.existsSync(PDF_FONT_BOLD_PATH);
-
-    doc.fontSize(16).text("FireWatch CZ – Export", { align: "left" });
-    doc.moveDown(0.5);
-
-    const now = new Date();
-    doc.fontSize(9).text(`Vygenerováno: ${now.toLocaleString("cs-CZ")}`);
-    doc.moveDown(0.8);
-
-    // hlavička tabulky
-    const cols = [
-      { k: "title", label: "Název", w: 250 },
-      { k: "city_text", label: "Místo", w: 120 },
-      { k: "is_closed", label: "Stav", w: 70 },
-      { k: "duration_min", label: "Délka", w: 55 },
-    ];
-
-    const startX = doc.x;
-    let y = doc.y;
-
-    const rowH = 14;
-
-    const drawRow = (cells, bold = false) => {
-      let x = startX;
-      if (bold && fontBoldOk) doc.font(PDF_FONT_BOLD_PATH);
-      else if (!bold && fs.existsSync(PDF_FONT_PATH)) doc.font(PDF_FONT_PATH);
-
-      doc.fontSize(9);
-
-      for (let i = 0; i < cols.length; i++) {
-        const c = cols[i];
-        const txt = String(cells[i] ?? "");
-        doc.text(txt, x, y, { width: c.w, height: rowH, ellipsis: true });
-        x += c.w;
-      }
-      y += rowH;
-    };
-
-    drawRow(cols.map((c) => c.label), true);
-    y += 2;
-
-    for (const it of items) {
-      const state = it.is_closed ? "UKONČENO" : "AKTIVNÍ";
-      const dur = Number.isFinite(it.duration_min) && it.duration_min > 0 ? `${it.duration_min} min` : "—";
-      const place = it.city_text || it.place_text || "";
-
-      // stránkování
-      if (y > doc.page.height - 60) {
-        doc.addPage();
-        y = doc.y;
-        drawRow(cols.map((c) => c.label), true);
-        y += 2;
-      }
-
-      drawRow([it.title || "", place, state, dur], false);
+    if (mode !== "outside_cz") {
+      return res.status(400).json({ ok: false, error: "mode must be 'outside_cz'" });
     }
 
-    doc.end();
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e?.message || "export pdf failed" });
-  }
-});
+    const bad = await getEventsOutsideCz(limit);
 
-app.post("/api/admin/clear-bad-geocode", async (req, res) => {
-  try {
-    const lim = Math.max(1, Math.min(2000, Number(req.body?.limit || 200)));
-    const rows = await getEventsOutsideCz(lim);
+    let cacheDeleted = 0;
+    let coordsCleared = 0;
+    let reGeocoded = 0;
+    let failed = 0;
 
-    let cleared = 0;
-    for (const r of rows) {
-      await clearEventCoords(r.id);
-      cleared++;
+    for (const ev of bad) {
+      const q = (ev.city_text && String(ev.city_text).trim()) ? ev.city_text : ev.place_text;
+      if (!q) continue;
+
+      await deleteCachedGeocode(q);
+      cacheDeleted++;
+
+      await clearEventCoords(ev.id);
+      coordsCleared++;
+
+      const g = await geocodePlace(q);
+      if (g) {
+        await updateEventCoords(ev.id, g.lat, g.lon);
+        reGeocoded++;
+      } else {
+        failed++;
+      }
     }
 
-    res.json({ ok: true, cleared });
+    res.json({
+      ok: true,
+      mode,
+      processed: bad.length,
+      cache_deleted: cacheDeleted,
+      coords_cleared: coordsCleared,
+      re_geocoded: reGeocoded,
+      failed
+    });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e?.message || "clear failed" });
+    console.error(e);
+    res.status(500).json({ ok: false, error: "server error" });
   }
 });
 
-// bootstrap
+app.get("/health", (req, res) => res.send("OK"));
+
+const port = process.env.PORT || 3000;
 await initDb();
-TRACKING_START_ISO = await getTrackingStartIso();
-
-const PORT = Number(process.env.PORT || 8080);
-app.listen(PORT, () => {
-  // eslint-disable-next-line no-console
-  console.log("listening on", PORT);
-});
+app.listen(port, () => console.log(`listening on ${port}`));
