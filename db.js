@@ -1,13 +1,7 @@
 import pg from "pg";
-
 const { Pool } = pg;
 
 const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || "";
-if (!DATABASE_URL) {
-  // eslint-disable-next-line no-console
-  console.warn("⚠️ DATABASE_URL is not set");
-}
-
 const pool = new Pool({
   connectionString: DATABASE_URL,
   ssl:
@@ -18,14 +12,11 @@ const pool = new Pool({
       : false,
 });
 
-// ISO string (UTC) bez milisekund
+// ISO UTC bez milisekund (TEXT)
 function nowIsoUtcText() {
   return new Date().toISOString().replace(".000Z", "Z");
 }
 
-// -------------------------
-// INIT DB
-// -------------------------
 export async function initDb() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS events (
@@ -53,8 +44,7 @@ export async function initDb() {
 
       first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       last_seen_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
 
@@ -67,37 +57,14 @@ export async function initDb() {
     );
   `);
 
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_events_created_at   ON events (created_at DESC);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_events_last_seen_at ON events (last_seen_at DESC);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_events_is_closed    ON events (is_closed);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_events_event_type   ON events (event_type);`);
 }
 
-// -------------------------
-// UPSERT EVENT
-// -------------------------
 export async function upsertEvent(ev) {
-  const {
-    id,
-    title,
-    link,
-    pubDate,
-    placeText,
-    cityText,
-    statusText,
-    eventType,
-    descriptionRaw,
-    startTimeIso,
-    endTimeIso,
-    durationMin,
-    isClosed,
-  } = ev;
-
   const MAX_DUR = Math.max(60, Number(process.env.DURATION_MAX_MINUTES || 4320));
-
-  // DŮLEŽITÉ: end_time_iso je TEXT -> když nemáme endIso a dojde k prvnímu uzavření,
-  // nastavíme ho jako ISO string (UTC) = text. Ne NOW().
-  const closeNowIso = nowIsoUtcText();
+  const closeNowIso = nowIsoUtcText(); // TEXT
 
   const q = `
     INSERT INTO events (
@@ -107,18 +74,16 @@ export async function upsertEvent(ev) {
       start_time_iso, end_time_iso,
       duration_min, is_closed,
       closed_detected_at,
-      first_seen_at, last_seen_at, updated_at, created_at
+      first_seen_at, last_seen_at, updated_at
     )
     VALUES (
       $1,$2,$3,$4,
       $5,$6,$7,$8,
       $9,
-      $10::text,
-      $11::text,
-      $12::int,
-      $13::boolean,
+      $10::text, $11::text,
+      $12::int, $13::boolean,
       CASE WHEN $13 = TRUE THEN NOW() ELSE NULL END,
-      NOW(), NOW(), NOW(), NOW()
+      NOW(), NOW(), NOW()
     )
     ON CONFLICT (id) DO UPDATE SET
       title = EXCLUDED.title,
@@ -160,23 +125,23 @@ export async function upsertEvent(ev) {
   `;
 
   const values = [
-    id,
-    title || null,
-    link || null,
-    pubDate || null,
+    String(ev.id),
+    ev.title || null,
+    ev.link || null,
+    ev.pubDate || null,
 
-    placeText || null,
-    cityText || null,
-    statusText || null,
-    eventType || null,
+    ev.placeText || null,
+    ev.cityText || null,
+    ev.statusText || null,
+    ev.eventType || null,
 
-    descriptionRaw || null,
+    ev.descriptionRaw || null,
 
-    startTimeIso || null,
-    endTimeIso || null,
+    ev.startTimeIso || null,
+    ev.endTimeIso || null,
 
-    Number.isFinite(durationMin) ? Math.round(durationMin) : null,
-    Boolean(isClosed),
+    Number.isFinite(ev.durationMin) ? Math.round(ev.durationMin) : null,
+    Boolean(ev.isClosed),
 
     MAX_DUR,
     closeNowIso,
@@ -185,9 +150,7 @@ export async function upsertEvent(ev) {
   await pool.query(q, values);
 }
 
-// -------------------------
-// FILTERS
-// -------------------------
+// --------- Queries used by server.js ---------
 function buildWhere(filters) {
   const where = [];
   const params = [];
@@ -196,7 +159,7 @@ function buildWhere(filters) {
   if (filters?.status === "open") where.push(`is_closed = FALSE`);
   if (filters?.status === "closed") where.push(`is_closed = TRUE`);
 
-  if (filters?.types && Array.isArray(filters.types) && filters.types.length > 0) {
+  if (filters?.types?.length) {
     where.push(`event_type = $${i++}`);
     params.push(filters.types[0]);
   }
@@ -231,9 +194,6 @@ function buildWhere(filters) {
   return { whereSql: where.length ? `WHERE ${where.join(" AND ")}` : "", params };
 }
 
-// -------------------------
-// GET EVENTS
-// -------------------------
 export async function getEventsFiltered(filters, limit = 400) {
   const lim = Math.max(1, Math.min(5000, Number(limit || 400)));
   const { whereSql, params } = buildWhere(filters);
@@ -257,9 +217,6 @@ export async function getEventsFiltered(filters, limit = 400) {
   return r.rows || [];
 }
 
-// -------------------------
-// STATS
-// -------------------------
 export async function getStatsFiltered(filters) {
   const { whereSql, params } = buildWhere(filters);
 
@@ -271,7 +228,6 @@ export async function getStatsFiltered(filters) {
     FROM events
     ${whereSql}
   `;
-
   const r = await pool.query(q, params);
   const row = r.rows?.[0] || { total: 0, closed: 0, open: 0 };
 
@@ -287,9 +243,6 @@ export async function getStatsFiltered(filters) {
   return { total: row.total || 0, closed: row.closed || 0, open: row.open || 0, byType: rt.rows || [] };
 }
 
-// -------------------------
-// GEOCODE CACHE
-// -------------------------
 export async function getCachedGeocode(q) {
   const r = await pool.query(`SELECT q, lat, lon FROM geocode_cache WHERE q = $1 LIMIT 1`, [q]);
   return r.rows?.[0] || null;
@@ -310,12 +263,9 @@ export async function setCachedGeocode(q, lat, lon) {
 }
 
 export async function deleteCachedGeocode(q) {
-  await pool.query(`DELETE FROM geocode_cache WHERE q = $1`, [q]);
+  await pool.query(`DELETE FROM geocode_cache WHERE q=$1`, [q]);
 }
 
-// -------------------------
-// COORDS
-// -------------------------
 export async function updateEventCoords(id, lat, lon) {
   await pool.query(`UPDATE events SET lat=$2, lon=$3, updated_at=NOW() WHERE id=$1`, [id, lat, lon]);
 }
@@ -330,9 +280,7 @@ export async function getEventsOutsideCz(limit = 200) {
     SELECT id, lat, lon
     FROM events
     WHERE lat IS NOT NULL AND lon IS NOT NULL
-      AND (
-        lat < 48.55 OR lat > 51.06 OR lon < 12.09 OR lon > 18.87
-      )
+      AND (lat < 48.55 OR lat > 51.06 OR lon < 12.09 OR lon > 18.87)
     ORDER BY last_seen_at DESC
     LIMIT ${lim}
   `;
@@ -340,9 +288,6 @@ export async function getEventsOutsideCz(limit = 200) {
   return r.rows || [];
 }
 
-// -------------------------
-// FIRST SEEN / DURATION
-// -------------------------
 export async function getEventFirstSeen(id) {
   const r = await pool.query(`SELECT first_seen_at FROM events WHERE id=$1 LIMIT 1`, [id]);
   const v = r.rows?.[0]?.first_seen_at || null;
