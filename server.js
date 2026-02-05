@@ -264,6 +264,7 @@ async function geocodePlace(placeText) {
   const candidates = [];
   candidates.push(String(placeText).trim());
   if (cleaned && cleaned !== String(placeText).trim()) candidates.push(cleaned);
+
   // ✅ Středočeský kraj – zvyšuje přesnost u malých obcí a duplicitních názvů
   if (cleaned) candidates.push(`${cleaned}, Středočeský kraj`);
   if (cleaned) candidates.push(`${cleaned}, Stredocesky kraj`);
@@ -271,9 +272,10 @@ async function geocodePlace(placeText) {
   if (cleaned) candidates.push(`${cleaned}, Czechia`);
   if (cleaned) candidates.push(`${cleaned}, Středočeský kraj, Czechia`);
   if (cleaned) candidates.push(`${cleaned}, Central Bohemia, Czechia`);
+
   candidates.push(`${String(placeText).trim()}, Czechia`);
 
-  // původní CZ viewbox byl široký – tady používáme Středočeský kraj
+  // tady používáme Středočeský kraj
   const CZ_VIEWBOX = STC_VIEWBOX;
 
   for (const q of candidates) {
@@ -358,6 +360,7 @@ async function backfillDurations(rows, cutoffIso, max = 40) {
   return fixed;
 }
 
+// ✅ backfill coords: zkus nejdřív "město, okres", pak město, pak place_text
 async function backfillCoords(rows, max = 12) {
   const need = rows
     .filter(r => ((r.city_text || r.place_text) && (r.lat == null || r.lon == null)))
@@ -368,7 +371,6 @@ async function backfillCoords(rows, max = 12) {
     try {
       const district = extractDistrictFromDescription(r.description_raw || "");
 
-      // ✅ přesnější dotaz: "MĚSTO, okres OKRES" -> pak fallback na město -> pak na place_text
       const queries = [];
       if (r.city_text && district) queries.push(`${r.city_text}, okres ${district}`);
       if (r.city_text) queries.push(r.city_text);
@@ -499,7 +501,7 @@ app.post("/api/ingest", requireKey, async (req, res) => {
 
       if (ev.isClosed) updatedClosed++;
 
-      // ✅ zpřesnění polohy: nejdřív zkus "MĚSTO, okres OKRES" (pokud máme), pak město, pak place_text
+      // ✅ zpřesnění polohy: nejdřív zkus "MĚSTO, okres OKRES", pak město, pak place_text
       const geoQueries = [];
       if (ev.cityText && districtFromDesc) geoQueries.push(`${ev.cityText}, okres ${districtFromDesc}`);
       if (ev.cityText) geoQueries.push(ev.cityText);
@@ -612,6 +614,7 @@ app.get("/api/export.csv", async (req, res) => {
   });
 
   res.send([header, ...lines].join("\n"));
+
 });
 
 // export PDF
