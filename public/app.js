@@ -4,6 +4,7 @@ let inFlight = false;
 
 function setStatus(text, ok) {
   const pill = document.getElementById("statusPill");
+  if (!pill) return;
   pill.textContent = text;
   pill.classList.toggle("ok", !!ok);
   pill.classList.toggle("bad", !ok);
@@ -30,7 +31,7 @@ function initMap() {
   map = L.map("map").setView([49.8, 15.3], 7);
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 18,
-    attribution: "© OpenStreetMap"
+    attribution: "© OpenStreetMap",
   }).addTo(map);
 
   markersLayer = L.layerGroup().addTo(map);
@@ -40,17 +41,17 @@ function formatDate(d) {
   if (!d) return "";
   try {
     const dt = new Date(d);
-    if (isNaN(dt.getTime())) return d;
+    if (isNaN(dt.getTime())) return String(d);
     return dt.toLocaleString("cs-CZ");
   } catch {
-    return d;
+    return String(d);
   }
 }
 
 function formatDuration(min) {
   if (!Number.isFinite(min) || min <= 0) return "—";
   const h = Math.floor(min / 60);
-  const m = min % 60;
+  const m = Math.round(min % 60);
   if (h <= 0) return `${m} min`;
   return `${h} h ${m} min`;
 }
@@ -82,20 +83,23 @@ function escapeHtml(s) {
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
 }
 
 function renderTable(items) {
   const tbody = document.getElementById("eventsTbody");
+  if (!tbody) return;
   tbody.innerHTML = "";
 
   for (const it of items) {
     const tr = document.createElement("tr");
     const d = formatDate(it.pub_date || it.created_at);
     const state = it.is_closed ? "UKONČENO" : "AKTIVNÍ";
+
     tr.innerHTML = `
       <td>${escapeHtml(d)}</td>
-      <td class="center">${typeIcon(it.event_type)}</td>
+      <td class="center">${escapeHtml(typeIcon(it.event_type))}</td>
       <td>${escapeHtml(it.title || "")}</td>
       <td>${escapeHtml(it.city_text || it.place_text || "")}</td>
       <td>${escapeHtml(state)}</td>
@@ -107,11 +111,14 @@ function renderTable(items) {
 }
 
 function renderMap(items) {
+  if (!markersLayer || !map) return;
   markersLayer.clearLayers();
 
   const pts = [];
+
   for (const it of items) {
     if (typeof it.lat !== "number" || typeof it.lon !== "number") continue;
+
     const lat = it.lat;
     const lon = it.lon;
     pts.push([lat, lon]);
@@ -128,12 +135,13 @@ function renderMap(items) {
       </div>
     `;
 
+    // ✅ zachovat emotikony i v bodech mapy
     const emoji = typeIcon(it.event_type);
     const icon = L.divIcon({
       className: "emoji-marker",
-      html: `<div style="font-size:22px; line-height:22px;">${emoji}</div>`,
+      html: `<div style="font-size:22px; line-height:22px;">${escapeHtml(emoji)}</div>`,
       iconSize: [26, 26],
-      iconAnchor: [13, 13]
+      iconAnchor: [13, 13],
     });
 
     const m = L.marker([lat, lon], { title: it.title || "", icon }).bindPopup(popupHtml);
@@ -186,18 +194,21 @@ function renderChart(byDay) {
       responsive: true,
       maintainAspectRatio: false,
       plugins: { legend: { display: false } },
-      scales: { x: { ticks: { maxTicksLimit: 6 } }, y: { beginAtZero: true } }
-    }
+      scales: { x: { ticks: { maxTicksLimit: 6 } }, y: { beginAtZero: true } },
+    },
   });
 }
 
 function renderCounts(openCount, closedCount) {
-  document.getElementById("openCount").textContent = String(openCount ?? "—");
-  document.getElementById("closedCount").textContent = String(closedCount ?? "—");
+  const a = document.getElementById("openCount");
+  const b = document.getElementById("closedCount");
+  if (a) a.textContent = String(openCount ?? "—");
+  if (b) b.textContent = String(closedCount ?? "—");
 }
 
 function renderTopCities(topCities) {
   const el = document.getElementById("topCities");
+  if (!el) return;
   el.innerHTML = "";
 
   for (const c of topCities || []) {
@@ -210,6 +221,7 @@ function renderTopCities(topCities) {
 
 function renderLongest(longest) {
   const el = document.getElementById("longestList");
+  if (!el) return;
   el.innerHTML = "";
 
   const items = longest || [];
@@ -239,21 +251,24 @@ function renderLongest(longest) {
 
 function getFiltersFromUi() {
   const day = (document.getElementById("daySelect")?.value || "today").trim();
-  const type = document.getElementById("typeSelect").value.trim();
-  const city = document.getElementById("cityInput").value.trim();
-  const status = document.getElementById("statusSelect").value.trim();
+  const type = (document.getElementById("typeSelect")?.value || "").trim();
+  const city = (document.getElementById("cityInput")?.value || "").trim();
+  const status = (document.getElementById("statusSelect")?.value || "all").trim();
   const month = (document.getElementById("monthInput")?.value || "").trim();
-
-  return { day: day || "today", type: type || "", city: city || "", status: status || "all", month: month || "" };
+  return { day: day || "today", type, city, status: status || "all", month };
 }
 
 function buildQuery(filters) {
   const qs = new URLSearchParams();
-  if (filters.day && filters.day !== "today") qs.set("day", filters.day);
+
+  // ✅ FIX: day posílej vždy (today/yesterday/all), aby mapa+body seděly s tabulkou
+  if (filters.day) qs.set("day", filters.day);
+
   if (filters.type) qs.set("type", filters.type);
   if (filters.city) qs.set("city", filters.city);
   if (filters.status && filters.status !== "all") qs.set("status", filters.status);
   if (filters.month) qs.set("month", filters.month);
+
   return qs.toString();
 }
 
@@ -269,7 +284,7 @@ async function loadAll() {
 
     const [eventsRes, statsRes] = await Promise.all([
       fetch(`/api/events?limit=500${q ? `&${q}` : ""}`),
-      fetch(`/api/stats${q ? `?${q}` : ""}`)
+      fetch(`/api/stats${q ? `?${q}` : ""}`),
     ]);
 
     if (!eventsRes.ok || !statsRes.ok) {
@@ -302,9 +317,12 @@ async function loadAll() {
 function resetFilters() {
   const dayEl = document.getElementById("daySelect");
   if (dayEl) dayEl.value = "today";
-  document.getElementById("typeSelect").value = "";
-  document.getElementById("cityInput").value = "";
-  document.getElementById("statusSelect").value = "all";
+  const t = document.getElementById("typeSelect");
+  if (t) t.value = "";
+  const c = document.getElementById("cityInput");
+  if (c) c.value = "";
+  const s = document.getElementById("statusSelect");
+  if (s) s.value = "all";
   const monthEl = document.getElementById("monthInput");
   if (monthEl) monthEl.value = "";
 }
@@ -312,19 +330,24 @@ function resetFilters() {
 function exportWithFilters(kind) {
   const filters = getFiltersFromUi();
   const q = buildQuery(filters);
-  const url = kind === "pdf" ? `/api/export.pdf${q ? `?${q}` : ""}` : `/api/export.csv${q ? `?${q}` : ""}`;
+
+  const url =
+    kind === "pdf"
+      ? `/api/export.pdf${q ? `?${q}` : ""}`
+      : `/api/export.csv${q ? `?${q}` : ""}`;
+
   window.open(url, "_blank");
 }
 
 // UI events
-document.getElementById("refreshBtn").addEventListener("click", loadAll);
-document.getElementById("applyBtn").addEventListener("click", loadAll);
-document.getElementById("resetBtn").addEventListener("click", () => {
+document.getElementById("refreshBtn")?.addEventListener("click", loadAll);
+document.getElementById("applyBtn")?.addEventListener("click", loadAll);
+document.getElementById("resetBtn")?.addEventListener("click", () => {
   resetFilters();
   loadAll();
 });
-document.getElementById("exportCsvBtn").addEventListener("click", () => exportWithFilters("csv"));
-document.getElementById("exportPdfBtn").addEventListener("click", () => exportWithFilters("pdf"));
+document.getElementById("exportCsvBtn")?.addEventListener("click", () => exportWithFilters("csv"));
+document.getElementById("exportPdfBtn")?.addEventListener("click", () => exportWithFilters("pdf"));
 
 // map resize
 let resizeTimer = null;
