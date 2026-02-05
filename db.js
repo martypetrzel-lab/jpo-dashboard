@@ -402,7 +402,7 @@ export async function getEventsFiltered(filters = {}, limit = 400) {
     SELECT *
     FROM events
     ${whereSql}
-    ORDER BY pub_date DESC NULLS LAST, last_seen_at DESC
+    ORDER BY ${eventTime} DESC NULLS LAST, pub_date DESC NULLS LAST, last_seen_at DESC
     LIMIT ${lim}
   `;
   const r = await pool.query(q, params);
