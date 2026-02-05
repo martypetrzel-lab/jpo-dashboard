@@ -14,10 +14,6 @@ function typeMeta(t) {
   return TYPE[t] || TYPE.other;
 }
 
-function typeEmoji(t) {
-  return typeMeta(t).emoji;
-}
-
 function statusEmoji(isClosed) {
   return isClosed ? "✅" : "🔴";
 }
@@ -67,7 +63,7 @@ function escapeHtml(s) {
 }
 
 // ✅ běžící délka pro AKTIVNÍ zásah (když duration_min chybí)
-const LIVE_DURATION_MAX_MIN = 4320; // 3 dny (stejné jako server default)
+const LIVE_DURATION_MAX_MIN = 4320; // 3 dny
 
 function getLiveDurationMin(it) {
   try {
@@ -88,8 +84,8 @@ function getLiveDurationMin(it) {
 
     const diffMin = Math.floor((now - startMs) / 60000);
     if (!Number.isFinite(diffMin) || diffMin < 1) return 1;
-
     if (diffMin > LIVE_DURATION_MAX_MIN) return null;
+
     return diffMin;
   } catch {
     return null;
@@ -127,26 +123,21 @@ function renderTable(items) {
   }
 }
 
-// ✅ NOVÝ: pin marker – čitelný i z dálky
+/**
+ * ✅ MAP MARKER = jen čisté emoji (bez bublin/pinů)
+ */
 function makeMarkerIcon(typeKey, isClosed) {
   const meta = typeMeta(typeKey);
-  const closedCls = isClosed ? "pin-closed" : "";
+  const cls = isClosed ? "fw-emoji fw-emoji-closed" : "fw-emoji";
 
   return L.divIcon({
-    className: "fw-pin",
-    html: `
-      <div class="pin ${meta.cls} ${closedCls}">
-        <div class="pin-inner">
-          <span class="pin-emoji">${meta.emoji}</span>
-        </div>
-      </div>
-    `,
-    iconSize: [38, 46],
-    iconAnchor: [19, 46],
-    popupAnchor: [0, -38]
+    className: "fw-emoji-wrap",
+    html: `<div class="${cls}" title="${escapeHtml(meta.label)}">${meta.emoji}</div>`,
+    iconSize: [26, 26],
+    iconAnchor: [13, 13],
+    popupAnchor: [0, -14]
   });
 }
-
 
 function renderMap(items) {
   markersLayer.clearLayers();
@@ -366,7 +357,7 @@ window.addEventListener("orientationchange", () => safeInvalidateMap());
 initMap();
 loadAll();
 
-// ✅ AUTO REFRESH každé 2 minuty (nezničí filtry, jen znovu načte data)
+// AUTO REFRESH každých 5 minut (stabilní 1.02 – beze změny)
 setInterval(() => {
   loadAll();
-}, 2 * 60 * 1000);
+}, 5 * 60 * 1000);

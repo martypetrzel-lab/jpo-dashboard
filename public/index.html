@@ -4,7 +4,6 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <meta name="theme-color" content="#0b0f14" />
-
   <title>FireWatch CZ – Přehled a statistiky zásahů JPO</title>
 
   <!-- 🔥 FAVICON – plamínek místo glóbusu -->
@@ -93,12 +92,10 @@
           <button id="exportPdfBtn" class="btn">Export PDF</button>
         </div>
       </div>
-
     </div>
   </section>
 
   <main class="grid">
-
     <section class="card mapCard">
       <div class="cardHeader">
         <h2>Mapa výjezdů</h2>
@@ -166,26 +163,24 @@
       <div class="tableWrap" role="region" aria-label="Tabulka výjezdů" tabindex="0">
         <table>
           <thead>
-            <tr>
-              <th>Čas</th>
-              <th>Typ</th>
-              <th>Název</th>
-              <th>Město</th>
-              <th>Stav</th>
-              <th>Délka</th>
-              <th>Odkaz</th>
-            </tr>
+          <tr>
+            <th>Čas</th>
+            <th>Typ</th>
+            <th>Název</th>
+            <th>Město</th>
+            <th>Stav</th>
+            <th>Délka</th>
+            <th>Odkaz</th>
+          </tr>
           </thead>
           <tbody id="eventsTbody"></tbody>
         </table>
       </div>
     </section>
-
   </main>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script src="app.js"></script>
-
 </body>
 </html>
