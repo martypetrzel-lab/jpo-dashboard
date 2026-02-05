@@ -2,100 +2,92 @@
 <html lang="cs">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-  <meta name="theme-color" content="#0b0f14" />
-  <title>FireWatch CZ – Přehled a statistiky zásahů JPO</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>FirewatchCZ – JPO Dashboard</title>
 
-  <!-- 🔥 FAVICON – plamínek místo glóbusu -->
-  <link
-    rel="icon"
-    type="image/svg+xml"
-    href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔥</text></svg>"
-  >
+  <link rel="icon" href="/logo-firewatch-cz.png" />
 
-  <link rel="stylesheet" href="styles.css" />
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <link rel="preconnect" href="https://unpkg.com" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+
+  <link rel="stylesheet" href="/styles.css" />
 </head>
+
 <body>
+<header class="topbar">
+  <div class="brandWrap">
+    <img class="logo" src="/logo-firewatch-cz.png" alt="FirewatchCZ" />
+    <div class="brand">FirewatchCZ</div>
+  </div>
+  <div class="status" id="statusText">—</div>
+</header>
 
-  <header class="topbar">
-    <div class="title">
-      <h1 class="brand">
-        <span class="brandMain">FireWatch</span>
-        <span class="brandCz">CZ</span>
-      </h1>
-      <div class="sub">Přehled a statistiky zásahů JPO</div>
+<section class="filters">
+  <div class="filtersRow">
+    <div class="field">
+      <label for="daySelect">Den (mapa + tabulka)</label>
+      <select id="daySelect">
+        <option value="today" selected>dnes</option>
+        <option value="yesterday">včera</option>
+        <option value="all">vše</option>
+      </select>
     </div>
 
-    <div class="actions">
-      <span id="statusPill" class="pill">…</span>
-      <button id="refreshBtn" class="btn">Obnovit</button>
+    <div class="field">
+      <label for="typeSelect">Typ</label>
+      <select id="typeSelect">
+        <option value="">vše</option>
+        <option value="fire">požár</option>
+        <option value="traffic">nehoda</option>
+        <option value="tech">technická</option>
+        <option value="rescue">záchrana</option>
+        <option value="false_alarm">planý poplach</option>
+        <option value="other">jiné</option>
+      </select>
     </div>
-  </header>
 
-  <section class="filters">
-    <div class="filtersRow">
+    <div class="field">
+      <label for="cityInput">Město</label>
+      <input id="cityInput" type="text" placeholder="např. Nehvizdy" />
+    </div>
 
-      <div class="field">
-        <label for="daySelect">Den (mapa + tabulka)</label>
-        <select id="daySelect">
-          <option value="today" selected>dnes</option>
-          <option value="yesterday">včera</option>
-          <option value="all">vše</option>
-        </select>
-      </div>
+    <div class="field">
+      <label for="statusSelect">Stav</label>
+      <select id="statusSelect">
+        <option value="all">vše</option>
+        <option value="open">aktivní</option>
+        <option value="closed">ukončené</option>
+      </select>
+    </div>
 
-      <div class="field">
-        <label for="typeSelect">Typ</label>
-        <select id="typeSelect">
-          <option value="">vše</option>
-          <option value="fire">požár</option>
-          <option value="traffic">nehoda</option>
-          <option value="tech">technická</option>
-          <option value="rescue">záchrana</option>
-          <option value="false_alarm">planý poplach</option>
-          <option value="other">jiné</option>
-        </select>
-      </div>
+    <div class="field">
+      <label for="monthInput">Měsíc (statistika měst)</label>
+      <input id="monthInput" type="month" />
+    </div>
 
-      <div class="field">
-        <label for="cityInput">Město</label>
-        <input id="cityInput" type="text" placeholder="např. Nehvizdy" />
-      </div>
-
-      <div class="field">
-        <label for="statusSelect">Stav</label>
-        <select id="statusSelect">
-          <option value="all">vše</option>
-          <option value="open">aktivní</option>
-          <option value="closed">ukončené</option>
-        </select>
-      </div>
-
-      <div class="field">
-        <label for="monthInput">Měsíc (statistika měst)</label>
-        <input id="monthInput" type="month" />
-      </div>
-
-      <div class="field buttons">
-        <label class="ghost">Akce</label>
-        <div class="btnRow">
-          <button id="applyBtn" class="btn primary">Použít</button>
-          <button id="resetBtn" class="btn">Reset</button>
-        </div>
-      </div>
-
-      <div class="field buttons">
-        <label class="ghost">Export</label>
-        <div class="btnRow">
-          <button id="exportCsvBtn" class="btn">Export CSV</button>
-          <button id="exportPdfBtn" class="btn">Export PDF</button>
-        </div>
+    <div class="field buttons">
+      <label class="ghost">Akce</label>
+      <div class="btnRow">
+        <button id="applyBtn" class="btn primary">Použít</button>
+        <button id="resetBtn" class="btn">Reset</button>
       </div>
     </div>
-  </section>
 
-  <main class="grid">
+    <div class="field buttons">
+      <label class="ghost">Export</label>
+      <div class="btnRow">
+        <button id="exportCsvBtn" class="btn">Export CSV</button>
+        <button id="exportPdfBtn" class="btn">Export PDF</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<main class="gridCols">
+  <div class="col">
     <section class="card mapCard">
       <div class="cardHeader">
         <h2>Mapa výjezdů</h2>
@@ -109,16 +101,6 @@
         </div>
       </div>
       <div id="map"></div>
-    </section>
-
-    <section class="card">
-      <div class="cardHeader">
-        <h2>Statistika (30 dní)</h2>
-        <div class="hint">Počet výjezdů po dnech</div>
-      </div>
-      <div class="canvasWrap">
-        <canvas id="chartByDay" height="140"></canvas>
-      </div>
     </section>
 
     <section class="card">
@@ -140,16 +122,8 @@
 
     <section class="card">
       <div class="cardHeader">
-        <h2>Žebříček měst</h2>
-        <div class="hint">Top 15 (30 dní)</div>
-      </div>
-      <div class="list" id="topCities"></div>
-    </section>
-
-    <section class="card">
-      <div class="cardHeader">
         <h2>Nejdelší zásahy</h2>
-        <div class="hint">Jen kde se spočítala délka</div>
+        <div class="hint">Top 10 (30 dní) • délka živě u aktivních</div>
       </div>
       <div class="list" id="longestList"></div>
     </section>
@@ -177,10 +151,35 @@
         </table>
       </div>
     </section>
-  </main>
+  </div>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-  <script src="app.js"></script>
+  <div class="col">
+    <section class="card">
+      <div class="cardHeader">
+        <h2>Statistika (30 dní)</h2>
+        <div class="hint">Počet výjezdů po dnech</div>
+      </div>
+      <div class="canvasWrap">
+        <canvas id="chartByDay" height="140"></canvas>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="cardHeader">
+        <h2>Žebříček měst</h2>
+        <div class="hint">Top 15 (30 dní)</div>
+      </div>
+      <div class="list" id="topCities"></div>
+    </section>
+  </div>
+</main>
+
+<footer class="footer">
+  <div>
+    Data jsou pouze orientační a simulovaná – nejsou určena pro operativní řízení ani jako oficiální zdroj.
+  </div>
+</footer>
+
+<script src="/app.js"></script>
 </body>
 </html>
