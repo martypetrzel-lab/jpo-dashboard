@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "express": "^4.19.2",
+    "bcryptjs": "^2.4.3",
     "pg": "^8.11.5",
     "pdfkit": "^0.15.0"
   }

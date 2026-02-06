@@ -69,6 +69,46 @@ export async function initDb() {
     );
   `);
 
+  // ---------------- AUTH TABLES ----------------
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id BIGSERIAL PRIMARY KEY,
+      username TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'ops',
+      is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_login_at TIMESTAMPTZ
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_sessions (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      token_sha256 TEXT UNIQUE NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      expires_at TIMESTAMPTZ NOT NULL,
+      ip TEXT,
+      user_agent TEXT
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_user_sessions_user_id ON user_sessions(user_id);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_user_sessions_expires_at ON user_sessions(expires_at);`);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS audit_log (
+      id BIGSERIAL PRIMARY KEY,
+      ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+      username TEXT,
+      action TEXT NOT NULL,
+      details TEXT,
+      ip TEXT
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_log_ts ON audit_log(ts DESC);`);
+
   // ✅ od kdy počítat "nejdelší zásahy" a ukládat nové délky (nezasahuje do historie)
   await pool.query(`
     INSERT INTO app_settings (key, value)
@@ -77,7 +117,6 @@ export async function initDb() {
   `);
 
   // ✅ NOVÝ START "nejdelších zásahů" od nasazení této změny.
-  // Nový klíč => při nasazení nového kódu se nastaví na aktuální čas a historické události se do žebříčku nepočítají.
   await pool.query(`
     INSERT INTO app_settings (key, value)
     VALUES ('longest_cutoff_v2_iso', NOW()::text)
@@ -115,7 +154,7 @@ export async function initDb() {
     WHERE is_closed IS NULL OR first_seen_at IS NULL OR last_seen_at IS NULL;
   `);
 
-  // ✅ jednorázové vyčištění extrémních délek (nepovinné, ale pomůže hned)
+  // ✅ jednorázové vyčištění extrémních délek
   await pool.query(
     `UPDATE events SET duration_min = NULL WHERE duration_min IS NOT NULL AND duration_min > $1`,
     [MAX_DURATION_MINUTES]
@@ -135,19 +174,155 @@ async function getSetting(key) {
   return res.rows[0]?.value ?? null;
 }
 
+export async function setSetting(key, value) {
+  await pool.query(
+    `
+    INSERT INTO app_settings (key, value)
+    VALUES ($1,$2)
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+    `,
+    [key, value == null ? null : String(value)]
+  );
+}
+
+// ---------------- AUTH: users / sessions / audit ----------------
+export async function getUsersCount() {
+  const r = await pool.query(`SELECT COUNT(*)::int AS c FROM users`);
+  return r.rows[0]?.c ?? 0;
+}
+
+export async function getUserByUsername(username) {
+  const r = await pool.query(
+    `SELECT id, username, password_hash, role, is_enabled, created_at, last_login_at FROM users WHERE username=$1`,
+    [username]
+  );
+  return r.rows[0] || null;
+}
+
+export async function getUserById(id) {
+  const r = await pool.query(
+    `SELECT id, username, role, is_enabled, created_at, last_login_at FROM users WHERE id=$1`,
+    [id]
+  );
+  return r.rows[0] || null;
+}
+
+export async function createUser({ username, passwordHash, role = "ops", isEnabled = true }) {
+  const r = await pool.query(
+    `
+    INSERT INTO users (username, password_hash, role, is_enabled)
+    VALUES ($1,$2,$3,$4)
+    RETURNING id, username, role, is_enabled, created_at, last_login_at
+    `,
+    [username, passwordHash, role, !!isEnabled]
+  );
+  return r.rows[0];
+}
+
+export async function listUsers(limit = 200) {
+  const r = await pool.query(
+    `
+    SELECT id, username, role, is_enabled, created_at, last_login_at
+    FROM users
+    ORDER BY created_at DESC
+    LIMIT $1
+    `,
+    [Math.min(Math.max(1, Number(limit) || 200), 500)]
+  );
+  return r.rows;
+}
+
+export async function updateUserById(id, patch = {}) {
+  const fields = [];
+  const params = [id];
+  let i = 2;
+
+  if (patch.username != null) {
+    fields.push(`username=$${i++}`);
+    params.push(String(patch.username));
+  }
+  if (patch.passwordHash != null) {
+    fields.push(`password_hash=$${i++}`);
+    params.push(String(patch.passwordHash));
+  }
+  if (patch.role != null) {
+    fields.push(`role=$${i++}`);
+    params.push(String(patch.role));
+  }
+  if (patch.isEnabled != null) {
+    fields.push(`is_enabled=$${i++}`);
+    params.push(!!patch.isEnabled);
+  }
+  if (patch.lastLoginAtNow) {
+    fields.push(`last_login_at=NOW()`);
+  }
+
+  if (!fields.length) return await getUserById(id);
+
+  const r = await pool.query(
+    `UPDATE users SET ${fields.join(", ")} WHERE id=$1 RETURNING id, username, role, is_enabled, created_at, last_login_at`,
+    params
+  );
+  return r.rows[0] || null;
+}
+
+export async function createSession({ userId, tokenSha256, expiresAt, ip, userAgent }) {
+  const r = await pool.query(
+    `
+    INSERT INTO user_sessions (user_id, token_sha256, expires_at, ip, user_agent)
+    VALUES ($1,$2,$3,$4,$5)
+    RETURNING id, user_id, token_sha256, created_at, expires_at
+    `,
+    [userId, tokenSha256, expiresAt, ip || null, userAgent || null]
+  );
+  return r.rows[0];
+}
+
+export async function deleteSessionByTokenSha(tokenSha256) {
+  await pool.query(`DELETE FROM user_sessions WHERE token_sha256=$1`, [tokenSha256]);
+}
+
+export async function deleteExpiredSessions() {
+  await pool.query(`DELETE FROM user_sessions WHERE expires_at < NOW()`);
+}
+
+export async function getSessionUserByTokenSha(tokenSha256) {
+  const r = await pool.query(
+    `
+    SELECT
+      s.id AS session_id,
+      s.expires_at,
+      u.id AS user_id,
+      u.username,
+      u.role,
+      u.is_enabled
+    FROM user_sessions s
+    JOIN users u ON u.id = s.user_id
+    WHERE s.token_sha256 = $1
+    LIMIT 1
+    `,
+    [tokenSha256]
+  );
+  return r.rows[0] || null;
+}
+
+export async function insertAudit({ userId = null, username = null, action, details = null, ip = null }) {
+  await pool.query(
+    `INSERT INTO audit_log (user_id, username, action, details, ip) VALUES ($1,$2,$3,$4,$5)`,
+    [userId, username, String(action), details == null ? null : String(details), ip]
+  );
+}
+
 export async function getDurationCutoffIso() {
   const v = await getSetting("duration_cutoff_iso");
-  // fallback: když by tabulka nebyla ready
   return v || new Date().toISOString();
 }
 
-// ✅ žebříček "nejdelších zásahů" od nasazení této změny
 export async function getLongestCutoffIso() {
   const v = await getSetting("longest_cutoff_v2_iso");
   return v || new Date().toISOString();
 }
 
-// ✅ pro detekci přechodu aktivní -> ukončené (abychom uměli "zmrazit" délku)
 export async function getEventMeta(id) {
   const res = await pool.query(
     `SELECT id, is_closed, first_seen_at, start_time_iso, end_time_iso, duration_min FROM events WHERE id=$1`,
@@ -184,7 +359,6 @@ export async function upsertEvent(ev) {
       start_time_iso = COALESCE(EXCLUDED.start_time_iso, events.start_time_iso),
       end_time_iso   = COALESCE(EXCLUDED.end_time_iso,   events.end_time_iso),
 
-      -- ✅ duration: když je nový dur null, nech starý; ale když je starý extrémní, smaž ho
       duration_min = CASE
         WHEN EXCLUDED.duration_min IS NOT NULL THEN EXCLUDED.duration_min
         WHEN events.duration_min IS NOT NULL AND events.duration_min > $14 THEN NULL
@@ -369,12 +543,8 @@ export async function getStatsFiltered(filters) {
   const day = String(filters?.day || "all").toLowerCase();
   const month = String(filters?.month || "").trim();
 
-  // ✅ nejdelší zásahy mají svůj vlastní "start" od nasazení této změny
   const cutoffIso = await getLongestCutoffIso();
 
-  // ------------------------
-  // 30 dní – graf / typy / open×closed
-  // ------------------------
   const where30 = [`created_at >= NOW() - INTERVAL '30 days'`];
   const params30 = [];
   let i30 = 1;
@@ -439,9 +609,6 @@ export async function getStatsFiltered(filters) {
     params30
   );
 
-  // ------------------------
-  // Žebříček měst – ZE VŠECH VÝJEZDŮ (bez 30denního okna)
-  // ------------------------
   const whereAll = [];
   const paramsAll = [];
   let iAll = 1;
@@ -477,9 +644,6 @@ export async function getStatsFiltered(filters) {
     paramsAll
   );
 
-  // ------------------------
-  // Nejdelší zásahy – POUZE NOVÉ od cutoff
-  // ------------------------
   const whereLongest = [...whereAll, `first_seen_at >= $${iAll}::timestamptz`];
   const paramsLongest = [...paramsAll, cutoffIso];
   const whereLongestSql = `WHERE ${whereLongest.join(" AND ")}`;

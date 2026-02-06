@@ -3,6 +3,8 @@ import PDFDocument from "pdfkit";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import crypto from "crypto";
+import bcrypt from "bcryptjs";
 
 import {
   initDb,
@@ -19,7 +21,21 @@ import {
   getEventMeta,
   updateEventDuration,
   getDurationCutoffIso,
-  getLongestCutoffIso
+  getLongestCutoffIso,
+
+  // auth
+  getUsersCount,
+  getUserByUsername,
+  getUserById,
+  createUser,
+  listUsers,
+  updateUserById,
+  createSession,
+  deleteSessionByTokenSha,
+  deleteExpiredSessions,
+  getSessionUserByTokenSha,
+  insertAudit,
+  setSetting
 } from "./db.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -27,205 +43,267 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
-app.use(express.static("public"));
 
-const API_KEY = process.env.API_KEY || "";
-const GEOCODE_UA = process.env.GEOCODE_USER_AGENT || "jpo-dashboard/1.7 (contact: missing)";
+// ---------------- CONFIG ----------------
+const API_KEY = process.env.API_KEY || "JPO_KEY_123456";
+const GEOCODE_UA = process.env.GEOCODE_UA || "firewatchcz/1.0 (contact: admin@firewatchcz.local)";
 
-// ✅ sanity limit pro délku zásahu (default 3 dny)
-const MAX_DURATION_MINUTES = Math.max(60, Number(process.env.DURATION_MAX_MINUTES || 4320)); // 3 dny
-const FUTURE_END_TOLERANCE_MS = 5 * 60 * 1000; // ukončení nesmí být "v budoucnu" o víc než 5 min
-
-// ✅ Středočeský kraj – omez geocode (aby se stejnojmenná místa nehledala v Polsku apod.)
+// omez geo na Středočeský kraj (bounding box)
 const STC_VIEWBOX = process.env.STC_VIEWBOX || "13.25,50.71,15.65,49.30"; // left,top,right,bottom
 const STC_STATE_ALLOW = /stredocesky|central bohemia/i;
 
-// ---------------- AUTH ----------------
+// ---------------- AUTH (OPS/ADMIN) ----------------
+const SESSION_COOKIE = process.env.SESSION_COOKIE_NAME || "FWSESS";
+const SESSION_TTL_SECONDS = Math.max(300, Number(process.env.SESSION_TTL_SECONDS || 7200)); // 2h default
+const LOGIN_MAX_ATTEMPTS = Math.max(3, Number(process.env.LOGIN_MAX_ATTEMPTS || 8));
+const LOGIN_WINDOW_MS = Math.max(60_000, Number(process.env.LOGIN_WINDOW_MS || 10 * 60_000));
+
+// In-memory rate limiter for login (good enough for single-instance Railway)
+const loginAttempts = new Map(); // key: ip, value: { count, firstTs }
+
+function getClientIp(req) {
+  const xf = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  return xf || req.socket?.remoteAddress || "";
+}
+
+function parseCookies(req) {
+  const h = String(req.headers.cookie || "");
+  const out = {};
+  h.split(";").map(s => s.trim()).filter(Boolean).forEach(pair => {
+    const i = pair.indexOf("=");
+    if (i < 0) return;
+    const k = pair.substring(0, i).trim();
+    const v = pair.substring(i + 1).trim();
+    out[k] = decodeURIComponent(v);
+  });
+  return out;
+}
+
+function isHttps(req) {
+  const proto = String(req.headers["x-forwarded-proto"] || "").toLowerCase();
+  if (proto) return proto.includes("https");
+  return !!req.secure;
+}
+
+function setSessionCookie(res, token, req) {
+  const parts = [];
+  parts.push(`${SESSION_COOKIE}=${encodeURIComponent(token)}`);
+  parts.push(`Max-Age=${SESSION_TTL_SECONDS}`);
+  parts.push("Path=/");
+  parts.push("HttpOnly");
+  parts.push("SameSite=Lax");
+  if (isHttps(req) || process.env.FORCE_SECURE_COOKIE === "1") parts.push("Secure");
+  res.setHeader("Set-Cookie", parts.join("; "));
+}
+
+function clearSessionCookie(res, req) {
+  const parts = [];
+  parts.push(`${SESSION_COOKIE}=`);
+  parts.push("Max-Age=0");
+  parts.push("Path=/");
+  parts.push("HttpOnly");
+  parts.push("SameSite=Lax");
+  if (isHttps(req) || process.env.FORCE_SECURE_COOKIE === "1") parts.push("Secure");
+  res.setHeader("Set-Cookie", parts.join("; "));
+}
+
+function sha256Hex(s) {
+  return crypto.createHash("sha256").update(String(s)).digest("hex");
+}
+
+async function authFromRequest(req) {
+  try {
+    const cookies = parseCookies(req);
+    const token = cookies[SESSION_COOKIE];
+    if (!token) return null;
+    const tokenSha = sha256Hex(token);
+    const row = await getSessionUserByTokenSha(tokenSha);
+    if (!row) return null;
+    const expMs = new Date(row.expires_at).getTime();
+    if (!Number.isFinite(expMs) || expMs <= Date.now()) {
+      await deleteSessionByTokenSha(tokenSha);
+      return null;
+    }
+    if (!row.is_enabled) return null;
+
+    return {
+      sessionId: row.session_id,
+      user: { id: row.user_id, username: row.username, role: row.role }
+    };
+  } catch {
+    return null;
+  }
+}
+
+function requireAuthAny(req, res, next) {
+  authFromRequest(req).then((auth) => {
+    if (!auth?.user) return res.status(401).json({ ok: false, error: "unauthorized" });
+    req.auth = auth;
+    next();
+  });
+}
+
+function requireOps(req, res, next) {
+  authFromRequest(req).then((auth) => {
+    if (!auth?.user) return res.status(401).json({ ok: false, error: "unauthorized" });
+    if (!["ops", "admin"].includes(String(auth.user.role))) {
+      return res.status(403).json({ ok: false, error: "forbidden" });
+    }
+    req.auth = auth;
+    next();
+  });
+}
+
+function requireAdmin(req, res, next) {
+  authFromRequest(req).then((auth) => {
+    if (!auth?.user) return res.status(401).json({ ok: false, error: "unauthorized" });
+    if (String(auth.user.role) !== "admin") {
+      return res.status(403).json({ ok: false, error: "forbidden" });
+    }
+    req.auth = auth;
+    next();
+  });
+}
+
+// ---------------- AUTH (ESP ingest key) ----------------
 function requireKey(req, res, next) {
   const key = req.header("X-API-Key") || "";
-  if (!API_KEY) return res.status(500).json({ ok: false, error: "API_KEY not set on server" });
-  if (key !== API_KEY) return res.status(401).json({ ok: false, error: "unauthorized" });
+  if (key !== API_KEY) return res.status(401).json({ ok: false, error: "bad key" });
   next();
 }
 
 // ---------------- HELPERS ----------------
-function classifyType(title = "") {
-  const t = title.toLowerCase();
+function safeText(v) {
+  if (v == null) return null;
+  const s = String(v).trim();
+  return s.length ? s : null;
+}
+
+function typeLabel(t) {
+  const m = {
+    fire: "Požár",
+    traffic: "Dopravní nehoda",
+    tech: "Technická pomoc",
+    rescue: "Záchrana",
+    false_alarm: "Planý poplach",
+    other: "Ostatní"
+  };
+  return m[t] || "Ostatní";
+}
+
+function classifyType(title) {
+  const t = String(title || "").toLowerCase();
   if (t.includes("požár") || t.includes("pozar")) return "fire";
-  if (t.includes("doprav") || t.includes("nehoda") || t.includes("dn")) return "traffic";
-  if (t.includes("technick") || t.includes("čerpad") || t.includes("cerpad") || t.includes("strom")) return "tech";
-  if (t.includes("záchrana") || t.includes("zachrana") || t.includes("transport") || t.includes("resusc")) return "rescue";
+  if (t.includes("doprav") || t.includes("nehoda")) return "traffic";
+  if (t.includes("technick") || t.includes("nebezpeč") || t.includes("nebezpec")) return "tech";
+  if (t.includes("záchrana") || t.includes("zachrana") || t.includes("transport")) return "rescue";
   if (t.includes("planý poplach") || t.includes("plany poplach")) return "false_alarm";
   return "other";
 }
 
-function isDistrictPlace(placeText = "") {
-  return /^\s*okres\s+/i.test(String(placeText || ""));
-}
+// popis v RSS bývá: "stav: ...<br>ukončení: ...<br>Město<br>okres ..."
+function parseTimesFromDescription(descRaw) {
+  const desc = String(descRaw || "");
+  const out = { isClosed: false, startIso: null, endIso: null };
 
-function extractCityFromTitle(title = "") {
-  const s = String(title || "").trim();
-  if (!s.includes(" - ")) return null;
-  const parts = s.split(" - ").map(x => x.trim()).filter(Boolean);
-  if (parts.length < 2) return null;
-  const last = parts[parts.length - 1];
-  if (last.length < 2) return null;
-  return last;
-}
+  const lower = desc.toLowerCase();
 
-function extractCityFromDescription(descRaw = "") {
-  if (!descRaw) return null;
+  // stav: ukončená / ukončeno / ukončení
+  if (lower.includes("stav:") && lower.includes("ukon")) out.isClosed = true;
+  if (lower.includes("ukončení:")) out.isClosed = true;
 
-  const norm = String(descRaw)
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&amp;/g, "&");
+  // ukončení: 31. ledna 2026, 15:07
+  const mEnd = desc.match(/ukončen[íi]\s*:\s*([0-9]{1,2})\.\s*([^\n,<]+?)\s*([0-9]{4}),?\s*([0-9]{1,2})\s*:\s*([0-9]{2})/i);
+  if (mEnd) {
+    const day = Number(mEnd[1]);
+    const monthName = String(mEnd[2]).trim().toLowerCase();
+    const year = Number(mEnd[3]);
+    const hh = Number(mEnd[4]);
+    const mm = Number(mEnd[5]);
 
-  const lines = norm.split("\n").map(l => l.trim()).filter(Boolean);
-
-  for (const line of lines) {
-    const low = line
-      .toLowerCase()
-      .normalize("NFD")
-      .replace(/\p{Diacritic}/gu, "");
-
-    if (low.startsWith("stav:")) continue;
-    if (low.startsWith("ukonceni:")) continue;
-    if (low.startsWith("vyhlaseni:")) continue;
-    if (low.startsWith("ohlaseni:")) continue;
-    if (low.startsWith("okres ")) continue;
-    if (line.length < 2) continue;
-
-    return line;
-  }
-  return null;
-}
-
-function extractDistrictFromDescription(descRaw = "") {
-  if (!descRaw) return null;
-
-  const norm = String(descRaw)
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&amp;/g, "&");
-
-  const lines = norm.split("\n").map(l => l.trim()).filter(Boolean);
-  for (const line of lines) {
-    const low = line
-      .toLowerCase()
-      .normalize("NFD")
-      .replace(/\p{Diacritic}/gu, "");
-
-    if (low.startsWith("okres ")) {
-      const district = line.replace(/^\s*okres\s+/i, "").trim();
-      return district || null;
+    const months = {
+      ledna: 0, února: 1, brezna: 2, března: 2, dubna: 3, května: 4, kvetna: 4,
+      června: 5, cervna: 5, července: 6, cervence: 6, srpna: 7, září: 8, zari: 8,
+      října: 9, rijna: 9, listopadu: 10, prosince: 11
+    };
+    const mo = months[monthName];
+    if (Number.isFinite(mo)) {
+      const d = new Date(Date.UTC(year, mo, day, hh - 1, mm, 0)); // Prague ~ UTC+1/2 (hrubé, pro pořadí stačí)
+      out.endIso = d.toISOString();
     }
   }
+
+  // zahájení: (když by někdy bylo)
+  const mStart = desc.match(/zahájen[íi]\s*:\s*([0-9]{1,2})\.\s*([^\n,<]+?)\s*([0-9]{4}),?\s*([0-9]{1,2})\s*:\s*([0-9]{2})/i);
+  if (mStart) {
+    const day = Number(mStart[1]);
+    const monthName = String(mStart[2]).trim().toLowerCase();
+    const year = Number(mStart[3]);
+    const hh = Number(mStart[4]);
+    const mm = Number(mStart[5]);
+
+    const months = {
+      ledna: 0, února: 1, brezna: 2, března: 2, dubna: 3, května: 4, kvetna: 4,
+      června: 5, cervna: 5, července: 6, cervence: 6, srpna: 7, září: 8, zari: 8,
+      října: 9, rijna: 9, listopadu: 10, prosince: 11
+    };
+    const mo = months[monthName];
+    if (Number.isFinite(mo)) {
+      const d = new Date(Date.UTC(year, mo, day, hh - 1, mm, 0));
+      out.startIso = d.toISOString();
+    }
+  }
+
+  return out;
+}
+
+function extractCityFromTitle(title) {
+  const t = String(title || "");
+  const parts = t.split(" - ").map(s => s.trim()).filter(Boolean);
+  if (parts.length >= 2) return parts[parts.length - 1];
   return null;
 }
 
-function parseCzDateToIso(s) {
-  if (!s) return null;
-  const norm = String(s)
-    .trim()
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/\p{Diacritic}/gu, "");
+function extractCityFromDescription(descRaw) {
+  const desc = String(descRaw || "").replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&amp;", "&");
+  const lines = desc.split(/<br\s*\/?>|\n/g).map(s => s.trim()).filter(Boolean);
+  // typicky: ["stav: ...", "ukončení: ...", "Město", "okres ..."]
+  const city = lines.find(l => !/^stav\s*:/i.test(l) && !/^ukončen/i.test(l) && !/^okres\s+/i.test(l));
+  return city || null;
+}
 
-  const months = {
-    ledna: 1, unora: 2, brezna: 3, dubna: 4, kvetna: 5, cervna: 6,
-    cervence: 7, srpna: 8, zari: 9, rijna: 10, listopadu: 11, prosince: 12
-  };
-
-  const m = norm.match(/(\d{1,2})\.?\s+([a-z]+)\s+(\d{4}),\s*(\d{1,2}):(\d{2})/);
+function extractDistrictFromDescription(descRaw) {
+  const desc = String(descRaw || "");
+  const m = desc.match(/okres\s+([^<\n\r]+)/i);
   if (!m) return null;
-
-  const day = Number(m[1]);
-  const monName = m[2];
-  const year = Number(m[3]);
-  const hh = Number(m[4]);
-  const mm = Number(m[5]);
-
-  const month = months[monName];
-  if (!month) return null;
-
-  const dt = new Date(Date.UTC(year, month - 1, day, hh, mm, 0));
-  if (Number.isNaN(dt.getTime())) return null;
-  return dt.toISOString();
+  return String(m[1]).trim();
 }
 
-function parseTimesFromDescription(descRaw = "") {
-  const norm = String(descRaw)
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&amp;/g, "&");
-
-  const lines = norm.split("\n").map(l => l.trim()).filter(Boolean);
-
-  let startText = null;
-  let endText = null;
-  let isClosed = false;
-
-  for (const line of lines) {
-    const n = line
-      .toLowerCase()
-      .normalize("NFD")
-      .replace(/\p{Diacritic}/gu, "");
-
-    // ✅ některé RSS mají jen "stav: ukončená" bez řádku "ukončení: ..."
-    if (n.startsWith("stav:") && (n.includes("ukoncena") || n.includes("ukonceni") || n.includes("ukoncen"))) {
-      isClosed = true;
-    }
-
-    if (n.startsWith("vyhlaseni:")) startText = line.split(":").slice(1).join(":").trim();
-    if (n.startsWith("ohlaseni:")) startText = startText || line.split(":").slice(1).join(":").trim();
-    if (n.startsWith("ukonceni:")) {
-      endText = line.split(":").slice(1).join(":").trim();
-      isClosed = true;
-    }
-  }
-
-  return {
-    startIso: parseCzDateToIso(startText),
-    endIso: parseCzDateToIso(endText),
-    isClosed
-  };
+function isDistrictPlace(placeText) {
+  const p = String(placeText || "").toLowerCase();
+  return p.includes("okres ");
 }
 
-// ✅ fix na extrémní / nesmyslné délky
-async function computeDurationMin(id, startIso, endIso, createdAtFallback, cutoffIso) {
-  if (!endIso) return null;
+const MAX_DURATION_MINUTES = Math.max(60, Number(process.env.DURATION_MAX_MINUTES || 4320));
+const FUTURE_END_TOLERANCE_MS = 2 * 60 * 1000;
 
+async function computeDurationMin(id, startIso, endIso, firstSeen, cutoffIso) {
+  const startMs = startIso ? new Date(startIso).getTime() : NaN;
   const nowMs = Date.now();
 
-  let startMs = startIso ? new Date(startIso).getTime() : NaN;
-
-  if (!Number.isFinite(startMs)) {
-    const firstSeen = await getEventFirstSeen(id);
-    if (firstSeen) startMs = new Date(firstSeen).getTime();
-
-    // ✅ nepočítat délky pro historické události (před cutoff)
-    if (firstSeen && cutoffIso) {
-      const cMs = new Date(cutoffIso).getTime();
-      const fMs = new Date(firstSeen).getTime();
-      if (Number.isFinite(cMs) && Number.isFinite(fMs) && fMs < cMs) return null;
-    }
-  }
-
-  if (!Number.isFinite(startMs) && createdAtFallback) {
-    const ca = new Date(createdAtFallback).getTime();
-    if (Number.isFinite(ca)) startMs = ca;
-  }
-
-  // ✅ cutoff i pro případy, kdy jsme start brali z title/desc – rozhoduje first_seen_at
+  // only new durations from cutoff
   if (cutoffIso) {
-    const firstSeen = await getEventFirstSeen(id);
-    if (firstSeen) {
-      const cMs = new Date(cutoffIso).getTime();
-      const fMs = new Date(firstSeen).getTime();
+    const cutoffMs = new Date(cutoffIso).getTime();
+    const firstSeenMs = firstSeen ? new Date(firstSeen).getTime() : NaN;
+
+    if (Number.isFinite(cutoffMs) && Number.isFinite(firstSeenMs) && firstSeenMs < cutoffMs) {
+      return null;
+    }
+
+    if (!firstSeen) {
+      const dbFirstSeen = await getEventFirstSeen(id);
+      const cMs = cutoffMs;
+      const fMs = new Date(dbFirstSeen).getTime();
       if (Number.isFinite(cMs) && Number.isFinite(fMs) && fMs < cMs) return null;
     }
   }
@@ -233,11 +311,9 @@ async function computeDurationMin(id, startIso, endIso, createdAtFallback, cutof
   const endMs = new Date(endIso).getTime();
 
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return null;
-
   if (endMs > nowMs + FUTURE_END_TOLERANCE_MS) return null;
 
   const dur = Math.round((endMs - startMs) / 60000);
-
   if (!Number.isFinite(dur) || dur <= 0) return null;
   if (dur > MAX_DURATION_MINUTES) return null;
 
@@ -265,7 +341,6 @@ async function geocodePlace(placeText) {
   candidates.push(String(placeText).trim());
   if (cleaned && cleaned !== String(placeText).trim()) candidates.push(cleaned);
 
-  // ✅ Středočeský kraj – zvyšuje přesnost u malých obcí a duplicitních názvů
   if (cleaned) candidates.push(`${cleaned}, Středočeský kraj`);
   if (cleaned) candidates.push(`${cleaned}, Stredocesky kraj`);
   if (cleaned) candidates.push(`${cleaned}, Central Bohemia`);
@@ -275,7 +350,6 @@ async function geocodePlace(placeText) {
 
   candidates.push(`${String(placeText).trim()}, Czechia`);
 
-  // tady používáme Středočeský kraj
   const CZ_VIEWBOX = STC_VIEWBOX;
 
   for (const q of candidates) {
@@ -305,11 +379,9 @@ async function geocodePlace(placeText) {
       const cc = String(cand?.address?.country_code || "").toLowerCase();
       if (cc && cc !== "cz") continue;
 
-      // ✅ Středočeský kraj – ověř "state" z adresy (pokud ho Nominatim vrátí)
       const state = String(cand?.address?.state || cand?.address?.region || "");
       if (state && !STC_STATE_ALLOW.test(state)) continue;
 
-      // ✅ poslední brzda: bounding box Středočeského kraje (když state chybí)
       const vb = String(STC_VIEWBOX).split(",").map(x => Number(x));
       if (vb.length === 4 && vb.every(n => Number.isFinite(n))) {
         const [left, top, right, bottom] = vb;
@@ -326,105 +398,157 @@ async function geocodePlace(placeText) {
 
 function parseFilters(req) {
   const typeQ = String(req.query.type || "").trim();
-  const city = String(req.query.city || "").trim();
-  const status = String(req.query.status || "all").trim().toLowerCase();
-
-  const day = String(req.query.day || "today").trim().toLowerCase();
-  const month = String(req.query.month || "").trim();
-
   const types = typeQ ? typeQ.split(",").map(s => s.trim()).filter(Boolean) : [];
-  const normStatus = ["all", "open", "closed"].includes(status) ? status : "all";
-  const normDay = ["today", "yesterday", "all"].includes(day) ? day : "today";
-  const normMonth = /^\d{4}-\d{2}$/.test(month) ? month : "";
-
-  return { types, city, status: normStatus, day: normDay, month: normMonth };
+  const city = String(req.query.city || "").trim();
+  const status = String(req.query.status || "all").trim();
+  const day = String(req.query.day || "all").trim();
+  const month = String(req.query.month || "").trim();
+  return { types, city, status, day, month };
 }
 
-// ✅ dopočítávání délky (uložení do DB)
-async function backfillDurations(rows, cutoffIso, max = 40) {
-  const candidates = rows
-    .filter(r => r?.is_closed && r?.end_time_iso && (r.duration_min == null) && (!cutoffIso || (r.first_seen_at && new Date(r.first_seen_at).getTime() >= new Date(cutoffIso).getTime())))
-    .slice(0, Math.max(0, Math.min(max, 200)));
-
-  let fixed = 0;
-
-  for (const r of candidates) {
-    const dur = await computeDurationMin(r.id, r.start_time_iso, r.end_time_iso, r.created_at, cutoffIso);
-    if (Number.isFinite(dur) && dur > 0) {
-      await updateEventDuration(r.id, dur);
-      r.duration_min = dur;
-      fixed++;
-    }
-  }
-
-  return fixed;
-}
-
-// ✅ backfill coords: zkus nejdřív "město, okres", pak město, pak place_text
-async function backfillCoords(rows, max = 12) {
-  const need = rows
-    .filter(r => ((r.city_text || r.place_text) && (r.lat == null || r.lon == null)))
-    .slice(0, Math.max(0, Math.min(max, 20)));
-
-  let fixed = 0;
-  for (const r of need) {
-    try {
-      const district = extractDistrictFromDescription(r.description_raw || "");
-
-      const queries = [];
-      if (r.city_text && district) queries.push(`${r.city_text}, okres ${district}`);
-      if (r.city_text) queries.push(r.city_text);
-      if (r.place_text && r.place_text !== r.city_text) queries.push(r.place_text);
-
-      let g = null;
-      for (const q of queries) {
-        g = await geocodePlace(q);
-        if (g) break;
-      }
-      if (g) {
-        await updateEventCoords(r.id, g.lat, g.lon);
-        r.lat = g.lat;
-        r.lon = g.lon;
-        fixed++;
-      }
-    } catch {
-      // ignore
-    }
-  }
-  return fixed;
-}
-
-// ---------------- PDF FONT (robust minimal) ----------------
-function findFontPath() {
-  const p = path.join(__dirname, "assets", "DejaVuSans.ttf");
-  if (fs.existsSync(p)) return p;
-  return null;
-}
-
-function tryApplyPdfFont(doc) {
-  const p = findFontPath();
-  if (!p) return { ok: false, fontPath: null, reason: "not_found" };
-  try {
-    doc.registerFont("CZ", p);
-    doc.font("CZ");
-    return { ok: true, fontPath: p, reason: "ok" };
-  } catch (e) {
-    return { ok: false, fontPath: p, reason: `load_failed_${e?.message || "unknown"}` };
-  }
-}
-
-function typeLabel(t) {
-  switch (t) {
-    case "fire": return "požár";
-    case "traffic": return "nehoda";
-    case "tech": return "technická";
-    case "rescue": return "záchrana";
-    case "false_alarm": return "planý poplach";
-    default: return "jiné";
-  }
-}
+// ---------------- STATIC ----------------
+app.use(express.static(path.join(__dirname, "public")));
 
 // ---------------- ROUTES ----------------
+
+// --- auth ---
+app.get("/api/auth/me", async (req, res) => {
+  const auth = await authFromRequest(req);
+  if (!auth?.user) return res.json({ ok: true, user: null });
+  return res.json({ ok: true, user: auth.user, expires_in_s: SESSION_TTL_SECONDS });
+});
+
+app.post("/api/auth/login", async (req, res) => {
+  try {
+    await deleteExpiredSessions();
+
+    const ip = getClientIp(req);
+    const key = ip || "unknown";
+    const now = Date.now();
+    const row = loginAttempts.get(key) || { count: 0, firstTs: now };
+    if (now - row.firstTs > LOGIN_WINDOW_MS) {
+      row.count = 0;
+      row.firstTs = now;
+    }
+    row.count += 1;
+    loginAttempts.set(key, row);
+    if (row.count > LOGIN_MAX_ATTEMPTS) {
+      return res.status(429).json({ ok: false, error: "too_many_attempts" });
+    }
+
+    const username = String(req.body?.username || "").trim();
+    const password = String(req.body?.password || "");
+    if (username.length < 2 || password.length < 4) {
+      return res.status(400).json({ ok: false, error: "bad_request" });
+    }
+
+    const u = await getUserByUsername(username);
+    if (!u || !u.is_enabled) {
+      await insertAudit({ userId: u?.id ?? null, username, action: "login_fail", details: "user_missing_or_disabled", ip });
+      return res.status(401).json({ ok: false, error: "unauthorized" });
+    }
+
+    const ok = await bcrypt.compare(password, String(u.password_hash || ""));
+    if (!ok) {
+      await insertAudit({ userId: u.id, username: u.username, action: "login_fail", details: "bad_password", ip });
+      return res.status(401).json({ ok: false, error: "unauthorized" });
+    }
+
+    const token = crypto.randomBytes(32).toString("hex");
+    const tokenSha = sha256Hex(token);
+    const expiresAt = new Date(Date.now() + SESSION_TTL_SECONDS * 1000).toISOString();
+    await createSession({ userId: u.id, tokenSha256: tokenSha, expiresAt, ip, userAgent: String(req.headers["user-agent"] || "") });
+    await updateUserById(u.id, { lastLoginAtNow: true });
+    await insertAudit({ userId: u.id, username: u.username, action: "login_ok", details: `role=${u.role}`, ip });
+
+    setSessionCookie(res, token, req);
+    return res.json({ ok: true, user: { id: u.id, username: u.username, role: u.role }, expires_at: expiresAt });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
+app.post("/api/auth/logout", async (req, res) => {
+  try {
+    const cookies = parseCookies(req);
+    const token = cookies[SESSION_COOKIE];
+    if (token) {
+      const tokenSha = sha256Hex(token);
+      await deleteSessionByTokenSha(tokenSha);
+    }
+    clearSessionCookie(res, req);
+    return res.json({ ok: true });
+  } catch {
+    clearSessionCookie(res, req);
+    return res.json({ ok: true });
+  }
+});
+
+// --- admin: users ---
+app.get("/api/admin/users", requireAdmin, async (req, res) => {
+  const users = await listUsers(300);
+  res.json({ ok: true, users });
+});
+
+app.post("/api/admin/users", requireAdmin, async (req, res) => {
+  try {
+    const username = String(req.body?.username || "").trim();
+    const password = String(req.body?.password || "");
+    const role = String(req.body?.role || "ops").trim();
+    const isEnabled = req.body?.is_enabled !== false;
+
+    if (!/^[a-zA-Z0-9_.-]{2,40}$/.test(username)) {
+      return res.status(400).json({ ok: false, error: "invalid_username" });
+    }
+    if (password.length < 6) {
+      return res.status(400).json({ ok: false, error: "weak_password" });
+    }
+    if (!["ops", "admin"].includes(role)) {
+      return res.status(400).json({ ok: false, error: "invalid_role" });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 12);
+    const created = await createUser({ username, passwordHash, role, isEnabled });
+    await insertAudit({ userId: req.auth.user.id, username: req.auth.user.username, action: "user_create", details: `${username} role=${role}`, ip: getClientIp(req) });
+    return res.json({ ok: true, user: created });
+  } catch (e) {
+    const msg = String(e?.message || "");
+    if (msg.includes("duplicate") || msg.includes("unique")) {
+      return res.status(409).json({ ok: false, error: "username_taken" });
+    }
+    console.error(e);
+    return res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
+app.patch("/api/admin/users/:id", requireAdmin, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ ok: false, error: "bad_id" });
+
+    const patch = {};
+    if (req.body?.role != null) {
+      const role = String(req.body.role);
+      if (!["ops", "admin"].includes(role)) return res.status(400).json({ ok: false, error: "invalid_role" });
+      patch.role = role;
+    }
+    if (req.body?.is_enabled != null) patch.isEnabled = !!req.body.is_enabled;
+    if (req.body?.password != null) {
+      const pw = String(req.body.password);
+      if (pw.length < 6) return res.status(400).json({ ok: false, error: "weak_password" });
+      patch.passwordHash = await bcrypt.hash(pw, 12);
+    }
+    const updated = await updateUserById(id, patch);
+    if (!updated) return res.status(404).json({ ok: false, error: "not_found" });
+
+    await insertAudit({ userId: req.auth.user.id, username: req.auth.user.username, action: "user_update", details: `${updated.username}`, ip: getClientIp(req) });
+    return res.json({ ok: true, user: updated });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
 
 // ingest (data z ESP)
 app.post("/api/ingest", requireKey, async (req, res) => {
@@ -441,7 +565,6 @@ app.post("/api/ingest", requireKey, async (req, res) => {
     for (const it of items) {
       if (!it?.id || !it?.title || !it?.link) continue;
 
-      // ✅ meta z DB pro detekci přechodu "aktivní -> ukončené"
       const prev = await getEventMeta(it.id);
 
       const eventType = it.eventType || classifyType(it.title);
@@ -452,8 +575,6 @@ app.post("/api/ingest", requireKey, async (req, res) => {
       let endIso = it.endTimeIso || times.endIso || null;
       const isClosed = !!times.isClosed;
 
-      // ✅ RSS často nemá ukončení časem – když se událost poprvé označí jako ukončená,
-      // zmrazíme konec na "teď" a dopočítáme duration z first_seen_at.
       const closingNow = isClosed && (!prev || !prev.is_closed);
       if (closingNow && !endIso) {
         endIso = new Date().toISOString();
@@ -464,7 +585,6 @@ app.post("/api/ingest", requireKey, async (req, res) => {
         const candidate = Math.round(it.durationMin);
         durationMin = (candidate > 0 && candidate <= MAX_DURATION_MINUTES) ? candidate : null;
       } else if (isClosed && endIso) {
-        // ✅ pro žebříček nejdelších zásahů počítáme pouze "nové" od nasazení této změny
         const cutoffIso = await getLongestCutoffIso();
         durationMin = await computeDurationMin(it.id, startIso, endIso, null, cutoffIso);
       }
@@ -501,19 +621,23 @@ app.post("/api/ingest", requireKey, async (req, res) => {
 
       if (ev.isClosed) updatedClosed++;
 
-      // ✅ zpřesnění polohy: nejdřív zkus "MĚSTO, okres OKRES", pak město, pak place_text
       const geoQueries = [];
       if (ev.cityText && districtFromDesc) geoQueries.push(`${ev.cityText}, okres ${districtFromDesc}`);
       if (ev.cityText) geoQueries.push(ev.cityText);
       if (ev.placeText && ev.placeText !== ev.cityText) geoQueries.push(ev.placeText);
 
+      let fixed = false;
       for (const q of geoQueries) {
         const g = await geocodePlace(q);
         if (g) {
           await updateEventCoords(ev.id, g.lat, g.lon);
           geocoded++;
+          fixed = true;
           break;
         }
+      }
+      if (!fixed && (ev.cityText || ev.placeText)) {
+        // nic
       }
     }
 
@@ -537,18 +661,12 @@ app.get("/api/events", async (req, res) => {
 
   const rows = await getEventsFiltered(filters, limit);
 
-  const fixedCoords = await backfillCoords(rows, 12);
-  const cutoffIso = await getLongestCutoffIso();
-  const fixedDur = await backfillDurations(rows, cutoffIso, 80);
-
-  res.json({ ok: true, filters, backfilled_coords: fixedCoords, backfilled_durations: fixedDur, items: rows });
+  res.json({ ok: true, filters, backfilled_coords: 0, backfilled_durations: 0, items: rows });
 });
 
 // ✅ stats (30 dní) – vždy ze všech dnů (ignoruje filtr "Den")
 app.get("/api/stats", async (req, res) => {
   const filters = parseFilters(req);
-
-  // ✅ klíčová změna: statistika se nikdy nefiltruje podle dne
   const statsFilters = { ...filters, day: "all" };
 
   const stats = await getStatsFiltered(statsFilters);
@@ -564,9 +682,6 @@ app.get("/api/export.csv", async (req, res) => {
   const filters = parseFilters(req);
   const limit = Math.min(Number(req.query.limit || 2000), 5000);
   const rows = await getEventsFiltered(filters, limit);
-
-  const cutoffIso = await getLongestCutoffIso();
-  await backfillDurations(rows, cutoffIso, 500);
 
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader("Content-Disposition", `attachment; filename="jpo_vyjezdy_export.csv"`);
@@ -614,17 +729,22 @@ app.get("/api/export.csv", async (req, res) => {
   });
 
   res.send([header, ...lines].join("\n"));
-
 });
 
 // export PDF
+function tryApplyPdfFont(doc) {
+  try {
+    const fontPath = path.join(__dirname, "public", "fonts", "DejaVuSans.ttf");
+    if (fs.existsSync(fontPath)) doc.font(fontPath);
+  } catch {
+    // ignore
+  }
+}
+
 app.get("/api/export.pdf", async (req, res) => {
   const filters = parseFilters(req);
   const limit = Math.min(Number(req.query.limit || 800), 2000);
   const rows = await getEventsFiltered(filters, limit);
-
-  const cutoffIso = await getLongestCutoffIso();
-  await backfillDurations(rows, cutoffIso, 500);
 
   res.setHeader("Content-Type", "application/pdf");
   res.setHeader("Content-Disposition", `attachment; filename="jpo_vyjezdy_export.pdf"`);
@@ -702,7 +822,7 @@ app.get("/api/export.pdf", async (req, res) => {
   doc.end();
 });
 
-// admin: geocode cache purge + re-geocode
+// admin: geocode cache purge + re-geocode (ponecháno na API key)
 app.post("/api/admin/fix-geocode", requireKey, async (req, res) => {
   try {
     const mode = String(req.body?.mode || "preview");
@@ -750,6 +870,22 @@ app.post("/api/admin/fix-geocode", requireKey, async (req, res) => {
 
 app.get("/health", (req, res) => res.send("OK"));
 
+async function ensureInitialAdmin() {
+  // optional bootstrap via env vars
+  const initUser = String(process.env.INIT_ADMIN_USERNAME || "").trim();
+  const initPass = String(process.env.INIT_ADMIN_PASSWORD || "");
+  if (!initUser || !initPass) return;
+
+  const count = await getUsersCount();
+  if (count > 0) return;
+
+  const passwordHash = await bcrypt.hash(initPass, 12);
+  await createUser({ username: initUser, passwordHash, role: "admin", isEnabled: true });
+  await insertAudit({ userId: null, username: initUser, action: "bootstrap_admin", details: "created initial admin from env" });
+  console.log(`[auth] Initial admin created: ${initUser}`);
+}
+
 const port = process.env.PORT || 3000;
 await initDb();
+await ensureInitialAdmin();
 app.listen(port, () => console.log(`listening on ${port}`));
