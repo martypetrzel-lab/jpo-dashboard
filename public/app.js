@@ -2,6 +2,9 @@ let map, markersLayer, chart;
 let hzsLayer, hzsStationsToggleEl;
 let routesLayer, vehiclesLayer;
 
+// OPS auth state (musí být nahoře kvůli TTS, které může běžet už při prvním loadu)
+let currentUser = null; // {id, username, role}
+
 // ✅ simulace – jen NOVÉ a AKTIVNÍ události (od načtení stránky)
 const seenEventIds = new Set();
 const runningSims = new Map(); // eventId -> { marker, route, raf, stop }
@@ -19,6 +22,274 @@ const ANIM_MIN_MS = 25000;  // min 25 s
 const ANIM_MAX_MS = 240000; // max 4 min
 const ANIM_SPEEDUP = 12;
 let inFlight = false;
+
+// ==============================
+// OPS AUDIO (gong + hlas)
+// ==============================
+
+const LS_AUDIO = "fwcz_audio_v1";
+const LS_AUDIO_NEXT_SUMMARY_AT = "fwcz_audio_nextSummaryAt";
+const LS_AUDIO_LAST_SHIFT_KEY = "fwcz_audio_lastShiftKey";
+
+let latestItemsSnapshot = [];
+let latestStatsSnapshot = null;
+
+const audioState = {
+  enabled: false,
+  gongOnShift: true,
+  volume: 0.7,
+  rate: 1.05,
+  quiet: false, // 22:00–06:00
+  unlocked: false
+};
+
+let gongAudio = null;
+let audioQueue = Promise.resolve();
+
+function loadAudioPrefs() {
+  try {
+    const raw = localStorage.getItem(LS_AUDIO);
+    if (!raw) return;
+    const j = JSON.parse(raw);
+    if (typeof j.enabled === "boolean") audioState.enabled = j.enabled;
+    if (typeof j.gongOnShift === "boolean") audioState.gongOnShift = j.gongOnShift;
+    if (typeof j.volume === "number") audioState.volume = clamp(j.volume, 0, 1);
+    if (typeof j.rate === "number") audioState.rate = clamp(j.rate, 0.8, 1.4);
+    if (typeof j.quiet === "boolean") audioState.quiet = j.quiet;
+  } catch {
+    // ignore
+  }
+}
+
+function saveAudioPrefs() {
+  try {
+    localStorage.setItem(LS_AUDIO, JSON.stringify({
+      enabled: audioState.enabled,
+      gongOnShift: audioState.gongOnShift,
+      volume: audioState.volume,
+      rate: audioState.rate,
+      quiet: audioState.quiet
+    }));
+  } catch {
+    // ignore
+  }
+}
+
+function isOps() {
+  return !!currentUser; // ops i admin
+}
+
+function inQuietHours(now = new Date()) {
+  if (!audioState.quiet) return false;
+  const h = now.getHours();
+  return (h >= 22 || h < 6);
+}
+
+function setAudioMsg(text, ok = true) {
+  const el = document.getElementById("audioMsg");
+  if (!el) return;
+  el.textContent = text || "";
+  el.style.color = ok ? "rgba(120,255,180,0.9)" : "rgba(255,140,140,0.95)";
+}
+
+function ensureGong() {
+  if (gongAudio) return gongAudio;
+  gongAudio = new Audio("gong.mp3");
+  gongAudio.preload = "auto";
+  return gongAudio;
+}
+
+async function unlockAudio() {
+  try {
+    const a = ensureGong();
+    a.volume = 0;
+    // některé prohlížeče vyžadují přehrání v rámci kliknutí
+    await a.play();
+    a.pause();
+    a.currentTime = 0;
+    a.volume = audioState.volume;
+    audioState.unlocked = true;
+    setAudioMsg("Audio odemčeno ✅", true);
+  } catch {
+    // TTS může fungovat i bez toho, ale gong ne
+    audioState.unlocked = false;
+    setAudioMsg("Nepodařilo se odemknout (zkus znovu).", false);
+  }
+}
+
+function queueTask(fn) {
+  audioQueue = audioQueue.then(() => fn()).catch(() => {}).then(() => new Promise(r => setTimeout(r, 250)));
+  return audioQueue;
+}
+
+async function speak(text) {
+  if (!text) return;
+  if (!("speechSynthesis" in window)) {
+    setAudioMsg("TTS není v prohlížeči podporované.", false);
+    return;
+  }
+
+  // některé prohlížeče potřebují, aby se voices načetly
+  try { window.speechSynthesis.getVoices(); } catch {}
+
+  return new Promise((resolve) => {
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = "cs-CZ";
+    u.rate = clamp(audioState.rate, 0.8, 1.4);
+    const voices = window.speechSynthesis.getVoices?.() || [];
+    const cz = voices.find(v => (v.lang || "").toLowerCase().startsWith("cs"));
+    if (cz) u.voice = cz;
+
+    u.onend = () => resolve();
+    u.onerror = () => resolve();
+
+    try {
+      window.speechSynthesis.cancel();
+    } catch {}
+
+    window.speechSynthesis.speak(u);
+  });
+}
+
+async function playGongOnce() {
+  if (!audioState.gongOnShift) return;
+  const a = ensureGong();
+  a.volume = clamp(audioState.volume, 0, 1);
+  try {
+    await a.play();
+    await new Promise(r => {
+      a.onended = () => r();
+      // fallback
+      setTimeout(r, 2500);
+    });
+  } catch {
+    // ignore
+  }
+}
+
+function canAnnounceNow() {
+  if (!isOps()) return false;
+  if (!audioState.enabled) return false;
+  if (inQuietHours()) return false;
+  return true;
+}
+
+function buildNewEventText(ev) {
+  const meta = typeMeta(ev.event_type);
+  const city = ev.city_text || ev.place_text || "";
+  const title = (ev.title || "").trim();
+
+  // zkus z titulku vynechat část " - město" když je město už zvlášť
+  let shortTitle = title;
+  if (city && title.toLowerCase().endsWith((" - " + city).toLowerCase())) {
+    shortTitle = title.slice(0, title.length - (3 + city.length));
+  }
+
+  const parts = ["Nová událost.", meta.label + "."];
+  if (city) parts.push("Místo: " + city + ".");
+  if (shortTitle) parts.push(shortTitle + ".");
+  return parts.join(" ");
+}
+
+function buildSummaryText() {
+  const open = latestStatsSnapshot?.openCount;
+  const closed = latestStatsSnapshot?.closedCount;
+  const top = latestStatsSnapshot?.topCities?.[0]?.city;
+  const topCount = latestStatsSnapshot?.topCities?.[0]?.count;
+
+  const parts = ["Souhrn přehledu."];
+  if (Number.isFinite(open) && Number.isFinite(closed)) {
+    parts.push(`Aktivní ${open}. Ukončené ${closed}.`);
+  } else {
+    const active = (latestItemsSnapshot || []).filter(x => !x.is_closed).length;
+    parts.push(`Aktivní ${active}.`);
+  }
+  if (top && Number.isFinite(topCount)) {
+    parts.push(`Nejvíc událostí má ${top}: ${topCount}.`);
+  }
+  return parts.join(" ");
+}
+
+function buildShiftText(mode) {
+  const now = new Date();
+  const s = computeShiftFor(now, mode);
+  const modeTxt = mode === "HZSP" ? "HZSP" : "HZS";
+  return `Střídání směn. Režim ${modeTxt}. Nyní směna ${s.cur}.`;
+}
+
+function audioOnNewEvent(ev) {
+  if (!canAnnounceNow()) return;
+  // nové události: BEZ gongu (podle domluvy)
+  const text = buildNewEventText(ev);
+  queueTask(() => speak(text));
+}
+
+function ensureSummarySchedule() {
+  try {
+    const raw = localStorage.getItem(LS_AUDIO_NEXT_SUMMARY_AT);
+    const t = raw ? Number(raw) : 0;
+    if (Number.isFinite(t) && t > Date.now()) return;
+  } catch {}
+
+  // naplánuj další souhrn za 3h od teď
+  const next = Date.now() + 3 * 60 * 60 * 1000;
+  try { localStorage.setItem(LS_AUDIO_NEXT_SUMMARY_AT, String(next)); } catch {}
+}
+
+function audioTickSummary() {
+  if (!canAnnounceNow()) return;
+  ensureSummarySchedule();
+
+  let nextAt = 0;
+  try { nextAt = Number(localStorage.getItem(LS_AUDIO_NEXT_SUMMARY_AT) || 0); } catch {}
+  if (!Number.isFinite(nextAt) || nextAt <= 0) return;
+
+  if (Date.now() < nextAt) return;
+
+  // po 3 hodinách: jen hlas (bez gongu)
+  const text = buildSummaryText();
+  queueTask(() => speak(text));
+
+  // další za 3h
+  const next = Date.now() + 3 * 60 * 60 * 1000;
+  try { localStorage.setItem(LS_AUDIO_NEXT_SUMMARY_AT, String(next)); } catch {}
+}
+
+function audioTickShift() {
+  // směna: gong + hlas (ale jen v OPS a když není tichý režim)
+  if (!canAnnounceNow()) return;
+
+  const mode = getShiftModeFromUi();
+  const boundary = shiftBoundaryHour(mode);
+  const now = new Date();
+
+  // pokud jsme přesně kolem boundary (±20 s), zkontroluj a ohlas jednou
+  const hh = now.getHours();
+  const mm = now.getMinutes();
+  const ss = now.getSeconds();
+  if (!(hh === boundary && mm === 0 && ss <= 20)) return;
+
+  // klíč pro "už hlášeno" (mode + local date)
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  const key = `${mode}-${y}-${m}-${d}`;
+
+  try {
+    const last = localStorage.getItem(LS_AUDIO_LAST_SHIFT_KEY);
+    if (last === key) return;
+    localStorage.setItem(LS_AUDIO_LAST_SHIFT_KEY, key);
+  } catch {
+    // ignore
+  }
+
+  const text = buildShiftText(mode);
+  queueTask(async () => {
+    // gong jen u směny (lze vypnout v UI)
+    await playGongOnce();
+    await speak(text);
+  });
+}
 
 const TYPE = {
   fire: { emoji: "🔥", label: "požár", cls: "marker-fire" },
@@ -462,6 +733,9 @@ function updateSimsFromItems(items) {
 
     seenEventIds.add(it.id);
 
+    // 🔊 OPS audio: NOVÁ + AKTIVNÍ událost = jen hlas (bez gongu)
+    audioOnNewEvent?.(it);
+
     // máme stanice?
     if (!hzsStations || hzsStations.length === 0) continue;
 
@@ -556,6 +830,9 @@ async function loadAll() {
     const statsJson = await statsRes.json();
 
     const items = eventsJson.items || [];
+    // snapshot pro audio souhrn
+    latestItemsSnapshot = items;
+    latestStatsSnapshot = statsJson;
     renderTable(items);
     renderMap(items);
 
@@ -643,7 +920,7 @@ setInterval(() => {
 
 const LS_SHIFT_MODE = "fwcz_shiftMode"; // lokální preference pro device
 let serverDefaultShiftMode = "HZS";
-let currentUser = null; // {id, username, role}
+// currentUser je definovaný nahoře
 
 function apiFetch(url, opt = {}) {
   const o = { ...opt };
@@ -682,11 +959,13 @@ async function refreshMe() {
     showEl("loginBtn", false);
     showEl("logoutBtn", true);
     showEl("adminBtn", currentUser.role === "admin");
+    showEl("audioBtn", true);
   } else {
     setModePill("PUBLIC");
     showEl("loginBtn", true);
     showEl("logoutBtn", false);
     showEl("adminBtn", false);
+    showEl("audioBtn", false);
   }
 }
 
@@ -694,15 +973,20 @@ function openModal(which) {
   const back = document.getElementById("modalBackdrop");
   const login = document.getElementById("loginModal");
   const admin = document.getElementById("adminModal");
+  const audio = document.getElementById("audioModal");
   if (!back || !login || !admin) return;
 
   back.style.display = "";
   login.style.display = which === "login" ? "" : "none";
   admin.style.display = which === "admin" ? "" : "none";
+  if (audio) audio.style.display = which === "audio" ? "" : "none";
 
   if (which === "login") {
     document.getElementById("loginMsg").textContent = "";
     setTimeout(() => document.getElementById("loginUser")?.focus(), 30);
+  } else if (which === "audio") {
+    syncAudioUi();
+    setAudioMsg(audioState.unlocked ? "Audio připraveno." : "Tip: na mobilu/tabletu klikni na „Odemknout“.");
   }
 }
 
@@ -710,9 +994,11 @@ function closeModals() {
   const back = document.getElementById("modalBackdrop");
   const login = document.getElementById("loginModal");
   const admin = document.getElementById("adminModal");
+  const audio = document.getElementById("audioModal");
   if (back) back.style.display = "none";
   if (login) login.style.display = "none";
   if (admin) admin.style.display = "none";
+  if (audio) audio.style.display = "none";
 }
 
 function msg(id, text, ok = true) {
@@ -720,6 +1006,75 @@ function msg(id, text, ok = true) {
   if (!el) return;
   el.textContent = text || "";
   el.style.color = ok ? "rgba(120,255,180,0.9)" : "rgba(255,140,140,0.95)";
+}
+
+// ---------- Audio UI (OPS) ----------
+function syncAudioUi() {
+  const en = document.getElementById("audioEnabled");
+  const vol = document.getElementById("audioVolume");
+  const rate = document.getElementById("audioRate");
+  const gongSel = document.getElementById("audioGongOnShift");
+  const quietSel = document.getElementById("audioQuiet");
+
+  if (en) en.checked = !!audioState.enabled;
+  if (vol) vol.value = String(Math.round(clamp(audioState.volume, 0, 1) * 100));
+  if (rate) rate.value = String(Math.round(clamp(audioState.rate, 0.8, 1.4) * 100));
+  if (gongSel) gongSel.value = audioState.gongOnShift ? "on" : "off";
+  if (quietSel) quietSel.value = audioState.quiet ? "on" : "off";
+}
+
+function wireAudioUiOnce() {
+  const en = document.getElementById("audioEnabled");
+  const unlockBtn = document.getElementById("audioUnlockBtn");
+  const closeBtn = document.getElementById("audioCloseBtn");
+  const vol = document.getElementById("audioVolume");
+  const rate = document.getElementById("audioRate");
+  const gongSel = document.getElementById("audioGongOnShift");
+  const quietSel = document.getElementById("audioQuiet");
+
+  if (closeBtn) closeBtn.addEventListener("click", closeModals);
+
+  if (en) en.addEventListener("change", () => {
+    audioState.enabled = !!en.checked;
+    saveAudioPrefs();
+    ensureSummarySchedule();
+    setAudioMsg(audioState.enabled ? "Audio zapnuto." : "Audio vypnuto.");
+  });
+
+  if (unlockBtn) unlockBtn.addEventListener("click", () => unlockAudio());
+
+  if (vol) vol.addEventListener("input", () => {
+    audioState.volume = clamp((Number(vol.value) || 0) / 100, 0, 1);
+    saveAudioPrefs();
+  });
+
+  if (rate) rate.addEventListener("input", () => {
+    audioState.rate = clamp((Number(rate.value) || 100) / 100, 0.8, 1.4);
+    saveAudioPrefs();
+  });
+
+  if (gongSel) gongSel.addEventListener("change", () => {
+    audioState.gongOnShift = (gongSel.value === "on");
+    saveAudioPrefs();
+  });
+
+  if (quietSel) quietSel.addEventListener("change", () => {
+    audioState.quiet = (quietSel.value === "on");
+    saveAudioPrefs();
+  });
+
+  document.getElementById("audioTestNew")?.addEventListener("click", () => {
+    queueTask(() => speak("Test. Nová událost. Technická. Místo: Nehvizdy."));
+  });
+  document.getElementById("audioTestSummary")?.addEventListener("click", () => {
+    queueTask(() => speak("Test. Souhrn přehledu. Aktivní tři. Ukončené deset."));
+  });
+  document.getElementById("audioTestShift")?.addEventListener("click", () => {
+    queueTask(async () => {
+      await playGongOnce();
+      await speak("Test. Střídání směn. Nyní směna A.");
+    });
+  });
 }
 
 async function doLogin() {
@@ -994,6 +1349,9 @@ function tickShiftUi() {
   if (elNow) elNow.textContent = s.cur;
   if (elCd) elCd.textContent = `Předání za ${fmtCountdown(s.nextBoundary.getTime() - now.getTime())}`;
   if (elN3) elN3.textContent = `Dnes ${s.cur} • Zítra ${s.next1} • Pozítří ${s.next2}`;
+
+  // 🔊 předání směny (OPS): gong + hlas (lze vypnout)
+  audioTickShift();
 }
 
 async function loadPublicSettings() {
@@ -1033,6 +1391,11 @@ function toggleTvMode() {
 
 // Wire UI
 (async function initOpsFrontend() {
+  // audio prefs
+  loadAudioPrefs();
+  wireAudioUiOnce();
+  syncAudioUi();
+
   // buttons
   document.getElementById("loginBtn")?.addEventListener("click", () => openModal("login"));
   document.getElementById("logoutBtn")?.addEventListener("click", doLogout);
@@ -1040,8 +1403,10 @@ function toggleTvMode() {
     openModal("admin");
     await adminLoadAll();
   });
+  document.getElementById("audioBtn")?.addEventListener("click", () => openModal("audio"));
   document.getElementById("fullscreenBtn")?.addEventListener("click", toggleFullscreen);
   document.getElementById("tvModeBtn")?.addEventListener("click", toggleTvMode);
+  document.getElementById("audioBtn")?.addEventListener("click", () => openModal("audio"));
 
   // modal close
   document.getElementById("modalBackdrop")?.addEventListener("click", closeModals);
@@ -1063,6 +1428,18 @@ function toggleTvMode() {
   await loadPublicSettings();
   tickShiftUi();
   setInterval(tickShiftUi, 1000);
+
+  // 🔊 souhrn každé 3 hodiny (OPS): tick každých 30 s
+  ensureSummarySchedule();
+  setInterval(audioTickSummary, 30000);
+
+  // 🔊 souhrn po 3h (OPS) — běží nenápadně, hlásí jen pokud je audio zapnuté
+  ensureSummarySchedule();
+  setInterval(audioTickSummary, 30000);
+
+  // 🔊 souhrn po 3 hodinách (OPS): jen hlas, žádný spam
+  ensureSummarySchedule();
+  setInterval(audioTickSummary, 30 * 1000);
 
   // auth state
   await refreshMe();

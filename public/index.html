@@ -50,6 +50,8 @@
       <button id="fullscreenBtn" class="btn" title="Celá obrazovka">⛶</button>
       <button id="tvModeBtn" class="btn" title="TV mód (větší písmo, kiosk)">📺</button>
 
+      <button id="audioBtn" class="btn" title="Audio (OPS)" style="display:none;">🔊</button>
+
       <span id="modePill" class="pill pillMode">PUBLIC</span>
       <button id="loginBtn" class="btn">Ops login</button>
       <button id="adminBtn" class="btn" style="display:none;">Admin</button>
@@ -320,6 +322,74 @@
           </table>
         </div>
         <div class="hint" id="adminUsersMsg" style="min-height:18px; margin-top:6px;"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================
+       AUDIO (OPS)
+       ============================ -->
+  <div id="audioModal" class="modal" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="audioTitle">
+    <div class="modalHeader">
+      <div>
+        <div id="audioTitle" class="modalTitle">Audio (OPS)</div>
+        <div class="modalHint">Hlasová hlášení běží jen v OPS. Na mobilech/tabletech je potřeba audio nejdřív „odemknout“ tlačítkem.</div>
+      </div>
+      <button class="btn" id="audioCloseBtn" title="Zavřít">✕</button>
+    </div>
+
+    <div class="modalBody">
+      <div class="adminCard" style="margin-top:0;">
+        <div class="adminCardHeader">
+          <div class="adminCardTitle">Ovládání</div>
+          <div class="hint">Bez spamu: nové události = jen hlas. Souhrn po 3 hodinách = jen hlas. Předání směny = gong + hlas (lze vypnout).</div>
+        </div>
+
+        <div class="field" style="margin-top:10px;">
+          <label class="ghost">Audio</label>
+          <div class="checkRow">
+            <label class="check">
+              <input id="audioEnabled" type="checkbox" />
+              <span>Zapnout hlášení (OPS)</span>
+            </label>
+            <button id="audioUnlockBtn" class="btn" title="Nutné pro tablety/mobily">Odemknout</button>
+          </div>
+          <div class="hint" id="audioMsg" style="min-height:18px; margin-top:6px;"></div>
+        </div>
+
+        <div class="grid2" style="margin-top:10px;">
+          <div class="field" style="margin-top:0;">
+            <label for="audioVolume">Hlasitost gongu (směna)</label>
+            <input id="audioVolume" type="range" min="0" max="100" value="70" />
+          </div>
+          <div class="field" style="margin-top:0;">
+            <label for="audioGongOnShift">Gong při předání směny</label>
+            <select id="audioGongOnShift">
+              <option value="on" selected>zapnuto</option>
+              <option value="off">vypnuto</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="grid2" style="margin-top:10px;">
+          <div class="field" style="margin-top:0;">
+            <label for="audioRate">Rychlost hlasu</label>
+            <input id="audioRate" type="range" min="80" max="140" value="105" />
+          </div>
+          <div class="field" style="margin-top:0;">
+            <label for="audioQuiet">Tichý režim</label>
+            <select id="audioQuiet">
+              <option value="off" selected>vypnuto</option>
+              <option value="on">22:00–06:00</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="adminActions" style="margin-top:12px;">
+          <button id="audioTestNew" class="btn">Test: nová událost</button>
+          <button id="audioTestSummary" class="btn">Test: souhrn</button>
+          <button id="audioTestShift" class="btn">Test: směna</button>
+        </div>
       </div>
     </div>
   </div>

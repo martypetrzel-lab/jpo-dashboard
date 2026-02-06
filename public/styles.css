@@ -259,6 +259,17 @@ body.tvMode .grid { gap: 12px; }
 
 .field.buttons .btnRow { display: flex; gap: 8px; flex-wrap: wrap; }
 
+/* OPS Audio modal helpers */
+.grid2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+@media (max-width: 720px) {
+  .grid2 { grid-template-columns: 1fr; }
+}
+
 /* GRID */
 .grid {
   padding: 12px;
