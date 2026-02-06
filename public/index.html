@@ -28,6 +28,33 @@
     </div>
 
     <div class="actions">
+      <div class="miniPanel" id="shiftPanel" title="Směna A/B/C + režim času předání">
+        <div class="miniRow">
+          <span class="miniLabel">Směna</span>
+          <span class="miniValue" id="shiftNow">—</span>
+          <span class="miniSep">•</span>
+          <label class="miniToggle" title="HZS (07:00) / HZSP (06:00)">
+            <select id="shiftModeSelect" class="miniSelect">
+              <option value="HZS">HZS 07:00</option>
+              <option value="HZSP">HZSP 06:00</option>
+            </select>
+          </label>
+        </div>
+        <div class="miniRow miniSub">
+          <span id="shiftCountdown">Předání za —</span>
+          <span class="miniSep">•</span>
+          <span id="shiftNext3">Dnes/Zítra/Pozítří —</span>
+        </div>
+      </div>
+
+      <button id="fullscreenBtn" class="btn" title="Celá obrazovka">⛶</button>
+      <button id="tvModeBtn" class="btn" title="TV mód (větší písmo, kiosk)">📺</button>
+
+      <span id="modePill" class="pill pillMode">PUBLIC</span>
+      <button id="loginBtn" class="btn">Ops login</button>
+      <button id="adminBtn" class="btn" style="display:none;">Admin</button>
+      <button id="logoutBtn" class="btn" style="display:none;">Odhlásit</button>
+
       <span id="statusPill" class="pill">…</span>
       <button id="refreshBtn" class="btn">Obnovit</button>
     </div>
@@ -191,6 +218,111 @@
       </div>
     </section>
   </main>
+
+  <!-- ============================
+       MODALS (OPS / ADMIN)
+       ============================ -->
+  <div id="modalBackdrop" class="modalBackdrop" style="display:none;"></div>
+
+  <div id="loginModal" class="modal" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
+    <div class="modalHeader">
+      <div>
+        <div id="loginTitle" class="modalTitle">Přihlášení (OPS)</div>
+        <div class="modalHint">Přístup je určen jen pro interní použití.</div>
+      </div>
+      <button class="btn" id="loginCloseBtn" title="Zavřít">✕</button>
+    </div>
+    <div class="modalBody">
+      <div class="field" style="margin-top:0;">
+        <label for="loginUser">Uživatelské jméno</label>
+        <input id="loginUser" type="text" autocomplete="username" placeholder="např. ops1" />
+      </div>
+      <div class="field">
+        <label for="loginPass">Heslo</label>
+        <input id="loginPass" type="password" autocomplete="current-password" placeholder="••••••" />
+      </div>
+      <div class="hint" id="loginMsg" style="min-height:18px;"></div>
+      <div class="btnRow" style="justify-content:flex-end; gap:10px;">
+        <button class="btn" id="loginCancelBtn">Zrušit</button>
+        <button class="btn primary" id="loginSubmitBtn">Přihlásit</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="adminModal" class="modal modalWide" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="adminTitle">
+    <div class="modalHeader">
+      <div>
+        <div id="adminTitle" class="modalTitle">Admin panel</div>
+        <div class="modalHint">Uživatelé + výchozí nastavení směn (HZS/HZSP).</div>
+      </div>
+      <button class="btn" id="adminCloseBtn" title="Zavřít">✕</button>
+    </div>
+    <div class="modalBody">
+      <div class="adminGrid">
+        <div class="adminCard">
+          <div class="adminCardHeader">
+            <div class="adminCardTitle">Nastavení</div>
+            <div class="hint">Výchozí režim směn pro public (globální default)</div>
+          </div>
+          <div class="adminRow">
+            <label class="miniToggle" style="width:100%;">
+              <span style="opacity:.85; margin-right:8px;">Default:</span>
+              <select id="adminDefaultShift" class="miniSelect" style="min-width:160px;">
+                <option value="HZS">HZS 07:00</option>
+                <option value="HZSP">HZSP 06:00</option>
+              </select>
+            </label>
+            <button class="btn" id="adminSaveSettings">Uložit</button>
+          </div>
+          <div class="hint" id="adminSettingsMsg" style="min-height:18px;"></div>
+        </div>
+
+        <div class="adminCard">
+          <div class="adminCardHeader">
+            <div class="adminCardTitle">Vytvořit uživatele</div>
+            <div class="hint">Role ops/admin, možnost disable.</div>
+          </div>
+          <div class="adminRow" style="flex-wrap:wrap; gap:10px;">
+            <input id="newUser" class="miniInput" placeholder="username" style="min-width:140px;" />
+            <input id="newPass" class="miniInput" placeholder="heslo (min 6)" type="password" style="min-width:160px;" />
+            <select id="newRole" class="miniSelect" style="min-width:110px;">
+              <option value="ops">ops</option>
+              <option value="admin">admin</option>
+            </select>
+            <label class="check" style="margin:0;">
+              <input id="newEnabled" type="checkbox" checked />
+              <span>enabled</span>
+            </label>
+            <button id="createUserBtn" class="btn primary">Vytvořit</button>
+          </div>
+          <div class="hint" id="adminCreateMsg" style="min-height:18px;"></div>
+        </div>
+      </div>
+
+      <div class="adminCard" style="margin-top:12px;">
+        <div class="adminCardHeader">
+          <div class="adminCardTitle">Uživatelé</div>
+          <div class="hint">Klikni na roli nebo enabled pro rychlou úpravu, reset hesla přes tlačítko.</div>
+        </div>
+        <div class="tableWrap" role="region" aria-label="Uživatelé" tabindex="0">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Username</th>
+                <th>Role</th>
+                <th>Enabled</th>
+                <th>Last login</th>
+                <th>Akce</th>
+              </tr>
+            </thead>
+            <tbody id="usersTbody"></tbody>
+          </table>
+        </div>
+        <div class="hint" id="adminUsersMsg" style="min-height:18px; margin-top:6px;"></div>
+      </div>
+    </div>
+  </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
