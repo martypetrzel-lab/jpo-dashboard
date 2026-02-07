@@ -305,7 +305,41 @@
         </div>
       </div>
 
+      
       <div class="adminCard" style="margin-top:12px;">
+        <div class="adminCardHeader">
+          <div class="adminCardTitle">Oprávnění rolí</div>
+          <div class="hint">Nastaví, co je dostupné pro PUBLIC / OPS / ADMIN (export, audio, simulace...).</div>
+        </div>
+
+        <div class="adminRow" style="flex-wrap:wrap; gap:10px;">
+          <label class="miniToggle" style="width:auto;">
+            <span style="opacity:.85; margin-right:8px;">Role:</span>
+            <select id="permRoleSelect" class="miniSelect" style="min-width:140px;">
+              <option value="public">public</option>
+              <option value="ops">ops</option>
+              <option value="admin">admin</option>
+            </select>
+          </label>
+          <button class="btn" id="permSaveBtn">Uložit oprávnění</button>
+        </div>
+
+        <div class="permGrid" style="margin-top:10px;">
+          <label class="check"><input id="perm_can_export_csv" type="checkbox" /> <span>Export CSV</span></label>
+          <label class="check"><input id="perm_can_export_pdf" type="checkbox" /> <span>Export PDF</span></label>
+          <label class="check"><input id="perm_can_fullscreen" type="checkbox" /> <span>Fullscreen</span></label>
+          <label class="check"><input id="perm_can_tv_mode" type="checkbox" /> <span>TV mód</span></label>
+          <label class="check"><input id="perm_can_toggle_hzs_stations" type="checkbox" /> <span>Přepínat stanice HZS</span></label>
+          <label class="check"><input id="perm_can_run_simulation" type="checkbox" /> <span>Simulace výjezdu</span></label>
+          <label class="check"><input id="perm_can_use_audio" type="checkbox" /> <span>Audio (OPS funkce)</span></label>
+          <label class="check"><input id="perm_can_use_briefing" type="checkbox" /> <span>Briefing (OPS)</span></label>
+          <label class="check"><input id="perm_can_use_master_mute" type="checkbox" /> <span>Master mute</span></label>
+        </div>
+
+        <div class="hint" id="permMsg" style="min-height:18px; margin-top:6px;"></div>
+      </div>
+
+<div class="adminCard" style="margin-top:12px;">
         <div class="adminCardHeader">
           <div class="adminCardTitle">Uživatelé</div>
           <div class="hint">Klikni na roli nebo enabled pro rychlou úpravu, reset hesla přes tlačítko.</div>

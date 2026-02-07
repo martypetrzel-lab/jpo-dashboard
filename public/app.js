@@ -5,6 +5,62 @@ let routesLayer, vehiclesLayer;
 // OPS auth state (musí být nahoře kvůli TTS, které může běžet už při prvním loadu)
 let currentUser = null; // {id, username, role}
 
+let APP_ROLE = "public";
+let APP_PERMS = {
+  can_export_csv: true,
+  can_export_pdf: true,
+  can_fullscreen: true,
+  can_tv_mode: true,
+  can_toggle_hzs_stations: true,
+  can_run_simulation: true,
+  can_use_audio: false,
+  can_use_briefing: false,
+  can_use_master_mute: false
+};
+
+function applyPermsToUi() {
+  // Export
+  const csvBtn = document.getElementById("exportCsvBtn");
+  const pdfBtn = document.getElementById("exportPdfBtn");
+  if (csvBtn) csvBtn.style.display = APP_PERMS.can_export_csv ? "" : "none";
+  if (pdfBtn) pdfBtn.style.display = APP_PERMS.can_export_pdf ? "" : "none";
+
+  // Fullscreen / TV mode
+  const fsBtn = document.getElementById("fullscreenBtn");
+  const tvBtn = document.getElementById("tvModeBtn");
+  if (fsBtn) fsBtn.style.display = APP_PERMS.can_fullscreen ? "" : "none";
+  if (tvBtn) tvBtn.style.display = APP_PERMS.can_tv_mode ? "" : "none";
+
+  // HZS stations toggle
+  const hzsToggle = document.getElementById("hzsStationsToggle");
+  if (hzsToggle) {
+    hzsToggle.disabled = !APP_PERMS.can_toggle_hzs_stations;
+    if (!APP_PERMS.can_toggle_hzs_stations) hzsToggle.checked = false;
+  }
+
+  // OPS-only audio buttons are still OPS gated, but allow disabling per role
+  const audioBtn = document.getElementById("audioBtn");
+  const briefingBtn = document.getElementById("briefingBtn");
+  const muteBtn = document.getElementById("muteBtn");
+  if (audioBtn) audioBtn.style.display = (isOps() && APP_PERMS.can_use_audio) ? "" : "none";
+  if (briefingBtn) briefingBtn.style.display = (isOps() && APP_PERMS.can_use_briefing) ? "" : "none";
+  if (muteBtn) muteBtn.style.display = (APP_PERMS.can_use_master_mute) ? "" : "none";
+}
+
+async function loadAppSettings() {
+  try {
+    const r = await fetch("/api/settings", { credentials: "include" });
+    const j = await r.json();
+    if (r.ok && j?.ok && j?.perms) {
+      APP_ROLE = j.role || "public";
+      APP_PERMS = { ...APP_PERMS, ...j.perms };
+    }
+  } catch {
+    // ignore
+  }
+  applyPermsToUi();
+}
+
 // ✅ simulace – jen NOVÉ a AKTIVNÍ události (od načtení stránky)
 const seenEventIds = new Set();
 const runningSims = new Map(); // eventId -> { marker, route, raf, stop }
@@ -1142,11 +1198,14 @@ function updateSimsFromItems(items) {
     // 🔊 OPS audio: NOVÁ + AKTIVNÍ událost = jen hlas (bez gongu)
     audioOnNewEvent?.(it);
 
-    queueSimulation(it);
+    if (APP_PERMS.can_run_simulation) {
+      queueSimulation(it);
+    }
   }
 }
 
 async function startSimulationForEvent(ev) {
+  if (!APP_PERMS.can_run_simulation) return;
   if (runningSims.has(ev.id)) return;
 
   try {
@@ -1399,6 +1458,8 @@ async function refreshMe() {
     showEl("audioBtn", false);
     showEl("briefingBtn", false);
   }
+
+  await loadAppSettings();
 }
 
 function openModal(which) {
@@ -1629,6 +1690,9 @@ async function adminLoadAll() {
   } catch {
     // ignore
   }
+
+
+  await adminLoadPermissions();
 }
 
 async function adminCreateUser() {
@@ -1693,6 +1757,78 @@ async function adminSaveSettings() {
     }
   } catch (e) {
     msg("adminSettingsMsg", `Chyba: ${String(e.message || e)}`, false);
+  }
+}
+
+let ADMIN_PERMS_ALL = null;
+
+function permsFormIds() {
+  return [
+    "can_export_csv",
+    "can_export_pdf",
+    "can_fullscreen",
+    "can_tv_mode",
+    "can_toggle_hzs_stations",
+    "can_run_simulation",
+    "can_use_audio",
+    "can_use_briefing",
+    "can_use_master_mute"
+  ];
+}
+
+function adminPermFillForm(roleKey) {
+  if (!ADMIN_PERMS_ALL) return;
+  const role = ADMIN_PERMS_ALL[roleKey] || {};
+  for (const k of permsFormIds()) {
+    const el = document.getElementById("perm_" + k);
+    if (el) el.checked = !!role[k];
+  }
+}
+
+function adminPermReadForm(roleKey) {
+  if (!ADMIN_PERMS_ALL) ADMIN_PERMS_ALL = { public: {}, ops: {}, admin: {} };
+  if (!ADMIN_PERMS_ALL[roleKey]) ADMIN_PERMS_ALL[roleKey] = {};
+  for (const k of permsFormIds()) {
+    const el = document.getElementById("perm_" + k);
+    if (el) ADMIN_PERMS_ALL[roleKey][k] = !!el.checked;
+  }
+}
+
+async function adminLoadPermissions() {
+  try {
+    const r = await apiFetch("/api/admin/settings", { method: "GET" });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || "load settings failed");
+    ADMIN_PERMS_ALL = j.permissions || null;
+
+    const sel = document.getElementById("permRoleSelect");
+    const roleKey = sel?.value || "public";
+    adminPermFillForm(roleKey);
+    msg("permMsg", "Načteno ✅", true);
+  } catch (e) {
+    msg("permMsg", `Chyba: ${String(e.message || e)}`, false);
+  }
+}
+
+async function adminSavePermissions() {
+  try {
+    const sel = document.getElementById("permRoleSelect");
+    const roleKey = sel?.value || "public";
+    adminPermReadForm(roleKey);
+
+    msg("permMsg", "Ukládám…", true);
+    const r = await apiFetch("/api/admin/settings", {
+      method: "PUT",
+      body: JSON.stringify({ permissions: ADMIN_PERMS_ALL })
+    });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || "save failed");
+    msg("permMsg", "Uloženo ✅", true);
+
+    // reload effective perms for current session
+    await loadAppSettings();
+  } catch (e) {
+    msg("permMsg", `Chyba: ${String(e.message || e)}`, false);
   }
 }
 
@@ -1864,6 +2000,12 @@ function toggleTvMode() {
   // admin actions
   document.getElementById("createUserBtn")?.addEventListener("click", adminCreateUser);
   document.getElementById("adminSaveSettings")?.addEventListener("click", adminSaveSettings);
+  document.getElementById("permRoleSelect")?.addEventListener("change", (e) => {
+    const roleKey = e.target?.value || "public";
+    adminPermFillForm(roleKey);
+  });
+  document.getElementById("permSaveBtn")?.addEventListener("click", adminSavePermissions);
+
 
   // settings + shift
   await loadPublicSettings();
