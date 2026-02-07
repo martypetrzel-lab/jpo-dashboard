@@ -38,6 +38,54 @@ const LS_AUDIO = "fwcz_audio_v1";
 const LS_AUDIO_NEXT_SUMMARY_AT = "fwcz_audio_nextSummaryAt";
 const LS_AUDIO_LAST_SHIFT_KEY = "fwcz_audio_lastShiftKey";
 
+// ==============================
+// MASTER MUTE (vypnout veškerý zvuk)
+// ==============================
+const LS_MASTER_MUTE = "fwcz_master_mute_v1";
+let masterMute = false;
+
+function loadMasterMute() {
+  try { masterMute = (localStorage.getItem(LS_MASTER_MUTE) === "1"); } catch { masterMute = false; }
+}
+
+function saveMasterMute() {
+  try { localStorage.setItem(LS_MASTER_MUTE, masterMute ? "1" : "0"); } catch {}
+}
+
+function setMuteUi() {
+  const btn = document.getElementById("muteBtn");
+  if (!btn) return;
+  if (masterMute) {
+    btn.textContent = "🔇";
+    btn.classList.add("isMuted");
+    btn.title = "Zvuk vypnut (klikni pro zapnutí)";
+  } else {
+    btn.textContent = "🔈";
+    btn.classList.remove("isMuted");
+    btn.title = "Ztlumit vše (FireWatch)";
+  }
+}
+
+function applyMasterMute() {
+  // okamžitě zastav vše, co právě hraje
+  if (masterMute) {
+    try { if ("speechSynthesis" in window) window.speechSynthesis.cancel(); } catch {}
+    try {
+      if (gongAudio) {
+        gongAudio.pause();
+        gongAudio.currentTime = 0;
+      }
+    } catch {}
+  }
+  setMuteUi();
+}
+
+function toggleMasterMute() {
+  masterMute = !masterMute;
+  saveMasterMute();
+  applyMasterMute();
+}
+
 let latestItemsSnapshot = [];
 let latestStatsSnapshot = null;
 
@@ -183,6 +231,11 @@ function ensureGong() {
 }
 
 async function unlockAudio() {
+  if (masterMute) {
+    audioState.unlocked = false;
+    setAudioMsg("Zvuk je vypnutý (🔇). Nejprve zapni zvuk.", false);
+    return;
+  }
   try {
     const a = ensureGong();
     a.volume = 0;
@@ -207,6 +260,7 @@ function queueTask(fn) {
 
 async function speak(text) {
   if (!text) return;
+  if (masterMute) return;
   if (!("speechSynthesis" in window)) {
     setAudioMsg("TTS není v prohlížeči podporované.", false);
     return;
@@ -242,6 +296,7 @@ async function speak(text) {
 }
 
 async function playGongOnce() {
+  if (masterMute) return;
   if (!audioState.gongOnShift) return;
   const a = ensureGong();
   a.volume = clamp(audioState.volume, 0, 1);
@@ -258,6 +313,7 @@ async function playGongOnce() {
 }
 
 function canAnnounceNow() {
+  if (masterMute) return false;
   if (!isOps()) return false;
   if (!audioState.enabled) return false;
   if (inQuietHours()) return false;
@@ -1772,6 +1828,10 @@ function toggleTvMode() {
 
   // audio prefs
   loadAudioPrefs();
+
+  // master mute
+  loadMasterMute();
+  applyMasterMute();
   wireAudioUiOnce();
   syncAudioUi();
 
@@ -1785,6 +1845,7 @@ function toggleTvMode() {
   document.getElementById("audioBtn")?.addEventListener("click", () => openModal("audio"));
   document.getElementById("briefingBtn")?.addEventListener("click", runBriefing);
   document.getElementById("fullscreenBtn")?.addEventListener("click", toggleFullscreen);
+  document.getElementById("muteBtn")?.addEventListener("click", toggleMasterMute);
   document.getElementById("tvModeBtn")?.addEventListener("click", toggleTvMode);
   document.getElementById("audioBtn")?.addEventListener("click", () => openModal("audio"));
 
