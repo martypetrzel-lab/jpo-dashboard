@@ -56,8 +56,10 @@
 
       <span id="modePill" class="pill pillMode">PUBLIC</span>
       <button id="loginBtn" class="btn">Ops login</button>
+      <button id="registerBtn" class="btn">Registrace</button>
       <button id="adminBtn" class="btn" style="display:none;">Admin</button>
       <button id="logoutBtn" class="btn" style="display:none;">Odhlásit</button>
+      <button id="requestOpsBtn" class="btn" style="display:none;">Požádat OPS</button>
 
       <span id="statusPill" class="pill">…</span>
       <button id="refreshBtn" class="btn">Obnovit</button>
@@ -255,6 +257,39 @@
     </div>
   </div>
 
+
+  <div id="registerModal" class="modal" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="registerTitle">
+    <div class="modalHeader">
+      <div>
+        <div id="registerTitle" class="modalTitle">Registrace</div>
+        <div class="modalHint">Po registraci máš přístup v režimu PUBLIC. OPS oprávnění musí schválit admin.</div>
+      </div>
+      <button class="btn" id="registerCloseBtn" title="Zavřít">✕</button>
+    </div>
+    <div class="modalBody">
+      <div class="field" style="margin-top:0;">
+        <label for="regUser">Uživatelské jméno</label>
+        <input id="regUser" type="text" autocomplete="username" placeholder="např. novak.petr" />
+        <div class="hint">3–32 znaků: písmena/čísla/._-</div>
+      </div>
+      <div class="field">
+        <label for="regPass">Heslo</label>
+        <input id="regPass" type="password" autocomplete="new-password" placeholder="min. 6 znaků" />
+      </div>
+      <div class="checkRow" style="margin-top:6px;">
+        <label class="check" style="margin:0;">
+          <input id="regRequestOps" type="checkbox" />
+          <span>Požádat rovnou o OPS oprávnění</span>
+        </label>
+      </div>
+      <div class="hint" id="regMsg" style="min-height:18px; margin-top:6px;"></div>
+      <div class="btnRow" style="justify-content:flex-end; gap:10px;">
+        <button class="btn" id="regCancelBtn">Zrušit</button>
+        <button class="btn primary" id="regSubmitBtn">Registrovat</button>
+      </div>
+    </div>
+  </div>
+
   <div id="adminModal" class="modal modalWide" style="display:none; z-index: 10001;" role="dialog" aria-modal="true" aria-labelledby="adminTitle">
     <div class="modalHeader">
       <div>
@@ -349,6 +384,65 @@
         </div>
         <div class="hint" id="adminUsersMsg" style="min-height:18px; margin-top:6px;"></div>
       </div>
+
+      <div class="adminCard" style="margin-top:12px;">
+        <div class="adminCardHeader">
+          <div class="adminCardTitle">Žádosti o OPS oprávnění</div>
+          <div class="hint">Uživatelé se mohou registrovat jako PUBLIC a požádat o OPS. Admin žádost ručně schvaluje.</div>
+        </div>
+        <div class="tableWrap" role="region" aria-label="Žádosti OPS" tabindex="0">
+          <table>
+            <thead>
+              <tr>
+                <th>Žádost</th>
+                <th>Uživatel</th>
+                <th>Čas</th>
+                <th>Akce</th>
+              </tr>
+            </thead>
+            <tbody id="opsReqTbody"></tbody>
+          </table>
+        </div>
+        <div class="hint" id="opsReqMsg" style="min-height:18px; margin-top:6px;"></div>
+      </div>
+
+      <div class="adminCard" style="margin-top:12px;">
+        <div class="adminCardHeader">
+          <div class="adminCardTitle">Události bez souřadnic</div>
+          <div class="hint">Doplnění souřadnic ručně nebo kliknutím do mapy. Projeví se všude (mapa, simulace, export, statistiky).</div>
+        </div>
+
+        <div class="adminRow" style="flex-wrap:wrap; gap:10px;">
+          <button id="reloadMissingCoordsBtn" class="btn">Načíst</button>
+          <span class="hint" id="missingCoordsInfo">—</span>
+        </div>
+
+        <div class="tableWrap" role="region" aria-label="Události bez souřadnic" tabindex="0" style="margin-top:8px;">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Název</th>
+                <th>Město</th>
+                <th>Stav</th>
+                <th>Akce</th>
+              </tr>
+            </thead>
+            <tbody id="missingCoordsTbody"></tbody>
+          </table>
+        </div>
+
+        <div class="adminRow" style="flex-wrap:wrap; gap:10px; margin-top:10px;">
+          <input id="coordsEventId" class="miniInput" placeholder="event id" style="min-width:220px;" readonly />
+          <input id="coordsLat" class="miniInput" placeholder="lat" style="min-width:120px;" />
+          <input id="coordsLon" class="miniInput" placeholder="lon" style="min-width:120px;" />
+          <button id="pickOnMapBtn" class="btn">Vybrat na mapě</button>
+          <button id="saveCoordsBtn" class="btn primary">Uložit</button>
+          <button id="clearCoordsBtn" class="btn">Smazat</button>
+        </div>
+        <div class="hint" id="coordsMsg" style="min-height:18px; margin-top:6px;"></div>
+      </div>
+
     </div>
   </div>
 

@@ -39,7 +39,13 @@ import {
   setSetting,
   getSetting,
   incPageVisit,
-  getVisitStats
+  getVisitStats,
+  createUserPublic,
+  createOpsRequest,
+  listPendingOpsRequests,
+  decideOpsRequest,
+  getEventsMissingCoords
+
 } from "./db.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -483,6 +489,150 @@ app.post("/api/auth/login", async (req, res) => {
 
     setSessionCookie(res, token, req);
     return res.json({ ok: true, user: { id: u.id, username: u.username, role: u.role }, expires_at: expiresAt });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
+
+// ---------------- AUTH: Registration + OPS request ----------------
+function isValidUsername(u) {
+  return /^[A-Za-z0-9._-]{3,32}$/.test(String(u || ""));
+}
+
+app.post("/api/auth/register", async (req, res) => {
+  try {
+    await deleteExpiredSessions();
+
+    const username = String(req.body?.username || "").trim();
+    const password = String(req.body?.password || "");
+    const requestOps = !!req.body?.request_ops;
+
+    if (!isValidUsername(username)) {
+      return res.status(400).json({ ok: false, error: "bad_username" });
+    }
+    if (password.length < 6) {
+      return res.status(400).json({ ok: false, error: "bad_password" });
+    }
+
+    const exists = await getUserByUsername(username);
+    if (exists) {
+      return res.status(409).json({ ok: false, error: "username_taken" });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    const u = await createUserPublic({ username, passwordHash });
+    if (!u) return res.status(500).json({ ok: false, error: "server_error" });
+
+    // auto-create OPS request if user wants
+    if (requestOps) {
+      try { await createOpsRequest(u.id); } catch {}
+    }
+
+    // auto-login as PUBLIC (user stays in PUBLIC mode until admin approves OPS)
+    const token = crypto.randomBytes(32).toString("hex");
+    const tokenSha = sha256Hex(token);
+    const expiresAt = new Date(Date.now() + SESSION_TTL_SECONDS * 1000).toISOString();
+    await createSession({ user_id: u.id, token_sha256: tokenSha, expires_at: expiresAt });
+
+    setSessionCookie(res, token, req);
+    return res.json({ ok: true, user: { id: u.id, username: u.username, role: "public" }, request_ops: requestOps });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
+app.post("/api/auth/request-ops", requireAuthAny, async (req, res) => {
+  try {
+    if (String(req.auth?.user?.role) !== "public") {
+      return res.status(400).json({ ok: false, error: "not_public" });
+    }
+    const created = await createOpsRequest(req.auth.user.id);
+    return res.json({ ok: true, created: !!created });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
+app.get("/api/admin/ops-requests", requireAdmin, async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(200, Number(req.query?.limit || 50)));
+    const rows = await listPendingOpsRequests(limit);
+    return res.json({ ok: true, rows });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
+app.post("/api/admin/ops-requests/:id/approve", requireAdmin, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: "bad_id" });
+    const out = await decideOpsRequest({ requestId: id, adminUserId: req.auth.user.id, approve: true });
+    if (!out.ok) return res.status(400).json(out);
+    await insertAudit({ actor_user_id: req.auth.user.id, action: "ops_request_approved", detail: JSON.stringify({ request_id: id, user_id: out.user_id }) });
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
+app.post("/api/admin/ops-requests/:id/reject", requireAdmin, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: "bad_id" });
+    const out = await decideOpsRequest({ requestId: id, adminUserId: req.auth.user.id, approve: false });
+    if (!out.ok) return res.status(400).json(out);
+    await insertAudit({ actor_user_id: req.auth.user.id, action: "ops_request_rejected", detail: JSON.stringify({ request_id: id, user_id: out.user_id }) });
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
+// ---------------- ADMIN: Missing coordinates management ----------------
+app.get("/api/admin/events-missing-coords", requireAdmin, async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(200, Number(req.query?.limit || 50)));
+    const rows = await getEventsMissingCoords(limit);
+    return res.json({ ok: true, rows });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
+app.put("/api/admin/events/:id/coords", requireAdmin, async (req, res) => {
+  try {
+    const id = String(req.params.id || "").trim();
+    const lat = Number(req.body?.lat);
+    const lon = Number(req.body?.lon);
+    if (!id) return res.status(400).json({ ok: false, error: "bad_id" });
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return res.status(400).json({ ok: false, error: "bad_coords" });
+    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return res.status(400).json({ ok: false, error: "bad_coords" });
+
+    await updateEventCoords(id, lat, lon);
+    await insertAudit({ actor_user_id: req.auth.user.id, action: "event_coords_set", detail: JSON.stringify({ event_id: id, lat, lon }) });
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
+app.delete("/api/admin/events/:id/coords", requireAdmin, async (req, res) => {
+  try {
+    const id = String(req.params.id || "").trim();
+    if (!id) return res.status(400).json({ ok: false, error: "bad_id" });
+    await clearEventCoords(id);
+    await insertAudit({ actor_user_id: req.auth.user.id, action: "event_coords_cleared", detail: JSON.stringify({ event_id: id }) });
+    return res.json({ ok: true });
   } catch (e) {
     console.error(e);
     return res.status(500).json({ ok: false, error: "server_error" });

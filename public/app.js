@@ -601,6 +601,27 @@ function initMap() {
   hzsLayer = L.layerGroup();
   routesLayer = L.layerGroup().addTo(map);
   vehiclesLayer = L.layerGroup().addTo(map);
+
+  // admin pick coords (klik do mapy)
+  map.on("click", (e) => {
+    if (!pickingCoords) return;
+    const id = document.getElementById("coordsEventId")?.value?.trim();
+    if (!id) return;
+    const lat = Number(e.latlng.lat);
+    const lon = Number(e.latlng.lng);
+    const latEl = document.getElementById("coordsLat");
+    const lonEl = document.getElementById("coordsLon");
+    if (latEl) latEl.value = lat.toFixed(6);
+    if (lonEl) lonEl.value = lon.toFixed(6);
+
+    try {
+      if (tempPickMarker) map.removeLayer(tempPickMarker);
+      tempPickMarker = L.circleMarker([lat, lon], { radius: 7, weight: 2 }).addTo(map);
+    } catch {}
+    msg("coordsMsg", `Vybráno: ${lat.toFixed(6)}, ${lon.toFixed(6)} (událost ${id})`, true);
+    setPickMode(false);
+  });
+
 }
 
 // ==============================
@@ -1412,16 +1433,24 @@ async function refreshMe() {
   }
 
   if (currentUser) {
-    setModePill("OPS", currentUser.role);
+    const role = String(currentUser.role || "public");
+    const isOps = (role === "ops" || role === "admin");
+
+    setModePill(isOps ? "OPS" : "PUBLIC", role);
+
     showEl("loginBtn", false);
+    showEl("registerBtn", false);
     showEl("logoutBtn", true);
-    showEl("adminBtn", currentUser.role === "admin");
-    showEl("audioBtn", true);
-    showEl("briefingBtn", true);
+    showEl("requestOpsBtn", !isOps && role === "public");
+    showEl("adminBtn", role === "admin");
+    showEl("audioBtn", isOps);
+    showEl("briefingBtn", isOps);
   } else {
     setModePill("PUBLIC");
     showEl("loginBtn", true);
+    showEl("registerBtn", true);
     showEl("logoutBtn", false);
+    showEl("requestOpsBtn", false);
     showEl("adminBtn", false);
     showEl("audioBtn", false);
     showEl("briefingBtn", false);
@@ -1431,18 +1460,27 @@ async function refreshMe() {
 function openModal(which) {
   const back = document.getElementById("modalBackdrop");
   const login = document.getElementById("loginModal");
+  const reg = document.getElementById("registerModal");
   const admin = document.getElementById("adminModal");
   const audio = document.getElementById("audioModal");
   if (!back || !login || !admin) return;
 
   back.style.display = "";
   login.style.display = which === "login" ? "" : "none";
+  if (reg) reg.style.display = which === "register" ? "" : "none";
   admin.style.display = which === "admin" ? "" : "none";
   if (audio) audio.style.display = which === "audio" ? "" : "none";
 
   if (which === "login") {
     document.getElementById("loginMsg").textContent = "";
     setTimeout(() => document.getElementById("loginUser")?.focus(), 30);
+  } else if (which === "register") {
+    document.getElementById("regMsg").textContent = "";
+    setTimeout(() => document.getElementById("regUser")?.focus(), 30);
+  } else if (which === "admin") {
+    // load extra admin widgets
+    loadOpsRequests();
+    loadMissingCoords();
   } else if (which === "audio") {
     syncAudioUi();
     setAudioMsg(audioState.unlocked ? "Audio připraveno." : "Tip: na mobilu/tabletu klikni na „Odemknout“.");
@@ -1452,10 +1490,12 @@ function openModal(which) {
 function closeModals() {
   const back = document.getElementById("modalBackdrop");
   const login = document.getElementById("loginModal");
+  const reg = document.getElementById("registerModal");
   const admin = document.getElementById("adminModal");
   const audio = document.getElementById("audioModal");
   if (back) back.style.display = "none";
   if (login) login.style.display = "none";
+  if (reg) reg.style.display = "none";
   if (admin) admin.style.display = "none";
   if (audio) audio.style.display = "none";
 }
@@ -1535,6 +1575,58 @@ function wireAudioUiOnce() {
     });
   });
 }
+
+
+async function doRegister() {
+  msg("regMsg", "Registruji…", true);
+  const u = (document.getElementById("regUser")?.value || "").trim();
+  const p = (document.getElementById("regPass")?.value || "");
+  const requestOps = !!document.getElementById("regRequestOps")?.checked;
+
+  if (!u || !p) return msg("regMsg", "Doplň uživatelské jméno a heslo.", false);
+  if (p.length < 6) return msg("regMsg", "Heslo musí mít aspoň 6 znaků.", false);
+
+  try {
+    const r = await apiFetch("/api/auth/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: u, password: p, request_ops: requestOps })
+    });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || "register failed");
+
+    msg("regMsg", requestOps ? "Hotovo. Účet vytvořen a žádost o OPS odeslána (čeká na schválení adminem)." : "Hotovo. Účet vytvořen (PUBLIC).", true);
+    await refreshMe();
+    closeModals();
+    await loadAll();
+  } catch (e) {
+    const em = String(e.message || e);
+    const map = {
+      username_taken: "Toto uživatelské jméno už existuje.",
+      bad_username: "Neplatné uživatelské jméno (povoleno: 3–32 znaků, písmena/čísla/._-).",
+      bad_password: "Neplatné heslo (min. 6 znaků)."
+    };
+    msg("regMsg", map[em] || em, false);
+  }
+}
+
+async function requestOpsAccess() {
+  if (!currentUser || String(currentUser.role) !== "public") return;
+  const btn = document.getElementById("requestOpsBtn");
+  if (btn) btn.disabled = true;
+  try {
+    const r = await apiFetch("/api/auth/request-ops", { method: "POST" });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || "request failed");
+    // jednoduchá feedback hláška přes status pill
+    setStatus("Žádost o OPS odeslána (čeká na schválení).", true);
+  } catch (e) {
+    setStatus("Žádost o OPS se nepodařila.", false);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 
 async function doLogin() {
   msg("loginMsg", "Přihlašuji…", true);
@@ -1868,6 +1960,211 @@ async function loadPublicSettings() {
 }
 
 // ---------- Fullscreen + TV ----------
+
+// ---------- Admin: OPS requests ----------
+async function loadOpsRequests() {
+  if (!currentUser || currentUser.role !== "admin") return;
+  const tbody = document.getElementById("opsReqTbody");
+  if (!tbody) return;
+
+  msg("opsReqMsg", "Načítám…", true);
+  try {
+    const r = await apiFetch("/api/admin/ops-requests?limit=100", { method: "GET" });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || "load failed");
+    const rows = j.rows || [];
+    tbody.innerHTML = "";
+    for (const row of rows) {
+      const tr = document.createElement("tr");
+
+      const tdId = document.createElement("td");
+      tdId.textContent = String(row.id);
+      tr.appendChild(tdId);
+
+      const tdUser = document.createElement("td");
+      tdUser.textContent = row.username || String(row.user_id);
+      tr.appendChild(tdUser);
+
+      const tdTs = document.createElement("td");
+      tdTs.textContent = row.requested_at ? new Date(row.requested_at).toLocaleString("cs-CZ") : "—";
+      tr.appendChild(tdTs);
+
+      const tdAct = document.createElement("td");
+      const okBtn = document.createElement("button");
+      okBtn.className = "btn primary";
+      okBtn.textContent = "Schválit OPS";
+      okBtn.addEventListener("click", async () => {
+        okBtn.disabled = true;
+        try {
+          const rr = await apiFetch(`/api/admin/ops-requests/${row.id}/approve`, { method: "POST" });
+          const jj = await rr.json();
+          if (!rr.ok || !jj.ok) throw new Error(jj.error || "approve failed");
+          msg("opsReqMsg", "Schváleno.", true);
+          await refreshMe();
+          await adminLoadAll();
+          await loadOpsRequests();
+        } catch (e) {
+          msg("opsReqMsg", String(e.message || e), false);
+        } finally {
+          okBtn.disabled = false;
+        }
+      });
+
+      const noBtn = document.createElement("button");
+      noBtn.className = "btn";
+      noBtn.textContent = "Zamítnout";
+      noBtn.style.marginLeft = "8px";
+      noBtn.addEventListener("click", async () => {
+        noBtn.disabled = true;
+        try {
+          const rr = await apiFetch(`/api/admin/ops-requests/${row.id}/reject`, { method: "POST" });
+          const jj = await rr.json();
+          if (!rr.ok || !jj.ok) throw new Error(jj.error || "reject failed");
+          msg("opsReqMsg", "Zamítnuto.", true);
+          await loadOpsRequests();
+        } catch (e) {
+          msg("opsReqMsg", String(e.message || e), false);
+        } finally {
+          noBtn.disabled = false;
+        }
+      });
+
+      tdAct.appendChild(okBtn);
+      tdAct.appendChild(noBtn);
+      tr.appendChild(tdAct);
+
+      tbody.appendChild(tr);
+    }
+
+    msg("opsReqMsg", rows.length ? `Čeká ${rows.length} žádostí.` : "Žádné čekající žádosti.", true);
+  } catch (e) {
+    msg("opsReqMsg", String(e.message || e), false);
+    tbody.innerHTML = "";
+  }
+}
+
+// ---------- Admin: Missing coordinates ----------
+let pickingCoords = false;
+let tempPickMarker = null;
+
+function setPickMode(on) {
+  pickingCoords = !!on;
+  const btn = document.getElementById("pickOnMapBtn");
+  if (btn) btn.textContent = pickingCoords ? "Klikni do mapy…" : "Vybrat na mapě";
+  msg("coordsMsg", pickingCoords ? "Klikni do mapy pro výběr bodu." : "", true);
+}
+
+async function loadMissingCoords() {
+  if (!currentUser || currentUser.role !== "admin") return;
+  const tbody = document.getElementById("missingCoordsTbody");
+  const info = document.getElementById("missingCoordsInfo");
+  if (!tbody) return;
+
+  if (info) info.textContent = "Načítám…";
+  try {
+    const r = await apiFetch("/api/admin/events-missing-coords?limit=80", { method: "GET" });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || "load failed");
+    const rows = j.rows || [];
+    tbody.innerHTML = "";
+    for (const ev of rows) {
+      const tr = document.createElement("tr");
+
+      const tdId = document.createElement("td");
+      tdId.textContent = String(ev.id);
+      tr.appendChild(tdId);
+
+      const tdTitle = document.createElement("td");
+      tdTitle.textContent = String(ev.title || "—");
+      tr.appendChild(tdTitle);
+
+      const tdCity = document.createElement("td");
+      tdCity.textContent = String(ev.city_text || ev.place_text || "—");
+      tr.appendChild(tdCity);
+
+      const tdSt = document.createElement("td");
+      tdSt.textContent = String(ev.status_text || (ev.is_closed ? "ukončená" : "aktivní") || "—");
+      tr.appendChild(tdSt);
+
+      const tdAct = document.createElement("td");
+      const pickBtn = document.createElement("button");
+      pickBtn.className = "btn";
+      pickBtn.textContent = "Vybrat / edit";
+      pickBtn.addEventListener("click", () => {
+        document.getElementById("coordsEventId").value = String(ev.id);
+        document.getElementById("coordsLat").value = "";
+        document.getElementById("coordsLon").value = "";
+        setPickMode(false);
+        msg("coordsMsg", `Vybrána událost: ${ev.id}`, true);
+        // posuň mapu aspoň na Středočeský kraj, ať se kliká pohodlně
+        try { map?.setView([49.9, 15.0], 9); } catch {}
+      });
+      tdAct.appendChild(pickBtn);
+      tr.appendChild(tdAct);
+
+      tbody.appendChild(tr);
+    }
+    if (info) info.textContent = rows.length ? `Nalezeno ${rows.length} událostí bez souřadnic.` : "Žádné události bez souřadnic.";
+  } catch (e) {
+    if (info) info.textContent = "Chyba načítání.";
+    tbody.innerHTML = "";
+    msg("coordsMsg", String(e.message || e), false);
+  }
+}
+
+async function saveCoordsForSelected() {
+  const id = document.getElementById("coordsEventId")?.value?.trim();
+  const lat = Number(document.getElementById("coordsLat")?.value);
+  const lon = Number(document.getElementById("coordsLon")?.value);
+  if (!id) return msg("coordsMsg", "Nejdřív vyber událost.", false);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return msg("coordsMsg", "Zadej platné lat/lon.", false);
+
+  try {
+    const r = await apiFetch(`/api/admin/events/${encodeURIComponent(id)}/coords`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ lat, lon })
+    });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || "save failed");
+    msg("coordsMsg", "Uloženo.", true);
+    setPickMode(false);
+    if (tempPickMarker) { try { map.removeLayer(tempPickMarker); } catch {} tempPickMarker = null; }
+    await loadMissingCoords();
+    await loadAll(); // refresh map + lists
+  } catch (e) {
+    msg("coordsMsg", String(e.message || e), false);
+  }
+}
+
+async function clearCoordsForSelected() {
+  const id = document.getElementById("coordsEventId")?.value?.trim();
+  if (!id) return msg("coordsMsg", "Nejdřív vyber událost.", false);
+  try {
+    const r = await apiFetch(`/api/admin/events/${encodeURIComponent(id)}/coords`, { method: "DELETE" });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || "clear failed");
+    msg("coordsMsg", "Souřadnice smazány.", true);
+    setPickMode(false);
+    if (tempPickMarker) { try { map.removeLayer(tempPickMarker); } catch {} tempPickMarker = null; }
+    await loadMissingCoords();
+    await loadAll();
+  } catch (e) {
+    msg("coordsMsg", String(e.message || e), false);
+  }
+}
+
+function wireMissingCoordsUiOnce() {
+  document.getElementById("reloadMissingCoordsBtn")?.addEventListener("click", loadMissingCoords);
+  document.getElementById("pickOnMapBtn")?.addEventListener("click", () => {
+    const id = document.getElementById("coordsEventId")?.value?.trim();
+    if (!id) return msg("coordsMsg", "Nejdřív vyber událost.", false);
+    setPickMode(!pickingCoords);
+  });
+  document.getElementById("saveCoordsBtn")?.addEventListener("click", saveCoordsForSelected);
+  document.getElementById("clearCoordsBtn")?.addEventListener("click", clearCoordsForSelected);
+}
+
 function toggleFullscreen() {
   const doc = document;
   const el = document.documentElement;
@@ -1899,6 +2196,8 @@ function toggleTvMode() {
 
   // buttons
   document.getElementById("loginBtn")?.addEventListener("click", () => openModal("login"));
+  document.getElementById("registerBtn")?.addEventListener("click", () => openModal("register"));
+  document.getElementById("requestOpsBtn")?.addEventListener("click", requestOpsAccess);
   document.getElementById("logoutBtn")?.addEventListener("click", doLogout);
   document.getElementById("adminBtn")?.addEventListener("click", async () => {
     openModal("admin");
@@ -1916,6 +2215,12 @@ function toggleTvMode() {
   document.getElementById("modalBackdrop")?.addEventListener("click", closeModals);
   document.getElementById("loginCloseBtn")?.addEventListener("click", closeModals);
   document.getElementById("loginCancelBtn")?.addEventListener("click", closeModals);
+  document.getElementById("registerCloseBtn")?.addEventListener("click", closeModals);
+  document.getElementById("regCancelBtn")?.addEventListener("click", closeModals);
+  document.getElementById("regSubmitBtn")?.addEventListener("click", doRegister);
+  // allow enter in register
+  document.getElementById("regPass")?.addEventListener("keydown", (e) => { if (e.key === "Enter") doRegister(); });
+  wireMissingCoordsUiOnce();
   document.getElementById("adminCloseBtn")?.addEventListener("click", closeModals);
 
   // login submit

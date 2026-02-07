@@ -107,6 +107,21 @@ export async function initDb() {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_user_sessions_expires_at ON user_sessions(expires_at);`);
 
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS ops_requests (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      status TEXT NOT NULL DEFAULT 'pending', -- pending/approved/rejected
+      requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      decided_at TIMESTAMPTZ,
+      decided_by BIGINT REFERENCES users(id) ON DELETE SET NULL
+    );
+  `);
+
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_ops_requests_status ON ops_requests(status);`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_ops_requests_pending_user ON ops_requests(user_id) WHERE status='pending';`);
+
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS audit_log (
       id BIGSERIAL PRIMARY KEY,
       ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -873,4 +888,91 @@ export async function getVisitStats(days = 30) {
   }
   const grand = Object.values(totals).reduce((a,b)=>a+b,0);
   return { days: d, rows: r.rows, totals, grandTotal: grand };
+}
+
+
+export async function createUserPublic({ username, passwordHash }) {
+  const r = await pool.query(
+    `INSERT INTO users (username, password_hash, role, is_enabled) VALUES ($1,$2,'public',TRUE) RETURNING id, username, role, is_enabled`,
+    [username, passwordHash]
+  );
+  return r.rows[0] || null;
+}
+
+export async function getUserByUsername(username) {
+  const r = await pool.query(`SELECT * FROM users WHERE username=$1`, [username]);
+  return r.rows[0] || null;
+}
+
+export async function createOpsRequest(userId) {
+  // unique pending per user (partial index)
+  const r = await pool.query(
+    `INSERT INTO ops_requests (user_id, status) VALUES ($1,'pending')
+     ON CONFLICT DO NOTHING
+     RETURNING id, status, requested_at`,
+    [userId]
+  );
+  return r.rows[0] || null;
+}
+
+export async function listPendingOpsRequests(limit = 50) {
+  const r = await pool.query(
+    `SELECT r.id, r.user_id, r.requested_at, u.username
+     FROM ops_requests r
+     JOIN users u ON u.id = r.user_id
+     WHERE r.status='pending'
+     ORDER BY r.requested_at ASC
+     LIMIT $1`,
+    [limit]
+  );
+  return r.rows || [];
+}
+
+export async function decideOpsRequest({ requestId, adminUserId, approve }) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const rr = await client.query(
+      `SELECT r.id, r.user_id, r.status FROM ops_requests r WHERE r.id=$1 FOR UPDATE`,
+      [requestId]
+    );
+    const row = rr.rows[0];
+    if (!row) {
+      await client.query("ROLLBACK");
+      return { ok: false, error: "not_found" };
+    }
+    if (row.status !== "pending") {
+      await client.query("ROLLBACK");
+      return { ok: false, error: "already_decided" };
+    }
+    const newStatus = approve ? "approved" : "rejected";
+    await client.query(
+      `UPDATE ops_requests
+       SET status=$2, decided_at=NOW(), decided_by=$3
+       WHERE id=$1`,
+      [requestId, newStatus, adminUserId]
+    );
+    if (approve) {
+      await client.query(`UPDATE users SET role='ops' WHERE id=$1`, [row.user_id]);
+    }
+    await client.query("COMMIT");
+    return { ok: true, status: newStatus, user_id: row.user_id };
+  } catch (e) {
+    try { await client.query("ROLLBACK"); } catch {}
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+export async function getEventsMissingCoords(limit = 50) {
+  const r = await pool.query(
+    `SELECT id, title, city_text, place_text, status_text, pub_date, is_closed, start_time_iso, end_time_iso, first_seen_at, last_seen_at
+     FROM events
+     WHERE (lat IS NULL OR lon IS NULL)
+     ORDER BY last_seen_at DESC
+     LIMIT $1`,
+    [limit]
+  );
+  return r.rows || [];
 }
