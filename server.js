@@ -37,6 +37,7 @@ import {
   getSessionUserByTokenSha,
   insertAudit,
   setSetting,
+  getSetting,
   incPageVisit,
   getVisitStats
 } from "./db.js";
@@ -700,6 +701,44 @@ if (Number.isFinite(it.durationMin)) {
 });
 
 // ---------------- VISITS (no cookies, no identifiers; admin-only viewing) ----------------
+
+// ---------------- SETTINGS ----------------
+app.get("/api/settings", async (req, res) => {
+  try {
+    const v = await getSetting("default_shift_mode");
+    const mode = (v === "HZSP" || v === "HZS") ? v : "HZS";
+    return res.json({ ok: true, default_shift_mode: mode });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: "settings_failed" });
+  }
+});
+
+app.get("/api/admin/settings", requireAdmin, async (req, res) => {
+  try {
+    const v = await getSetting("default_shift_mode");
+    const mode = (v === "HZSP" || v === "HZS") ? v : "HZS";
+    return res.json({ ok: true, default_shift_mode: mode });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: "settings_failed" });
+  }
+});
+
+app.put("/api/admin/settings", requireAdmin, async (req, res) => {
+  try {
+    const mode = String(req.body?.default_shift_mode || "").toUpperCase();
+    if (mode !== "HZS" && mode !== "HZSP") {
+      return res.status(400).json({ ok: false, error: "invalid_default_shift_mode" });
+    }
+    await setSetting("default_shift_mode", mode);
+    try {
+      await insertAudit(req.auth?.user?.id, "admin_settings_update", JSON.stringify({ default_shift_mode: mode }));
+    } catch {}
+    return res.json({ ok: true, default_shift_mode: mode });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: "save_failed" });
+  }
+});
+
 app.post("/api/visit", async (req, res) => {
   try {
     const auth = await authFromRequest(req);

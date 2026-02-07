@@ -1359,6 +1359,24 @@ function apiFetch(url, opt = {}) {
   return fetch(url, o);
 }
 
+
+async function loadServerSettings() {
+  try {
+    const r = await fetch("/api/settings", { credentials: "include" });
+    const j = await r.json();
+    if (r.ok && j.ok && (j.default_shift_mode === "HZS" || j.default_shift_mode === "HZSP")) {
+      serverDefaultShiftMode = j.default_shift_mode;
+      const sel = document.getElementById("shiftModeSelect");
+      if (sel && !localStorage.getItem(LS_SHIFT_MODE)) {
+        sel.value = serverDefaultShiftMode;
+      }
+    }
+  } catch {
+    // ignore
+  }
+}
+
+
 async function sendVisitPing() {
   try {
     // server si sám určí mode (public/ops/admin) podle session cookie
