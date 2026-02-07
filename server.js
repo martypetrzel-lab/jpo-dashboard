@@ -36,7 +36,6 @@ import {
   deleteExpiredSessions,
   getSessionUserByTokenSha,
   insertAudit,
-  getSetting,
   setSetting
 } from "./db.js";
 
@@ -45,68 +44,6 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
-const PERMS_KEY = "permissions_v1";
-
-// Default permissions (used when nothing saved in DB)
-const DEFAULT_PERMS = {
-  public: {
-    can_export_csv: true,
-    can_export_pdf: true,
-    can_fullscreen: true,
-    can_tv_mode: true,
-    can_toggle_hzs_stations: true,
-    can_run_simulation: true,
-    can_use_audio: false
-  },
-  ops: {
-    can_export_csv: true,
-    can_export_pdf: true,
-    can_fullscreen: true,
-    can_tv_mode: true,
-    can_toggle_hzs_stations: true,
-    can_run_simulation: true,
-    can_use_audio: true,
-    can_use_briefing: true,
-    can_use_master_mute: true
-  },
-  admin: {
-    can_export_csv: true,
-    can_export_pdf: true,
-    can_fullscreen: true,
-    can_tv_mode: true,
-    can_toggle_hzs_stations: true,
-    can_run_simulation: true,
-    can_use_audio: true,
-    can_use_briefing: true,
-    can_use_master_mute: true
-  }
-};
-
-async function loadPermsFromDb() {
-  try {
-    const raw = await getSetting(PERMS_KEY);
-    if (!raw) return JSON.parse(JSON.stringify(DEFAULT_PERMS));
-    const parsed = JSON.parse(raw);
-    // merge with defaults to survive older schema
-    const out = JSON.parse(JSON.stringify(DEFAULT_PERMS));
-    for (const k of ["public", "ops", "admin"]) {
-      if (parsed?.[k] && typeof parsed[k] === "object") {
-        out[k] = { ...out[k], ...parsed[k] };
-      }
-    }
-    return out;
-  } catch {
-    return JSON.parse(JSON.stringify(DEFAULT_PERMS));
-  }
-}
-
-function roleKeyFromUser(user) {
-  if (!user) return "public";
-  const r = String(user.role || "ops").toLowerCase();
-  if (r === "admin") return "admin";
-  return "ops";
-}
-
 
 // ---------------- CONFIG ----------------
 const API_KEY = process.env.API_KEY || "JPO_KEY_123456";
@@ -490,91 +427,6 @@ app.get("/api/auth/me", async (req, res) => {
   if (!auth?.user) return res.json({ ok: true, user: null });
   return res.json({ ok: true, user: auth.user, expires_in_s: SESSION_TTL_SECONDS });
 });
-app.get("/api/settings", async (req, res) => {
-  // returns effective permissions for current role (public/ops/admin)
-  const auth = await authFromRequest(req);
-  const roleKey = roleKeyFromUser(auth?.user);
-
-  const permsAll = await loadPermsFromDb();
-  const perms = permsAll[roleKey] || permsAll.public;
-
-  const defaultShiftMode = (await getSetting("default_shift_mode")) || "HZS";
-
-  res.json({ ok: true, role: roleKey, perms, default_shift_mode: defaultShiftMode });
-});
-
-app.get("/api/admin/settings", requireAdmin, async (req, res) => {
-  const permsAll = await loadPermsFromDb();
-  const defaultShiftMode = (await getSetting("default_shift_mode")) || "HZS";
-  res.json({ ok: true, default_shift_mode: defaultShiftMode, permissions: permsAll });
-});
-
-app.post("/api/admin/settings", requireAdmin, async (req, res) => {
-  try {
-    const body = req.body || {};
-
-    // default shift mode (optional)
-    if (body.default_shift_mode) {
-      const v = String(body.default_shift_mode).toUpperCase();
-      if (v === "HZS" || v === "HZSP") {
-        await setSetting("default_shift_mode", v);
-      }
-    }
-
-    // permissions (optional)
-    if (body.permissions && typeof body.permissions === "object") {
-      const incoming = body.permissions;
-
-      // sanitize: only known keys
-      const cleaned = JSON.parse(JSON.stringify(DEFAULT_PERMS));
-      for (const roleKey of ["public", "ops", "admin"]) {
-        const src = incoming?.[roleKey];
-        if (!src || typeof src !== "object") continue;
-        for (const k of Object.keys(cleaned[roleKey])) {
-          if (typeof src[k] === "boolean") cleaned[roleKey][k] = src[k];
-        }
-      }
-
-      await setSetting(PERMS_KEY, JSON.stringify(cleaned));
-    }
-
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: String(e.message || e) });
-  }
-});
-
-// Backward compatible with older frontend (PUT)
-app.put("/api/admin/settings", requireAdmin, async (req, res) => {
-  try {
-    const body = req.body || {};
-
-    if (body.default_shift_mode) {
-      const v = String(body.default_shift_mode).toUpperCase();
-      if (v === "HZS" || v === "HZSP") {
-        await setSetting("default_shift_mode", v);
-      }
-    }
-
-    if (body.permissions && typeof body.permissions === "object") {
-      const incoming = body.permissions;
-      const cleaned = JSON.parse(JSON.stringify(DEFAULT_PERMS));
-      for (const roleKey of ["public", "ops", "admin"]) {
-        const src = incoming?.[roleKey];
-        if (!src || typeof src !== "object") continue;
-        for (const k of Object.keys(cleaned[roleKey])) {
-          if (typeof src[k] === "boolean") cleaned[roleKey][k] = src[k];
-        }
-      }
-      await setSetting(PERMS_KEY, JSON.stringify(cleaned));
-    }
-
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: String(e.message || e) });
-  }
-});
-
 
 app.post("/api/auth/login", async (req, res) => {
   try {
@@ -591,7 +443,10 @@ app.post("/api/auth/login", async (req, res) => {
     row.count += 1;
     loginAttempts.set(key, row);
     if (row.count > LOGIN_MAX_ATTEMPTS) {
-      return res.status(429).json({ ok: false, error: "too_many_attempts" });
+      const retryAfterMs = Math.max(0, LOGIN_WINDOW_MS - (now - row.firstTs));
+      const retryAfterS = Math.ceil(retryAfterMs / 1000);
+      res.set("Retry-After", String(retryAfterS));
+      return res.status(429).json({ ok: false, error: "too_many_attempts", retry_after_s: retryAfterS, window_s: Math.ceil(LOGIN_WINDOW_MS/1000), max_attempts: LOGIN_MAX_ATTEMPTS });
     }
 
     const username = String(req.body?.username || "").trim();
@@ -619,7 +474,9 @@ app.post("/api/auth/login", async (req, res) => {
     await updateUserById(u.id, { lastLoginAtNow: true });
     await insertAudit({ userId: u.id, username: u.username, action: "login_ok", details: `role=${u.role}`, ip });
 
-    setSessionCookie(res, token, req);
+        // reset rate-limit counter on successful login
+    loginAttempts.delete(key);
+setSessionCookie(res, token, req);
     return res.json({ ok: true, user: { id: u.id, username: u.username, role: u.role }, expires_at: expiresAt });
   } catch (e) {
     console.error(e);

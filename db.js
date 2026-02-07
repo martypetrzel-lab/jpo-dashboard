@@ -169,7 +169,7 @@ function clampDuration(v) {
   return n;
 }
 
-export async function getSetting(key) {
+async function getSetting(key) {
   const res = await pool.query(`SELECT value FROM app_settings WHERE key=$1`, [key]);
   return res.rows[0]?.value ?? null;
 }

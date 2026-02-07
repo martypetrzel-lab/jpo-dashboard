@@ -411,7 +411,3 @@ tbody tr:hover td {
   #map { height: 340px; }
   .brand { font-size: 20px; }
 }
-
-
-/* Admin: permissions grid */
-.permGrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px 14px;align-items:center;}
