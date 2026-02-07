@@ -36,7 +36,9 @@ import {
   deleteExpiredSessions,
   getSessionUserByTokenSha,
   insertAudit,
-  setSetting
+  setSetting,
+  incPageVisit,
+  getVisitStats
 } from "./db.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -267,6 +269,13 @@ function parseTimesFromDescription(descRaw) {
   return out;
 }
 
+
+function todayPragueISO() {
+  // returns YYYY-MM-DD in Europe/Prague
+  const fmt = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Prague", year: "numeric", month: "2-digit", day: "2-digit" });
+  return fmt.format(new Date()); // en-CA gives YYYY-MM-DD
+}
+
 function extractCityFromTitle(title) {
   const t = String(title || "");
   const parts = t.split(" - ").map(s => s.trim()).filter(Boolean);
@@ -443,10 +452,7 @@ app.post("/api/auth/login", async (req, res) => {
     row.count += 1;
     loginAttempts.set(key, row);
     if (row.count > LOGIN_MAX_ATTEMPTS) {
-      const retryAfterMs = Math.max(0, LOGIN_WINDOW_MS - (now - row.firstTs));
-      const retryAfterS = Math.ceil(retryAfterMs / 1000);
-      res.set("Retry-After", String(retryAfterS));
-      return res.status(429).json({ ok: false, error: "too_many_attempts", retry_after_s: retryAfterS, window_s: Math.ceil(LOGIN_WINDOW_MS/1000), max_attempts: LOGIN_MAX_ATTEMPTS });
+      return res.status(429).json({ ok: false, error: "too_many_attempts" });
     }
 
     const username = String(req.body?.username || "").trim();
@@ -474,9 +480,7 @@ app.post("/api/auth/login", async (req, res) => {
     await updateUserById(u.id, { lastLoginAtNow: true });
     await insertAudit({ userId: u.id, username: u.username, action: "login_ok", details: `role=${u.role}`, ip });
 
-        // reset rate-limit counter on successful login
-    loginAttempts.delete(key);
-setSessionCookie(res, token, req);
+    setSessionCookie(res, token, req);
     return res.json({ ok: true, user: { id: u.id, username: u.username, role: u.role }, expires_at: expiresAt });
   } catch (e) {
     console.error(e);
@@ -694,6 +698,45 @@ if (Number.isFinite(it.durationMin)) {
     res.status(500).json({ ok: false, error: "server error" });
   }
 });
+
+// ---------------- VISITS (no cookies, no identifiers; admin-only viewing) ----------------
+app.post("/api/visit", async (req, res) => {
+  try {
+    const auth = await authFromRequest(req);
+    const role = String(auth?.user?.role || "");
+    const mode = role === "admin" ? "admin" : (role === "ops" ? "ops" : "public");
+    await incPageVisit(mode, todayPragueISO());
+    return res.json({ ok: true });
+  } catch (e) {
+    return res.json({ ok: true }); // fail-open; never break UI
+  }
+});
+
+app.get("/api/admin/visits/stats", requireAdmin, async (req, res) => {
+  const stats30 = await getVisitStats(30);
+
+  const sumDays = (n) => {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - (n - 1));
+    const cutoffIso = cutoff.toISOString().slice(0, 10);
+    const totals = {};
+    let grand = 0;
+    for (const row of stats30.rows) {
+      if (row.day < cutoffIso) continue;
+      const h = Number(row.hits || 0);
+      totals[row.mode] = (totals[row.mode] || 0) + h;
+      grand += h;
+    }
+    return { totals, grand };
+  };
+
+  const today = sumDays(1);
+  const last7 = sumDays(7);
+  const last30 = sumDays(30);
+
+  return res.json({ ok: true, today, last7, last30 });
+});
+
 
 // events (filters) + backfill coords + backfill duration
 app.get("/api/events", async (req, res) => {

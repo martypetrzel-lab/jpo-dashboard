@@ -1359,6 +1359,15 @@ function apiFetch(url, opt = {}) {
   return fetch(url, o);
 }
 
+async function sendVisitPing() {
+  try {
+    // server si sám určí mode (public/ops/admin) podle session cookie
+    await fetch("/api/visit", { method: "POST", credentials: "include" });
+  } catch {
+    // ignore
+  }
+}
+
 function setModePill(modeText, roleText = "") {
   const el = document.getElementById("modePill");
   if (!el) return;
@@ -1510,16 +1519,12 @@ function wireAudioUiOnce() {
 }
 
 async function doLogin() {
-  const submitBtn = document.getElementById("loginSubmitBtn");
-  if (submitBtn) submitBtn.disabled = true;
-
   msg("loginMsg", "Přihlašuji…", true);
   const u = (document.getElementById("loginUser")?.value || "").trim();
   const p = (document.getElementById("loginPass")?.value || "").trim();
 
   if (!u || !p) {
     msg("loginMsg", "Doplň username + heslo.", false);
-    if (submitBtn) submitBtn.disabled = false;
     return;
   }
 
@@ -1528,74 +1533,24 @@ async function doLogin() {
       method: "POST",
       body: JSON.stringify({ username: u, password: p })
     });
-
     const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.ok) throw new Error(j.error || "login failed");
 
-    if (r.ok && j.ok) {
-      msg("loginMsg", "OK ✅", true);
-      closeModals();
-      await refreshMe();
-      return;
-    }
-
-    // friendly errors
-    const err = String(j.error || "login_failed");
-
-    if (r.status === 429 && err === "too_many_attempts") {
-      const retry = Number(j.retry_after_s || 0);
-      startLoginCooldown(retry > 0 ? retry : 60);
-      return;
-    }
-
-    if (r.status === 401 && err === "unauthorized") {
-      msg("loginMsg", "Špatné jméno nebo heslo.", false);
-      return;
-    }
-
-    if (r.status === 400 && err === "bad_request") {
-      msg("loginMsg", "Zkontroluj vyplněné údaje (username/heslo).", false);
-      return;
-    }
-
-    msg("loginMsg", "Nepodařilo se přihlásit. Zkus to prosím znovu.", false);
+    msg("loginMsg", "OK ✅", true);
+    closeModals();
+    await refreshMe();
+  await sendVisitPing();
   } catch (e) {
-    msg("loginMsg", "Chyba připojení / serveru. Zkus to prosím za chvíli.", false);
-  } finally {
-    if (submitBtn) submitBtn.disabled = false;
+    msg("loginMsg", `Chyba: ${String(e.message || e)}`, false);
   }
 }
 
-let loginCooldownTimer = null;
-function startLoginCooldown(seconds) {
-  const submitBtn = document.getElementById("loginSubmitBtn");
-  if (submitBtn) submitBtn.disabled = true;
-
-  if (loginCooldownTimer) {
-    clearInterval(loginCooldownTimer);
-    loginCooldownTimer = null;
-  }
-
-  let left = Math.max(1, Math.floor(seconds));
-  const tick = () => {
-    const mm = String(Math.floor(left / 60)).padStart(2, "0");
-    const ss = String(left % 60).padStart(2, "0");
-    msg("loginMsg", `🔒 Příliš mnoho pokusů. Zkus to znovu za ${mm}:${ss}.`, false);
-    left -= 1;
-    if (left <= 0) {
-      clearInterval(loginCooldownTimer);
-      loginCooldownTimer = null;
-      msg("loginMsg", "Můžeš to zkusit znovu.", true);
-      if (submitBtn) submitBtn.disabled = false;
-    }
-  };
-  tick();
-  loginCooldownTimer = setInterval(tick, 1000);
-}
 async function doLogout() {
   try {
     await apiFetch("/api/auth/logout", { method: "POST" });
   } catch {}
   await refreshMe();
+  await sendVisitPing();
   closeModals();
 }
 
@@ -1687,6 +1642,37 @@ async function adminLoadAll() {
   }
 }
 
+async function adminLoadVisitsStats() {
+  if (!currentUser || currentUser.role !== "admin") return;
+
+  const setVal = (id, v) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = v;
+  };
+
+  try {
+    const r = await apiFetch("/api/admin/visits/stats", { method: "GET" });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || "load visits failed");
+
+    setVal("visitsToday", String(j.today?.grand ?? "0"));
+    setVal("visits7", String(j.last7?.grand ?? "0"));
+    setVal("visits30", String(j.last30?.grand ?? "0"));
+
+    const hint = (obj) => {
+      const t = obj?.totals || {};
+      const p = Number(t.public || 0);
+      const o = Number(t.ops || 0);
+      const a = Number(t.admin || 0);
+      return `Public ${p} • OPS ${o} • Admin ${a}`;
+    };
+    msg("visitsMsg", `${hint(j.last30)}`, true);
+  } catch (e) {
+    msg("visitsMsg", `Chyba: ${String(e.message || e)}`, false);
+  }
+}
+
+
 async function adminCreateUser() {
   msg("adminCreateMsg", "", true);
   const username = (document.getElementById("newUser")?.value || "").trim();
@@ -1709,6 +1695,7 @@ async function adminCreateUser() {
     msg("adminCreateMsg", "Uživatel vytvořen ✅", true);
     document.getElementById("newPass").value = "";
     await adminLoadAll();
+    await adminLoadVisitsStats();
   } catch (e) {
     msg("adminCreateMsg", `Chyba: ${String(e.message || e)}`, false);
   }
@@ -1725,6 +1712,7 @@ async function adminPatchUser(id, patch) {
     if (!r.ok || !j.ok) throw new Error(j.error || "update failed");
     msg("adminUsersMsg", "Uloženo ✅", true);
     await adminLoadAll();
+    await adminLoadVisitsStats();
   } catch (e) {
     msg("adminUsersMsg", `Chyba: ${String(e.message || e)}`, false);
   }
@@ -1897,6 +1885,7 @@ function toggleTvMode() {
   document.getElementById("adminBtn")?.addEventListener("click", async () => {
     openModal("admin");
     await adminLoadAll();
+    await adminLoadVisitsStats();
   });
   document.getElementById("audioBtn")?.addEventListener("click", () => openModal("audio"));
   document.getElementById("briefingBtn")?.addEventListener("click", runBriefing);
@@ -1940,4 +1929,5 @@ function toggleTvMode() {
 
   // auth state
   await refreshMe();
+  await sendVisitPing();
 })();

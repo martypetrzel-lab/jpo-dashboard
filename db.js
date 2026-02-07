@@ -68,6 +68,16 @@ export async function initDb() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS page_visits_daily (
+      day DATE NOT NULL,
+      mode TEXT NOT NULL,
+      hits INTEGER NOT NULL DEFAULT 0,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (day, mode)
+    );
+  `);
+
 
   // ---------------- AUTH TABLES ----------------
   await pool.query(`
@@ -832,4 +842,35 @@ export async function getStatsFiltered(filters) {
     longest: longestRows,
     durationCutoffIso: cutoffIso
   };
+}
+
+
+export async function incPageVisit(mode, dayIso) {
+  const m = String(mode || "public");
+  const day = dayIso; // 'YYYY-MM-DD'
+  await pool.query(
+    `INSERT INTO page_visits_daily(day, mode, hits)
+     VALUES ($1::date, $2, 1)
+     ON CONFLICT (day, mode)
+     DO UPDATE SET hits = page_visits_daily.hits + 1, updated_at = NOW()`,
+    [day, m]
+  );
+}
+
+export async function getVisitStats(days = 30) {
+  const d = Math.max(1, Math.min(365, Number(days) || 30));
+  const r = await pool.query(
+    `SELECT day::text AS day, mode, hits
+     FROM page_visits_daily
+     WHERE day >= (CURRENT_DATE - ($1::int - 1))
+     ORDER BY day ASC`,
+    [d]
+  );
+  // aggregate totals
+  const totals = {};
+  for (const row of r.rows) {
+    totals[row.mode] = (totals[row.mode] || 0) + Number(row.hits || 0);
+  }
+  const grand = Object.values(totals).reduce((a,b)=>a+b,0);
+  return { days: d, rows: r.rows, totals, grandTotal: grand };
 }
