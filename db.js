@@ -644,8 +644,24 @@ export async function getStatsFiltered(filters) {
     paramsAll
   );
 
+  // -----------------------------
+  // Nejdelší zásahy
+  // - chceme TOP 15 za měsíc (pokud je zvolený měsíc)
+  // - jinak zachováme chování "od cutoff" a zahrneme i aktivní (orientační)
+  // -----------------------------
+
+  const hasMonth = /^\d{4}-\d{2}$/.test(String(month || "").trim());
+
   const whereLongest = [...whereAll, `first_seen_at >= $${iAll}::timestamptz`];
   const paramsLongest = [...paramsAll, cutoffIso];
+  let iL = iAll + 1;
+
+  // pokud je zvolený měsíc: zobrazujeme pouze uzavřené zásahy s uloženou délkou
+  if (hasMonth) {
+    whereLongest.push(`is_closed = TRUE`);
+    whereLongest.push(`duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= $${iL}`);
+  }
+
   const whereLongestSql = `WHERE ${whereLongest.join(" AND ")}`;
 
   const longest = await pool.query(
@@ -656,11 +672,11 @@ export async function getStatsFiltered(filters) {
       link,
       COALESCE(NULLIF(city_text,''), place_text) AS city,
       CASE
-        WHEN duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= $${iAll + 1}
+        WHEN duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= $${iL}
           THEN duration_min
-        WHEN NOT is_closed
+        WHEN (NOT is_closed) AND NOT $${iL + 1}::boolean
           THEN LEAST(
-            $${iAll + 1},
+            $${iL},
             GREATEST(
               1,
               FLOOR(
@@ -679,13 +695,13 @@ export async function getStatsFiltered(filters) {
     FROM events
     ${whereLongestSql}
       AND (
-        (duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= $${iAll + 1})
-        OR (NOT is_closed)
+        (duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= $${iL})
+        OR ((NOT is_closed) AND NOT $${iL + 1}::boolean)
       )
     ORDER BY duration_min DESC NULLS LAST
-    LIMIT 10;
+    LIMIT ${hasMonth ? 15 : 10};
     `,
-    [...paramsLongest, MAX_DURATION_MINUTES]
+    [...paramsLongest, MAX_DURATION_MINUTES, hasMonth]
   );
 
   return {
