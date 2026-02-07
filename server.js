@@ -744,8 +744,19 @@ app.get("/api/export.csv", async (req, res) => {
 // export PDF
 function tryApplyPdfFont(doc) {
   try {
-    const fontPath = path.join(__dirname, "public", "fonts", "DejaVuSans.ttf");
-    if (fs.existsSync(fontPath)) doc.font(fontPath);
+    // Prefer bundled font inside repo (works on Railway / Docker)
+    const bundled = path.join(__dirname, "public", "fonts", "DejaVuSans.ttf");
+    if (fs.existsSync(bundled)) {
+      doc.font(bundled);
+      return;
+    }
+
+    // Fallback for some Linux environments (local dev, etc.)
+    const linuxPath = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
+    if (fs.existsSync(linuxPath)) {
+      doc.font(linuxPath);
+      return;
+    }
   } catch {
     // ignore
   }

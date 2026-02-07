@@ -910,6 +910,91 @@ function makeVehicleIcon() {
   });
 }
 
+
+// --- Simulation helpers: more realistic movement (slow down on curves) ---
+function haversineMeters(a, b) {
+  const R = 6371000;
+  const toRad = (x) => (x * Math.PI) / 180;
+  const lat1 = toRad(a[0]), lon1 = toRad(a[1]);
+  const lat2 = toRad(b[0]), lon2 = toRad(b[1]);
+  const dLat = lat2 - lat1;
+  const dLon = lon2 - lon1;
+  const s1 = Math.sin(dLat / 2);
+  const s2 = Math.sin(dLon / 2);
+  const h = s1 * s1 + Math.cos(lat1) * Math.cos(lat2) * s2 * s2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+function turnSeverity(prev, cur, next) {
+  // returns 0..1 (0 = straight, 1 = sharp turn)
+  try {
+    const v1x = cur[1] - prev[1];
+    const v1y = cur[0] - prev[0];
+    const v2x = next[1] - cur[1];
+    const v2y = next[0] - cur[0];
+
+    const n1 = Math.hypot(v1x, v1y);
+    const n2 = Math.hypot(v2x, v2y);
+    if (n1 === 0 || n2 === 0) return 0;
+
+    const dot = (v1x * v2x + v1y * v2y) / (n1 * n2);
+    const c = clamp(dot, -1, 1);
+    // 1 - cos(theta): 0..2
+    const sev = (1 - c) / 2; // normalize to 0..1
+    return clamp(sev, 0, 1);
+  } catch {
+    return 0;
+  }
+}
+
+function buildRouteTiming(coords) {
+  // coords is array of [lat, lon] for Leaflet
+  const pts = Array.isArray(coords) ? coords : [];
+  const n = pts.length;
+  if (n <= 1) return { coords: pts, cdf: [0], totalW: 1 };
+
+  // Weight each step by distance and local curvature (slow down in turns)
+  const cdf = new Array(n);
+  cdf[0] = 0;
+
+  // tunables: higher K => more slowdown in curves
+  const K = 1.8;
+  // minimum weight to avoid zero segments
+  const MIN_W = 1;
+
+  let sum = 0;
+  for (let i = 1; i < n; i++) {
+    const a = pts[i - 1];
+    const b = pts[i];
+    const dist = Math.max(MIN_W, haversineMeters(a, b)); // meters
+
+    let sev = 0;
+    if (i > 0 && i < n - 1) {
+      sev = turnSeverity(pts[i - 1], pts[i], pts[i + 1]);
+    }
+    // segment weight: distance * (1 + K * severity)
+    const w = dist * (1 + K * sev);
+    sum += w;
+    cdf[i] = sum;
+  }
+
+  // normalize edge case
+  const totalW = sum > 0 ? sum : 1;
+  return { coords: pts, cdf, totalW };
+}
+
+function binarySearchCdf(cdf, x) {
+  // returns index in coords for a given cumulative weight x
+  let lo = 0;
+  let hi = cdf.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (cdf[mid] < x) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
 function stopSimulation(eventId) {
   const sim = runningSims.get(eventId);
   if (!sim) return;
@@ -987,15 +1072,22 @@ async function startSimulationForEvent(ev) {
 
     const animMs = pickAnimMsFromEta(best.route.duration_s);
 
+    // build a more realistic time profile (slow down on curves)
+    const timing = buildRouteTiming(best.route.coords);
+
     let start = null;
     let rafId = null;
 
     const step = (ts) => {
       if (!start) start = ts;
       const p = clamp((ts - start) / animMs, 0, 1);
-      const idx = Math.floor(p * (best.route.coords.length - 1));
-      const pt = best.route.coords[idx];
+
+      // map progress -> route position using timing weights
+      const target = p * timing.totalW;
+      const idx = binarySearchCdf(timing.cdf, target);
+      const pt = timing.coords[idx];
       vehicle.setLatLng(pt);
+
       if (p < 1) rafId = requestAnimationFrame(step);
     };
 
