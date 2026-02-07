@@ -1295,8 +1295,8 @@ async function loadAll() {
     const qStats = buildStatsQuery(filters);
 
     const [eventsRes, statsRes] = await Promise.all([
-      fetch(`/api/events${qEvents ? `?${qEvents}` : ""}${qEvents ? "&" : "?"}_=${Date.now()}`, { cache: "no-store" }),
-      fetch(`/api/stats${qStats ? `?${qStats}` : ""}${qStats ? "&" : "?"}_=${Date.now()}`, { cache: "no-store" })
+      fetch(`/api/events${qEvents ? `?${qEvents}&_=${Date.now()}` : `?_=${Date.now()}`}`, { cache: "no-store" }),
+      fetch(`/api/stats${qStats ? `?${qStats}&_=${Date.now()}` : `?_=${Date.now()}`}`, { cache: "no-store" })
     ]);
 
     if (!eventsRes.ok || !statsRes.ok) throw new Error("bad http");
@@ -1407,7 +1407,7 @@ function apiFetch(url, opt = {}) {
 
 async function loadServerSettings() {
   try {
-    const r = await fetch("/api/settings", { credentials: "include" });
+    const r = await fetch("/api/settings", { credentials: "include", cache: "no-store" });
     const j = await r.json();
     if (r.ok && j.ok && (j.default_shift_mode === "HZS" || j.default_shift_mode === "HZSP")) {
       serverDefaultShiftMode = j.default_shift_mode;
@@ -1966,7 +1966,7 @@ function tickShiftUi() {
 
 async function loadPublicSettings() {
   try {
-    const r = await fetch("/api/settings", { method: "GET" });
+    const r = await fetch("/api/settings", { credentials: "include", cache: "no-store" });
     const j = await r.json();
     if (j.ok && j.default_shift_mode) serverDefaultShiftMode = j.default_shift_mode;
   } catch {
