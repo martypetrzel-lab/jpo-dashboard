@@ -208,6 +208,7 @@ body.tvMode .grid { gap: 12px; }
 .btn:hover { background: #1a2432; }
 .btn.primary { background: #172235; }
 .btn.primary:hover { background: #1d2b45; }
+.btn.isBusy { opacity: 0.65; }
 
 /* FILTERS */
 .filters {

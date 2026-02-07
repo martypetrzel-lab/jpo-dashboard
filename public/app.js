@@ -46,6 +46,9 @@ const audioState = {
 let gongAudio = null;
 let audioQueue = Promise.resolve();
 
+// OPS briefing (ručně)
+let briefingCooldownUntil = 0;
+
 function loadAudioPrefs() {
   try {
     const raw = localStorage.getItem(LS_AUDIO);
@@ -172,6 +175,133 @@ function canAnnounceNow() {
   if (!audioState.enabled) return false;
   if (inQuietHours()) return false;
   return true;
+}
+
+function formatDurationSpeechFromMinutes(min) {
+  if (!Number.isFinite(min) || min <= 0) return "0 minut";
+  const totalMin = Math.round(min);
+  const days = Math.floor(totalMin / (60 * 24));
+  const hours = Math.floor((totalMin % (60 * 24)) / 60);
+  const mins = totalMin % 60;
+
+  const parts = [];
+  if (days > 0) parts.push(days === 1 ? "1 den" : `${days} dny`);
+  if (hours > 0) parts.push(hours === 1 ? "1 hodina" : `${hours} hodin`);
+  if (days === 0 && mins > 0) parts.push(`${mins} minut`);
+  return parts.join(" ");
+}
+
+function pickLastByPubDate(items) {
+  let best = null;
+  let bestT = -Infinity;
+  for (const it of items || []) {
+    const t = Date.parse(it.pub_date || "");
+    const tt = Number.isFinite(t) ? t : -Infinity;
+    if (tt > bestT) {
+      bestT = tt;
+      best = it;
+    }
+  }
+  return best;
+}
+
+function pickLongestActive(items) {
+  let best = null;
+  let bestMin = -Infinity;
+  for (const it of items || []) {
+    if (it.is_closed) continue;
+    const dm = Number(it.duration_min);
+    if (!Number.isFinite(dm)) continue;
+    if (dm > bestMin) {
+      bestMin = dm;
+      best = it;
+    }
+  }
+  return best;
+}
+
+function buildBriefingText() {
+  const items = latestItemsSnapshot || [];
+  const open = Number.isFinite(latestStatsSnapshot?.openCount)
+    ? Number(latestStatsSnapshot.openCount)
+    : items.filter(x => !x.is_closed).length;
+
+  const parts = ["OPS briefing."];
+
+  if (open <= 0) {
+    parts.push("Aktuálně bez aktivních událostí.");
+  } else {
+    parts.push(`Aktivní události: ${open}.`);
+    const longest = pickLongestActive(items);
+    if (longest) {
+      const meta = typeMeta(longest.event_type);
+      const city = (longest.city_text || longest.place_text || "").trim();
+      const dur = formatDurationSpeechFromMinutes(Number(longest.duration_min));
+      const base = city ? `${meta.label} v ${city}` : meta.label;
+      parts.push(`Nejdéle trvá: ${base}, ${dur}.`);
+    }
+  }
+
+  const last = pickLastByPubDate(items);
+  if (last) {
+    const meta = typeMeta(last.event_type);
+    const city = (last.city_text || last.place_text || "").trim();
+    const base = city ? `${meta.label} — ${city}` : meta.label;
+    parts.push(`Poslední nová: ${base}.`);
+  }
+
+  // směna (krátce, vždy na konec)
+  const mode = getShiftModeFromUi?.() || "HZS";
+  const s = computeShiftFor(new Date(), mode);
+  const modeTxt = mode === "HZSP" ? "HZSP" : "HZS";
+  if (s?.cur) parts.push(`Směna ${modeTxt}: ${s.cur}.`);
+
+  return parts.join(" ");
+}
+
+async function speakNow(text) {
+  // briefing je ruční "na povel" – jde hned, nepřidává se do fronty
+  try { audioQueue = Promise.resolve(); } catch { /* ignore */ }
+  return speak(text);
+}
+
+async function runBriefing() {
+  if (!isOps()) return;
+
+  const btn = document.getElementById("briefingBtn");
+  const now = Date.now();
+  if (now < briefingCooldownUntil) {
+    // tiché odmítnutí (anti double-tap)
+    return;
+  }
+
+  // cooldown 20 s
+  briefingCooldownUntil = now + 20000;
+  if (btn) {
+    btn.disabled = true;
+    btn.classList.add("isBusy");
+  }
+
+  const text = buildBriefingText();
+  if (!text) {
+    if (btn) {
+      btn.disabled = false;
+      btn.classList.remove("isBusy");
+    }
+    return;
+  }
+
+  try {
+    await speakNow(text);
+  } finally {
+    // odemkni tlačítko až po cooldownu
+    const wait = Math.max(0, briefingCooldownUntil - Date.now());
+    setTimeout(() => {
+      if (!btn) return;
+      btn.disabled = false;
+      btn.classList.remove("isBusy");
+    }, wait);
+  }
 }
 
 function buildNewEventText(ev) {
@@ -960,12 +1090,14 @@ async function refreshMe() {
     showEl("logoutBtn", true);
     showEl("adminBtn", currentUser.role === "admin");
     showEl("audioBtn", true);
+    showEl("briefingBtn", true);
   } else {
     setModePill("PUBLIC");
     showEl("loginBtn", true);
     showEl("logoutBtn", false);
     showEl("adminBtn", false);
     showEl("audioBtn", false);
+    showEl("briefingBtn", false);
   }
 }
 
@@ -1404,6 +1536,7 @@ function toggleTvMode() {
     await adminLoadAll();
   });
   document.getElementById("audioBtn")?.addEventListener("click", () => openModal("audio"));
+  document.getElementById("briefingBtn")?.addEventListener("click", runBriefing);
   document.getElementById("fullscreenBtn")?.addEventListener("click", toggleFullscreen);
   document.getElementById("tvModeBtn")?.addEventListener("click", toggleTvMode);
   document.getElementById("audioBtn")?.addEventListener("click", () => openModal("audio"));
