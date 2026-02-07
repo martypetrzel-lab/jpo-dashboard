@@ -1295,8 +1295,8 @@ async function loadAll() {
     const qStats = buildStatsQuery(filters);
 
     const [eventsRes, statsRes] = await Promise.all([
-      fetch(`/api/events${qEvents ? `?${qEvents}` : ""}`),
-      fetch(`/api/stats${qStats ? `?${qStats}` : ""}`)
+      fetch(`/api/events${qEvents ? `?${qEvents}` : ""}${qEvents ? "&" : "?"}_=${Date.now()}`, { cache: "no-store" }),
+      fetch(`/api/stats${qStats ? `?${qStats}` : ""}${qStats ? "&" : "?"}_=${Date.now()}`, { cache: "no-store" })
     ]);
 
     if (!eventsRes.ok || !statsRes.ok) throw new Error("bad http");
