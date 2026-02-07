@@ -127,6 +127,9 @@ a { color: inherit; }
   background: #0f1620;
   box-shadow: 0 30px 100px rgba(0,0,0,0.55);
   z-index: 10051;
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
 }
 .modalWide { width: min(980px, 96vw); }
 .modalHeader {
@@ -138,7 +141,7 @@ a { color: inherit; }
 }
 .modalTitle { font-size: 16px; font-weight: 800; }
 .modalHint { opacity: 0.8; font-size: 12px; margin-top: 2px; }
-.modalBody { padding: 14px; }
+.modalBody { padding: 14px; overflow: auto; flex: 1; }
 
 .adminGrid {
   display: grid;
