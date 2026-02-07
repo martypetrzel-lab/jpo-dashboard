@@ -218,7 +218,7 @@ body.tvMode .grid { gap: 12px; }
 
 .filtersRow {
   display: grid;
-  grid-template-columns: 170px 160px minmax(220px, 1fr) 160px 150px 220px 260px 260px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 10px;
   align-items: end;
 }
