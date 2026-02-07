@@ -22,6 +22,7 @@ import {
   updateEventDuration,
   getDurationCutoffIso,
   getLongestCutoffIso,
+  autoCloseStaleOpenEvents,
 
   // auth
   getUsersCount,
@@ -51,6 +52,15 @@ const GEOCODE_UA = process.env.GEOCODE_UA || "firewatchcz/1.0 (contact: admin@fi
 // omez geo na Středočeský kraj (bounding box)
 const STC_VIEWBOX = process.env.STC_VIEWBOX || "13.25,50.71,15.65,49.30"; // left,top,right,bottom
 const STC_STATE_ALLOW = /stredocesky|central bohemia/i;
+
+
+// ---------------- ESP-only auto-close (stale open events) ----------------
+// Pokud ESP přestane posílat aktivní událost, po určité době ji uzavřeme:
+// end_time = last_seen_at, duration se dopočítá z startu.
+// (Žádné externí ověřování – jediný zdroj je ESP.)
+const STALE_CLOSE_MINUTES = Math.max(5, Number(process.env.STALE_CLOSE_MINUTES || 20)); // doporučeno 15–30
+const STALE_CLOSE_INTERVAL_MS = Math.max(30_000, Number(process.env.STALE_CLOSE_INTERVAL_MS || 60_000));
+const STALE_CLOSE_BATCH = Math.max(1, Math.min(2000, Number(process.env.STALE_CLOSE_BATCH || 200)));
 
 // ---------------- AUTH (OPS/ADMIN) ----------------
 const SESSION_COOKIE = process.env.SESSION_COOKIE_NAME || "FWSESS";
@@ -885,7 +895,34 @@ async function ensureInitialAdmin() {
   console.log(`[auth] Initial admin created: ${initUser}`);
 }
 
+
+let staleCloserInFlight = false;
+
+async function runStaleAutoClose() {
+  if (staleCloserInFlight) return;
+  staleCloserInFlight = true;
+  try {
+    const closed = await autoCloseStaleOpenEvents({
+      staleMinutes: STALE_CLOSE_MINUTES,
+      limit: STALE_CLOSE_BATCH
+    });
+
+    if (closed?.length) {
+      console.log(`[stale-close] auto-closed ${closed.length} events (>${STALE_CLOSE_MINUTES} min since last_seen)`);
+    }
+  } catch (e) {
+    console.error("[stale-close] error:", e?.message || e);
+  } finally {
+    staleCloserInFlight = false;
+  }
+}
+
 const port = process.env.PORT || 3000;
 await initDb();
 await ensureInitialAdmin();
+
+// start stale closer loop (ESP-only)
+await runStaleAutoClose();
+setInterval(runStaleAutoClose, STALE_CLOSE_INTERVAL_MS);
+
 app.listen(port, () => console.log(`listening on ${port}`));

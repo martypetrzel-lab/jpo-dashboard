@@ -401,6 +401,48 @@ export async function updateEventDuration(id, durationMin) {
   await pool.query(`UPDATE events SET duration_min=$2 WHERE id=$1`, [id, dur]);
 }
 
+export async function autoCloseStaleOpenEvents({ staleMinutes = 20, limit = 200 } = {}) {
+  const stale = Math.max(2, Number(staleMinutes || 0));
+  const lim = Math.max(1, Math.min(Number(limit || 0) || 200, 2000));
+
+  // Kandidáti: otevřené události, které nebyly vidět déle než staleMinutes.
+  // Uzavřeme je "na základě ESP dat" – end_time = last_seen_at a dopočítáme duration.
+  const res = await pool.query(
+    `
+    WITH candidates AS (
+      SELECT
+        id,
+        last_seen_at,
+        COALESCE(NULLIF(start_time_iso,'' )::timestamptz, first_seen_at, created_at) AS start_ts
+      FROM events
+      WHERE is_closed = FALSE
+        AND last_seen_at < (NOW() - ($1::text || ' minutes')::interval)
+      ORDER BY last_seen_at ASC
+      LIMIT $2
+    )
+    UPDATE events e
+    SET
+      is_closed = TRUE,
+      end_time_iso = to_char((c.last_seen_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+      duration_min = (
+        CASE
+          WHEN ROUND(EXTRACT(EPOCH FROM (c.last_seen_at - c.start_ts)) / 60.0)::int <= 0 THEN NULL
+          WHEN ROUND(EXTRACT(EPOCH FROM (c.last_seen_at - c.start_ts)) / 60.0)::int > $3 THEN NULL
+          ELSE ROUND(EXTRACT(EPOCH FROM (c.last_seen_at - c.start_ts)) / 60.0)::int
+        END
+      ),
+      status_text = COALESCE(e.status_text, 'ukončená')
+    FROM candidates c
+    WHERE e.id = c.id
+    RETURNING e.id, e.duration_min, e.end_time_iso;
+    `,
+    [stale, lim, MAX_DURATION_MINUTES]
+  );
+
+  return res.rows;
+}
+
+
 export async function getCachedGeocode(placeText) {
   const res = await pool.query(
     `SELECT lat, lon FROM geocode_cache WHERE place_text=$1`,
@@ -644,72 +686,150 @@ export async function getStatsFiltered(filters) {
     paramsAll
   );
 
+
   // -----------------------------
   // Nejdelší zásahy
-  // - chceme TOP 15 za měsíc (pokud je zvolený měsíc)
-  // - jinak zachováme chování "od cutoff" a zahrneme i aktivní (orientační)
+  // - pokud je zvolený měsíc (YYYY-MM): TOP 15 UZAVŘENÝCH podle END času (end_time_iso; fallback last_seen_at)
+  // - jinak: zachováme původní chování (od cutoff, včetně aktivních – orientačně)
   // -----------------------------
 
   const hasMonth = /^\d{4}-\d{2}$/.test(String(month || "").trim());
 
-  const whereLongest = [...whereAll, `first_seen_at >= $${iAll}::timestamptz`];
-  const paramsLongest = [...paramsAll, cutoffIso];
-  let iL = iAll + 1;
+  let longestRows = [];
 
-  // pokud je zvolený měsíc: zobrazujeme pouze uzavřené zásahy s uloženou délkou
   if (hasMonth) {
+    const whereLongest = [];
+    const paramsLongest = [];
+    let iL = 1;
+
+    if (types.length) {
+      whereLongest.push(`event_type = ANY($${iL}::text[])`);
+      paramsLongest.push(types);
+      iL++;
+    }
+    if (city) {
+      whereLongest.push(`(COALESCE(city_text,'') ILIKE $${iL} OR COALESCE(place_text,'') ILIKE $${iL})`);
+      paramsLongest.push(`%${city}%`);
+      iL++;
+    }
+
+    // TOP za měsíc dává smysl jen pro uzavřené s uloženou délkou
     whereLongest.push(`is_closed = TRUE`);
     whereLongest.push(`duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= $${iL}`);
+    paramsLongest.push(MAX_DURATION_MINUTES);
+    iL++;
+
+    // měsíc podle ukončení (end_time_iso), fallback last_seen_at
+    whereLongest.push(`
+      (
+        (COALESCE(NULLIF(end_time_iso,'' )::timestamptz, last_seen_at) AT TIME ZONE 'Europe/Prague')
+        >= date_trunc('month', to_date($${iL}, 'YYYY-MM'))
+        AND
+        (COALESCE(NULLIF(end_time_iso,'' )::timestamptz, last_seen_at) AT TIME ZONE 'Europe/Prague')
+        <  (date_trunc('month', to_date($${iL}, 'YYYY-MM')) + interval '1 month')
+      )
+    `);
+    paramsLongest.push(String(month).trim());
+    iL++;
+
+    const whereLongestSql = `WHERE ${whereLongest.join(" AND ")}`;
+
+    const longest = await pool.query(
+      `
+      SELECT
+        id,
+        title,
+        link,
+        COALESCE(NULLIF(city_text,''), place_text) AS city,
+        duration_min,
+        start_time_iso,
+        end_time_iso,
+        is_closed,
+        created_at
+      FROM events
+      ${whereLongestSql}
+      ORDER BY duration_min DESC NULLS LAST
+      LIMIT 15;
+      `,
+      paramsLongest
+    );
+
+    longestRows = longest.rows;
+  } else {
+    const whereLongest = [];
+    const paramsLongest = [];
+    let iL = 1;
+
+    if (types.length) {
+      whereLongest.push(`event_type = ANY($${iL}::text[])`);
+      paramsLongest.push(types);
+      iL++;
+    }
+    if (city) {
+      whereLongest.push(`(COALESCE(city_text,'') ILIKE $${iL} OR COALESCE(place_text,'') ILIKE $${iL})`);
+      paramsLongest.push(`%${city}%`);
+      iL++;
+    }
+    if (status === "open") whereLongest.push(`is_closed = FALSE`);
+    if (status === "closed") whereLongest.push(`is_closed = TRUE`);
+
+    // ochrana proti extrémům a "jen od nynějška"
+    whereLongest.push(`first_seen_at >= $${iL}::timestamptz`);
+    paramsLongest.push(cutoffIso);
+    iL++;
+
+    const whereLongestSql = `WHERE ${whereLongest.join(" AND ")}`;
+
+    const longest = await pool.query(
+      `
+      SELECT
+        id,
+        title,
+        link,
+        COALESCE(NULLIF(city_text,''), place_text) AS city,
+        CASE
+          WHEN duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= $${iL}
+            THEN duration_min
+          WHEN (NOT is_closed)
+            THEN LEAST(
+              $${iL},
+              GREATEST(
+                1,
+                FLOOR(
+                  EXTRACT(EPOCH FROM (
+                    NOW() - COALESCE(NULLIF(start_time_iso,'')::timestamptz, first_seen_at, created_at)
+                  )) / 60
+                )::int
+              )
+            )
+          ELSE NULL
+        END AS duration_min,
+        start_time_iso,
+        end_time_iso,
+        is_closed,
+        created_at
+      FROM events
+      ${whereLongestSql}
+        AND (
+          (duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= $${iL})
+          OR (NOT is_closed)
+        )
+      ORDER BY duration_min DESC NULLS LAST
+      LIMIT 10;
+      `,
+      [...paramsLongest, MAX_DURATION_MINUTES]
+    );
+
+    longestRows = longest.rows;
   }
 
-  const whereLongestSql = `WHERE ${whereLongest.join(" AND ")}`;
-
-  const longest = await pool.query(
-    `
-    SELECT
-      id,
-      title,
-      link,
-      COALESCE(NULLIF(city_text,''), place_text) AS city,
-      CASE
-        WHEN duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= $${iL}
-          THEN duration_min
-        WHEN (NOT is_closed) AND NOT $${iL + 1}::boolean
-          THEN LEAST(
-            $${iL},
-            GREATEST(
-              1,
-              FLOOR(
-                EXTRACT(EPOCH FROM (
-                  NOW() - COALESCE(NULLIF(start_time_iso,'')::timestamptz, first_seen_at, created_at)
-                )) / 60
-              )::int
-            )
-          )
-        ELSE NULL
-      END AS duration_min,
-      start_time_iso,
-      end_time_iso,
-      is_closed,
-      created_at
-    FROM events
-    ${whereLongestSql}
-      AND (
-        (duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= $${iL})
-        OR ((NOT is_closed) AND NOT $${iL + 1}::boolean)
-      )
-    ORDER BY duration_min DESC NULLS LAST
-    LIMIT ${hasMonth ? 15 : 10};
-    `,
-    [...paramsLongest, MAX_DURATION_MINUTES, hasMonth]
-  );
 
   return {
     byDay: byDay.rows,
     byType: byType.rows,
     topCities: topCities.rows,
     openVsClosed: openVsClosed.rows[0] || { open: 0, closed: 0 },
-    longest: longest.rows,
+    longest: longestRows,
     durationCutoffIso: cutoffIso
   };
 }
