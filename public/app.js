@@ -46,6 +46,79 @@ const audioState = {
 let gongAudio = null;
 let audioQueue = Promise.resolve();
 
+// Preferovaný hlas pro TTS (pokoušíme se najít ženský cs-CZ, když existuje)
+let preferredVoice = null;
+let voicesReady = false;
+
+function scoreVoiceForCzFemale(v) {
+  const lang = String(v?.lang || "").toLowerCase();
+  const name = String(v?.name || "").toLowerCase();
+  const uri = String(v?.voiceURI || "").toLowerCase();
+
+  let score = 0;
+
+  // jazyk
+  if (lang === "cs-cz") score += 100;
+  else if (lang.startsWith("cs")) score += 70;
+
+  // kvalita / natural
+  if (v?.localService === false) score += 5; // často kvalitnější (Google/Microsoft online), ale ne vždy
+
+  // heuristika "ženský" – WebSpeech API neobsahuje gender, proto odhad z názvu
+  const femaleHints = [
+    "female", "woman", "žensk", "zens", "žena", "zena",
+    "eva", "tereza", "zuzana", "jana", "anna", "lenka", "katka", "katerina",
+    "alena", "veronika", "monika", "petra", "lucie", "iveta", "gabriela"
+  ];
+  const maleHints = ["male", "man", "muž", "muz", "pavel", "jan", "petr", "ondrej", "andrej", "milan", "tomáš", "tomas"];
+
+  if (femaleHints.some(h => name.includes(h) || uri.includes(h))) score += 30;
+  if (maleHints.some(h => name.includes(h) || uri.includes(h))) score -= 10;
+
+  // preferuj hlasy s jasným názvem jazyka/regionu
+  if (name.includes("czech") || name.includes("češt") || name.includes("cest")) score += 10;
+
+  // lehce preferuj Microsoft/Google CZ, často mají lepší výslovnost
+  if (name.includes("microsoft") || name.includes("google")) score += 6;
+
+  return score;
+}
+
+function refreshPreferredVoice() {
+  if (!("speechSynthesis" in window)) return;
+  const voices = window.speechSynthesis.getVoices?.() || [];
+  if (!voices.length) return;
+
+  voicesReady = true;
+
+  // vyber nejlépe skórovaný hlas
+  let best = null;
+  let bestScore = -Infinity;
+  for (const v of voices) {
+    const sc = scoreVoiceForCzFemale(v);
+    if (sc > bestScore) {
+      bestScore = sc;
+      best = v;
+    }
+  }
+  preferredVoice = best || null;
+}
+
+function ensureVoicesHooked() {
+  if (!("speechSynthesis" in window)) return;
+  // vyvolá načtení hlasů
+  try { window.speechSynthesis.getVoices(); } catch {}
+  // některé prohlížeče naplní voices až po onvoiceschanged
+  if (!window.__fwczVoicesHooked) {
+    window.__fwczVoicesHooked = true;
+    window.speechSynthesis.onvoiceschanged = () => {
+      refreshPreferredVoice();
+    };
+  }
+  // pokus o immediate refresh
+  refreshPreferredVoice();
+}
+
 // OPS briefing (ručně)
 let briefingCooldownUntil = 0;
 
@@ -133,15 +206,22 @@ async function speak(text) {
   }
 
   // některé prohlížeče potřebují, aby se voices načetly
-  try { window.speechSynthesis.getVoices(); } catch {}
+  ensureVoicesHooked();
 
   return new Promise((resolve) => {
     const u = new SpeechSynthesisUtterance(text);
     u.lang = "cs-CZ";
     u.rate = clamp(audioState.rate, 0.8, 1.4);
-    const voices = window.speechSynthesis.getVoices?.() || [];
-    const cz = voices.find(v => (v.lang || "").toLowerCase().startsWith("cs"));
-    if (cz) u.voice = cz;
+
+    // preferuj ženský cs-CZ hlas, když je dostupný
+    if (preferredVoice) {
+      u.voice = preferredVoice;
+    } else {
+      const voices = window.speechSynthesis.getVoices?.() || [];
+      const cz = voices.find(v => (v.lang || "").toLowerCase() === "cs-cz")
+        || voices.find(v => (v.lang || "").toLowerCase().startsWith("cs"));
+      if (cz) u.voice = cz;
+    }
 
     u.onend = () => resolve();
     u.onerror = () => resolve();
@@ -1523,6 +1603,9 @@ function toggleTvMode() {
 
 // Wire UI
 (async function initOpsFrontend() {
+  // TTS voices
+  ensureVoicesHooked();
+
   // audio prefs
   loadAudioPrefs();
   wireAudioUiOnce();
