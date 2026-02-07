@@ -114,7 +114,7 @@ a { color: inherit; }
   inset: 0;
   background: rgba(0,0,0,0.55);
   backdrop-filter: blur(4px);
-  z-index: 50;
+  z-index: 10050;
 }
 .modal {
   position: fixed;
@@ -126,7 +126,7 @@ a { color: inherit; }
   border: 1px solid rgba(255,255,255,0.14);
   background: #0f1620;
   box-shadow: 0 30px 100px rgba(0,0,0,0.55);
-  z-index: 51;
+  z-index: 10051;
 }
 .modalWide { width: min(980px, 96vw); }
 .modalHeader {
