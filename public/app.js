@@ -798,13 +798,36 @@ function escapeHtml(s) {
     .replace(/'/g, "&#39;");
 }
 
-function buildQuery(filters) {
+// build query helpers
+// Pozn.: month filtr je určený jen pro statistiky měst (topCities) – NESMÍ ovlivnit /api/events ani exporty,
+// jinak to vypadá jako "zmizely události" při Obnovit.
+function buildEventsQuery(filters) {
+  const params = new URLSearchParams();
+  if (filters.day && filters.day !== "all") params.set("day", filters.day);
+  if (filters.type) params.set("type", filters.type);
+  if (filters.city) params.set("city", filters.city);
+  if (filters.status && filters.status !== "all") params.set("status", filters.status);
+  // month zde úmyslně není
+  return params.toString();
+}
+
+function buildStatsQuery(filters) {
   const params = new URLSearchParams();
   if (filters.day && filters.day !== "all") params.set("day", filters.day);
   if (filters.type) params.set("type", filters.type);
   if (filters.city) params.set("city", filters.city);
   if (filters.status && filters.status !== "all") params.set("status", filters.status);
   if (filters.month) params.set("month", filters.month);
+  return params.toString();
+}
+
+function buildExportQuery(filters) {
+  const params = new URLSearchParams();
+  if (filters.day && filters.day !== "all") params.set("day", filters.day);
+  if (filters.type) params.set("type", filters.type);
+  if (filters.city) params.set("city", filters.city);
+  if (filters.status && filters.status !== "all") params.set("status", filters.status);
+  // month zde úmyslně není (export = tabulka/události podle filtrů)
   return params.toString();
 }
 
@@ -1268,11 +1291,12 @@ async function loadAll() {
     setStatus("načítám…", true);
 
     const filters = getFiltersFromUi();
-    const q = buildQuery(filters);
+    const qEvents = buildEventsQuery(filters);
+    const qStats = buildStatsQuery(filters);
 
     const [eventsRes, statsRes] = await Promise.all([
-      fetch(`/api/events${q ? `?${q}` : ""}`),
-      fetch(`/api/stats${q ? `?${q}` : ""}`)
+      fetch(`/api/events${qEvents ? `?${qEvents}` : ""}`),
+      fetch(`/api/stats${qStats ? `?${qStats}` : ""}`)
     ]);
 
     if (!eventsRes.ok || !statsRes.ok) throw new Error("bad http");
@@ -1316,7 +1340,7 @@ function resetFilters() {
 
 function exportWithFilters(kind) {
   const filters = getFiltersFromUi();
-  const q = buildQuery(filters);
+  const q = buildExportQuery(filters);
   const url = kind === "pdf"
     ? `/api/export.pdf${q ? `?${q}` : ""}`
     : `/api/export.csv${q ? `?${q}` : ""}`;
