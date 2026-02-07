@@ -899,11 +899,6 @@ export async function createUserPublic({ username, passwordHash }) {
   return r.rows[0] || null;
 }
 
-export async function getUserByUsername(username) {
-  const r = await pool.query(`SELECT * FROM users WHERE username=$1`, [username]);
-  return r.rows[0] || null;
-}
-
 export async function createOpsRequest(userId) {
   // unique pending per user (partial index)
   const r = await pool.query(
