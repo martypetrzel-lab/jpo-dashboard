@@ -36,11 +36,7 @@ import {
   deleteExpiredSessions,
   getSessionUserByTokenSha,
   insertAudit,
-  setSetting,
-
-  // visits
-  insertVisit,
-  getVisitStats
+  setSetting
 } from "./db.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -68,12 +64,6 @@ const STALE_CLOSE_BATCH = Math.max(1, Math.min(2000, Number(process.env.STALE_CL
 
 // ---------------- AUTH (OPS/ADMIN) ----------------
 const SESSION_COOKIE = process.env.SESSION_COOKIE_NAME || "FWSESS";
-
-// ---------------- VISITS (cookie consent analytics) ----------------
-const VISIT_COOKIE = process.env.VISIT_COOKIE_NAME || "FWVID";
-const VISIT_COOKIE_MAX_AGE_DAYS = Math.max(7, Number(process.env.VISIT_COOKIE_MAX_AGE_DAYS || 180));
-
-
 const SESSION_TTL_SECONDS = Math.max(300, Number(process.env.SESSION_TTL_SECONDS || 7200)); // 2h default
 const LOGIN_MAX_ATTEMPTS = Math.max(3, Number(process.env.LOGIN_MAX_ATTEMPTS || 8));
 const LOGIN_WINDOW_MS = Math.max(60_000, Number(process.env.LOGIN_WINDOW_MS || 10 * 60_000));
@@ -125,32 +115,6 @@ function clearSessionCookie(res, req) {
   parts.push("SameSite=Lax");
   if (isHttps(req) || process.env.FORCE_SECURE_COOKIE === "1") parts.push("Secure");
   res.setHeader("Set-Cookie", parts.join("; "));
-}
-
-function setVisitCookie(res, vid, req) {
-  const parts = [];
-  parts.push(`${VISIT_COOKIE}=${encodeURIComponent(vid)}`);
-  parts.push(`Max-Age=${VISIT_COOKIE_MAX_AGE_DAYS * 24 * 3600}`);
-  parts.push("Path=/");
-  parts.push("HttpOnly");
-  parts.push("SameSite=Lax");
-  if (isHttps(req) || process.env.FORCE_SECURE_COOKIE === "1") parts.push("Secure");
-  res.append ? res.append("Set-Cookie", parts.join("; ")) : res.setHeader("Set-Cookie", parts.join("; "));
-}
-
-function newVid() {
-  try { return crypto.randomUUID(); } catch {}
-  return crypto.randomBytes(16).toString("hex");
-}
-
-function getVisitVid(req) {
-  const c = parseCookies(req);
-  return c?.[VISIT_COOKIE] || "";
-}
-
-function detectMode(auth) {
-  if (auth?.user && ["ops", "admin"].includes(String(auth.user.role))) return { mode: "ops", role: String(auth.user.role) };
-  return { mode: "public", role: null };
 }
 
 function sha256Hex(s) {
@@ -462,46 +426,6 @@ app.get("/api/auth/me", async (req, res) => {
   const auth = await authFromRequest(req);
   if (!auth?.user) return res.json({ ok: true, user: null });
   return res.json({ ok: true, user: auth.user, expires_in_s: SESSION_TTL_SECONDS });
-});
-
-
-
-// --- visits (cookie consent required client-side) ---
-// Client must call POST /api/visit only after user consents to analytics cookies.
-app.post("/api/visit", async (req, res) => {
-  try {
-    const consent = req.body?.consent === true;
-    if (!consent) return res.status(400).json({ ok: false, error: "consent_required" });
-
-    const auth = await authFromRequest(req);
-    const { mode, role } = detectMode(auth);
-
-    let vid = getVisitVid(req);
-    if (!vid) {
-      vid = newVid();
-      setVisitCookie(res, vid, req);
-    }
-
-    const ua = String(req.headers["user-agent"] || "");
-    await insertVisit({ vid, mode, role, userAgent: ua });
-
-    return res.json({ ok: true });
-  } catch (e) {
-    console.error("visit error", e);
-    return res.status(500).json({ ok: false, error: "server_error" });
-  }
-});
-
-// OPS/Admin: agregované statistiky návštěvnosti
-app.get("/api/visits/stats", requireOps, async (req, res) => {
-  try {
-    const days = Number(req.query.days || 7);
-    const data = await getVisitStats(days);
-    return res.json({ ok: true, ...data });
-  } catch (e) {
-    console.error("visits stats error", e);
-    return res.status(500).json({ ok: false, error: "server_error" });
-  }
 });
 
 app.post("/api/auth/login", async (req, res) => {

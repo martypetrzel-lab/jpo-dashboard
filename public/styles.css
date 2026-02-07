@@ -411,36 +411,3 @@ tbody tr:hover td {
   #map { height: 340px; }
   .brand { font-size: 20px; }
 }
-
-
-/* Cookie consent banner */
-.cookieBanner{
-  position: fixed;
-  left: 16px;
-  right: 16px;
-  bottom: 16px;
-  z-index: 12000;
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 14px;
-  border-radius: 14px;
-  background: rgba(15, 20, 28, 0.92);
-  border: 1px solid rgba(255,255,255,0.10);
-  box-shadow: 0 12px 40px rgba(0,0,0,0.55);
-  backdrop-filter: blur(10px);
-}
-.cookieBanner .cookieText{
-  font-size: 13px;
-  line-height: 1.35;
-  color: rgba(255,255,255,0.88);
-  max-width: 860px;
-}
-.cookieBanner .cookieActions{
-  display:flex;
-  gap:10px;
-  flex-wrap: wrap;
-  justify-content:flex-end;
-}
-

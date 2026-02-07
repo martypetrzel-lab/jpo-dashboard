@@ -109,22 +109,6 @@ export async function initDb() {
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_log_ts ON audit_log(ts DESC);`);
 
-
-// ---------------- VISITS (cookie consent analytics) ----------------
-await pool.query(`
-  CREATE TABLE IF NOT EXISTS visits (
-    id BIGSERIAL PRIMARY KEY,
-    ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    vid TEXT NOT NULL,
-    mode TEXT NOT NULL DEFAULT 'public', -- 'public' | 'ops'
-    role TEXT,                           -- ops/admin (null for public)
-    user_agent TEXT
-  );
-`);
-await pool.query(`CREATE INDEX IF NOT EXISTS idx_visits_ts ON visits(ts DESC);`);
-await pool.query(`CREATE INDEX IF NOT EXISTS idx_visits_vid ON visits(vid);`);
-
-
   // ✅ od kdy počítat "nejdelší zásahy" a ukládat nové délky (nezasahuje do historie)
   await pool.query(`
     INSERT INTO app_settings (key, value)
@@ -849,56 +833,3 @@ export async function getStatsFiltered(filters) {
     durationCutoffIso: cutoffIso
   };
 }
-
-
-// =============================
-// VISITS (analytics)
-// =============================
-
-export async function insertVisit({ vid, mode, role, userAgent }) {
-  const ua = (userAgent || "").slice(0, 240);
-  const m = (mode === "ops") ? "ops" : "public";
-  const r = role ? String(role).slice(0, 32) : null;
-  await pool.query(
-    `INSERT INTO visits (vid, mode, role, user_agent) VALUES ($1, $2, $3, $4)`,
-    [String(vid), m, r, ua]
-  );
-}
-
-// Vrátí agregace po dnech (Europe/Prague) za posledních N dní včetně dneška.
-export async function getVisitStats(days = 7) {
-  const d = Math.max(1, Math.min(90, Number(days) || 7));
-  const res = await pool.query(
-    `
-    SELECT
-      (ts AT TIME ZONE 'Europe/Prague')::date AS day,
-      mode,
-      COUNT(*)::int AS total,
-      COUNT(DISTINCT vid)::int AS unique
-    FROM visits
-    WHERE ts >= (NOW() - ($1::int * INTERVAL '1 day'))
-    GROUP BY day, mode
-    ORDER BY day ASC
-    `,
-    [d - 1]
-  );
-
-  // pivot to predictable shape
-  const byDay = new Map();
-  for (const row of res.rows) {
-    const key = String(row.day);
-    if (!byDay.has(key)) byDay.set(key, {
-      day: key,
-      public: { total: 0, unique: 0 },
-      ops: { total: 0, unique: 0 }
-    });
-    const slot = row.mode === "ops" ? "ops" : "public";
-    byDay.get(key)[slot] = { total: row.total, unique: row.unique };
-  }
-  const daysArr = Array.from(byDay.values());
-
-  const todayKey = new Date().toLocaleDateString("en-CA", { timeZone: "Europe/Prague" });
-  const today = byDay.get(todayKey) || { day: todayKey, public: { total: 0, unique: 0 }, ops: { total: 0, unique: 0 } };
-  return { rangeDays: d, today, days: daysArr };
-}
-
