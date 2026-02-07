@@ -932,6 +932,21 @@ function haversineMeters(a, b) {
   return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
 }
 
+
+function bearingDeg(a, b) {
+  // bearing from point a to b (degrees, 0 = north)
+  const toRad = (x) => (x * Math.PI) / 180;
+  const toDeg = (x) => (x * 180) / Math.PI;
+  const lat1 = toRad(a[0]);
+  const lat2 = toRad(b[0]);
+  const dLon = toRad(b[1] - a[1]);
+  const y = Math.sin(dLon) * Math.cos(lat2);
+  const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+  const brng = Math.atan2(y, x);
+  return (toDeg(brng) + 360) % 360;
+}
+
+
 function turnSeverity(prev, cur, next) {
   // returns 0..1 (0 = straight, 1 = sharp turn)
   try {
@@ -954,41 +969,74 @@ function turnSeverity(prev, cur, next) {
   }
 }
 
+
 function buildRouteTiming(coords) {
-  // coords is array of [lat, lon] for Leaflet
+  // Builds a per-segment time profile to make motion feel more realistic:
+  // - slows down in sharp turns
+  // - respects simple accel/decel limits (forward/backward pass)
+  //
+  // Returns:
+  //  - coords: original coords
+  //  - cdf: cumulative "time weights" at each point (seconds, relative)
+  //  - segW: per-segment time weight (seconds, relative)
+  //  - totalW: total time weight
   const pts = Array.isArray(coords) ? coords : [];
   const n = pts.length;
-  if (n <= 1) return { coords: pts, cdf: [0], totalW: 1 };
+  if (n <= 1) return { coords: pts, cdf: [0], segW: [0], totalW: 1 };
 
-  // Weight each step by distance and local curvature (slow down in turns)
-  const cdf = new Array(n);
-  cdf[0] = 0;
+  // --- Tunables (feel) ---
+  const BASE_V = 22;        // m/s ~ 80 km/h on straights (relative)
+  const MIN_V = 6;          // m/s ~ 22 km/h minimum (tight turns / town)
+  const TURN_K = 0.75;      // how much turns reduce vmax (0..1)
+  const A = 1.8;            // m/s^2 accel/decel limit (comfort)
+  const MIN_DIST = 1;       // meters (avoid zeros)
 
-  // tunables: higher K => more slowdown in curves
-  const K = 1.8;
-  // minimum weight to avoid zero segments
-  const MIN_W = 1;
+  // Distances between points
+  const dist = new Array(n).fill(0);
+  for (let i = 1; i < n; i++) {
+    dist[i] = Math.max(MIN_DIST, haversineMeters(pts[i - 1], pts[i]));
+  }
 
+  // Max speed at each point based on local curvature (turn severity)
+  const vmax = new Array(n).fill(BASE_V);
+  vmax[0] = BASE_V;
+  vmax[n - 1] = BASE_V;
+  for (let i = 1; i < n - 1; i++) {
+    const sev = turnSeverity(pts[i - 1], pts[i], pts[i + 1]); // 0..1
+    // Reduce speed in turns. sev=0 => BASE_V, sev=1 => BASE_V*(1-TURN_K)
+    const v = BASE_V * (1 - TURN_K * sev);
+    vmax[i] = clamp(v, MIN_V, BASE_V);
+  }
+
+  // Apply accel constraints: forward + backward pass (classic speed profile)
+  const v = vmax.slice();
+  // Forward pass (accel)
+  for (let i = 1; i < n; i++) {
+    const vReach = Math.sqrt(Math.max(0, v[i - 1] * v[i - 1] + 2 * A * dist[i]));
+    v[i] = Math.min(v[i], vReach);
+  }
+  // Backward pass (decel)
+  for (let i = n - 2; i >= 0; i--) {
+    const vReach = Math.sqrt(Math.max(0, v[i + 1] * v[i + 1] + 2 * A * dist[i + 1]));
+    v[i] = Math.min(v[i], vReach);
+  }
+
+  // Segment time weights (seconds, relative). Use trapezoid v_avg.
+  const segW = new Array(n).fill(0);
+  const cdf = new Array(n).fill(0);
   let sum = 0;
   for (let i = 1; i < n; i++) {
-    const a = pts[i - 1];
-    const b = pts[i];
-    const dist = Math.max(MIN_W, haversineMeters(a, b)); // meters
-
-    let sev = 0;
-    if (i > 0 && i < n - 1) {
-      sev = turnSeverity(pts[i - 1], pts[i], pts[i + 1]);
-    }
-    // segment weight: distance * (1 + K * severity)
-    const w = dist * (1 + K * sev);
-    sum += w;
+    const vAvg = Math.max(0.5, (v[i - 1] + v[i]) / 2);
+    const dt = dist[i] / vAvg;
+    segW[i] = dt;
+    sum += dt;
     cdf[i] = sum;
   }
 
-  // normalize edge case
   const totalW = sum > 0 ? sum : 1;
-  return { coords: pts, cdf, totalW };
+  return { coords: pts, cdf, segW, totalW };
 }
+
 
 function binarySearchCdf(cdf, x) {
   // returns index in coords for a given cumulative weight x
@@ -1085,11 +1133,33 @@ async function startSimulationForEvent(ev) {
       if (!start) start = ts;
       const p = clamp((ts - start) / animMs, 0, 1);
 
-      // map progress -> route position using timing weights
+      // map progress -> route position using timing weights (time profile)
       const target = p * timing.totalW;
-      const idx = binarySearchCdf(timing.cdf, target);
-      const pt = timing.coords[idx];
-      vehicle.setLatLng(pt);
+      const i = binarySearchCdf(timing.cdf, target);
+      if (i <= 0) {
+        vehicle.setLatLng(timing.coords[0]);
+      } else {
+        const t0 = timing.cdf[i - 1];
+        const dt = timing.segW[i] || (timing.cdf[i] - t0) || 1;
+        const s = clamp((target - t0) / dt, 0, 1);
+
+        // smooth within segment for nicer accel/decel feel
+        const ss = s * s * (3 - 2 * s); // smoothstep
+
+        const a = timing.coords[i - 1];
+        const b = timing.coords[i];
+        const lat = a[0] + (b[0] - a[0]) * ss;
+        const lon = a[1] + (b[1] - a[1]) * ss;
+        vehicle.setLatLng([lat, lon]);
+
+        // optional: rotate icon to heading (works for divIcon)
+        try {
+          const brg = bearingDeg(a, b);
+          const el = vehicle.getElement && vehicle.getElement();
+          const inner = el ? el.querySelector('.fw-emoji') : null;
+          if (inner) inner.style.transform = `rotate(${brg}deg)`;
+        } catch {}
+      }
 
       if (p < 1) rafId = requestAnimationFrame(step);
     };
