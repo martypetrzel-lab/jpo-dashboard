@@ -1348,7 +1348,7 @@ function exportWithFilters(kind) {
 }
 
 // UI events
-document.getElementById("refreshBtn").addEventListener("click", loadAll);
+document.getElementById("refreshBtn").addEventListener("click", () => { resetFilters(); loadAll(); });
 document.getElementById("applyBtn").addEventListener("click", loadAll);
 document.getElementById("resetBtn").addEventListener("click", () => { resetFilters(); loadAll(); });
 document.getElementById("exportCsvBtn").addEventListener("click", () => exportWithFilters("csv"));

@@ -956,7 +956,19 @@ app.get("/api/export.csv", async (req, res) => {
   const limit = Math.min(Number(req.query.limit || 2000), 5000);
 
   let rows = await getEventsFiltered(filters, limit);
-  if ((!rows || rows.length === 0) && (filters.day === "today" || filters.day === "yesterday")) {
+  
+// Fallback: pokud filtr "den" vrátí prázdno, zkusíme export bez filtru dne (a bez měsíce).
+if ((!rows || rows.length === 0) && (filters.day === "today" || filters.day === "yesterday")) {
+  const fb = { ...filters, day: "all", month: "" };
+  rows = await getEventsFiltered(fb, limit);
+}
+// Second fallback: pokud je export pořád prázdný, zkusíme úplně bez filtrů.
+if (!rows || rows.length === 0) {
+  const fb2 = { types: [], city: "", status: "all", day: "all", month: "" };
+  rows = await getEventsFiltered(fb2, limit);
+}
+
+if ((!rows || rows.length === 0) && (filters.day === "today" || filters.day === "yesterday")) {
     const fb = { ...filters, day: "all", month: "" };
     rows = await getEventsFiltered(fb, limit);
   }
@@ -1018,7 +1030,16 @@ app.get("/api/export.pdf", async (req, res) => {
     usedFallback = true;
   }
 
-  res.setHeader("Content-Type", "application/pdf");
+  
+// Second fallback: pokud je export pořád prázdný, zkusíme úplně bez filtrů (poslední záchrana),
+// aby export nevracel prázdný list.
+if (!rows || rows.length === 0) {
+  const fb2 = { types: [], city: "", status: "all", day: "all", month: "" };
+  rows = await getEventsFiltered(fb2, limit);
+  usedFallback = true;
+}
+
+res.setHeader("Content-Type", "application/pdf");
   res.setHeader("Content-Disposition", `attachment; filename="jpo_vyjezdy_export.pdf"`);
 
   const doc = new PDFDocument({ size: "A4", layout: "landscape", margin: 24 });
