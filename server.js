@@ -954,55 +954,33 @@ app.get("/api/stats", async (req, res) => {
 app.get("/api/export.csv", async (req, res) => {
   const filters = parseFilters(req);
   const limit = Math.min(Number(req.query.limit || 2000), 5000);
-  const rows = await getEventsFiltered(filters, limit);
+
+  let rows = await getEventsFiltered(filters, limit);
+  if ((!rows || rows.length === 0) && (filters.day === "today" || filters.day === "yesterday")) {
+    const fb = { ...filters, day: "all", month: "" };
+    rows = await getEventsFiltered(fb, limit);
+  }
 
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader("Content-Disposition", `attachment; filename="jpo_vyjezdy_export.csv"`);
 
-  const csvEscape = (v) => {
-    const s = String(v ?? "");
-    if (/[",\n\r;]/.test(s)) return `"${s.replaceAll('"', '""')}"`;
-    return s;
-  };
-
-  const formatDateForCsv = (v) => {
-    if (!v) return "";
-    const d = new Date(v);
-    if (Number.isNaN(d.getTime())) return String(v);
-    return d.toISOString();
-  };
-
-  const header = [
-    "time_iso",
-    "state",
-    "type",
-    "title",
-    "city",
-    "place_text",
-    "status_text",
-    "duration_min",
-    "link"
-  ].join(";");
-
-  const lines = rows.map(r => {
-    const timeIso = formatDateForCsv(r.pub_date || r.created_at);
-    const state = r.is_closed ? "UKONCENO" : "AKTIVNI";
-    const typ = typeLabel(r.event_type || "other");
-    return [
-      csvEscape(timeIso),
-      csvEscape(state),
-      csvEscape(typ),
-      csvEscape(r.title || ""),
-      csvEscape(r.city_text || ""),
-      csvEscape(r.place_text || ""),
-      csvEscape(r.status_text || ""),
-      csvEscape(Number.isFinite(r.duration_min) ? r.duration_min : ""),
-      csvEscape(r.link || "")
-    ].join(";");
-  });
-
-  res.send([header, ...lines].join("\n"));
+  const out = [];
+  // BOM pro Excel
+  out.push("\ufeff");
+  out.push("cas;stav;typ;mesto;delka;nazev;link");
+  for (const r of rows) {
+    const cas = csvEscape(fmtDate(r.pub_date || r.created_at));
+    const stav = csvEscape(r.is_closed ? "ukoncena" : "aktivni");
+    const typ = csvEscape(typeLabel(r.event_type || "other"));
+    const mesto = csvEscape(r.city_text || r.place_text || "");
+    const delka = csvEscape(fmtDuration(r.duration_min));
+    const nazev = csvEscape(r.title || "");
+    const link = csvEscape(r.link || "");
+    out.push([cas, stav, typ, mesto, delka, nazev, link].join(";"));
+  }
+  res.send(out.join("\n"));
 });
+
 
 // export PDF
 function tryApplyPdfFont(doc) {
@@ -1028,7 +1006,17 @@ function tryApplyPdfFont(doc) {
 app.get("/api/export.pdf", async (req, res) => {
   const filters = parseFilters(req);
   const limit = Math.min(Number(req.query.limit || 800), 2000);
-  const rows = await getEventsFiltered(filters, limit);
+
+  let rows = await getEventsFiltered(filters, limit);
+
+  // Fallback: pokud filtr "den" (today/yesterday) z nějakého důvodu vrátí prázdno,
+  // zkusíme export bez filtru dne (a bez měsíce), aby export nebyl prázdný.
+  let usedFallback = false;
+  if ((!rows || rows.length === 0) && (filters.day === "today" || filters.day === "yesterday")) {
+    const fb = { ...filters, day: "all", month: "" };
+    rows = await getEventsFiltered(fb, limit);
+    usedFallback = true;
+  }
 
   res.setHeader("Content-Type", "application/pdf");
   res.setHeader("Content-Disposition", `attachment; filename="jpo_vyjezdy_export.pdf"`);
@@ -1041,7 +1029,11 @@ app.get("/api/export.pdf", async (req, res) => {
   const now = new Date();
   doc.fontSize(18).fillColor("#000").text("JPO výjezdy – export");
   doc.moveDown(0.2);
-  doc.fontSize(10).fillColor("#333").text(`Vygenerováno: ${now.toLocaleString("cs-CZ")}`);
+    doc.fontSize(10).fillColor("#333").text(`Vygenerováno: ${now.toLocaleString("cs-CZ")}`);
+  if (usedFallback) {
+    doc.moveDown(0.2);
+    doc.fontSize(9).fillColor("#b45309").text("Pozn.: Export byl vygenerován bez filtru dne (fallback), aby nebyl prázdný.");
+  }
   doc.moveDown(0.8);
 
   const col = {
