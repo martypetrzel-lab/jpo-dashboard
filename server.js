@@ -581,23 +581,49 @@ app.post("/api/ingest", requireKey, async (req, res) => {
       const desc = it.descriptionRaw || it.descRaw || it.description || "";
       const times = parseTimesFromDescription(desc);
 
-      const startIso = it.startTimeIso || times.startIso || null;
-      let endIso = it.endTimeIso || times.endIso || null;
-      const isClosed = !!times.isClosed;
+// --- ESP is the only source ---
+// We must respect explicit flags from ESP, but also keep legacy parsing from description.
+const statusLower = String(it.statusText || "").toLowerCase();
+const isClosed = !!(
+  it.isClosed === true ||
+  it.is_closed === true ||
+  (statusLower.includes("ukon") && statusLower.includes("stav")) ||
+  statusLower.includes("ukončen") ||
+  statusLower.includes("ukonc") ||
+  times.isClosed
+);
 
-      const closingNow = isClosed && (!prev || !prev.is_closed);
-      if (closingNow && !endIso) {
-        endIso = new Date().toISOString();
-      }
+// start / end timestamps (prefer payload, then parsed, then previous DB values)
+const startIso =
+  it.startTimeIso ||
+  times.startIso ||
+  prev?.start_time_iso ||
+  null;
 
-      let durationMin = null;
-      if (Number.isFinite(it.durationMin)) {
-        const candidate = Math.round(it.durationMin);
-        durationMin = (candidate > 0 && candidate <= MAX_DURATION_MINUTES) ? candidate : null;
-      } else if (isClosed && endIso) {
-        const cutoffIso = await getLongestCutoffIso();
-        durationMin = await computeDurationMin(it.id, startIso, endIso, null, cutoffIso);
-      }
+let endIso =
+  it.endTimeIso ||
+  times.endIso ||
+  prev?.end_time_iso ||
+  null;
+
+// When we see the event transition to closed for the first time and we don't have end time,
+// set end time to "now" (we only know it ended sometime before we noticed – best available).
+const closingNow = isClosed && (!prev || !prev.is_closed);
+if (closingNow && !endIso) {
+  endIso = new Date().toISOString();
+}
+
+let durationMin = null;
+
+// If ESP provided duration explicitly, trust it (within sanity bounds).
+if (Number.isFinite(it.durationMin)) {
+  const candidate = Math.round(it.durationMin);
+  durationMin = (candidate > 0 && candidate <= MAX_DURATION_MINUTES) ? candidate : null;
+} else if (isClosed && endIso) {
+  // Compute only for "new" events (cutoff to avoid insane historical durations)
+  const cutoffIso = await getDurationCutoffIso();
+  durationMin = await computeDurationMin(it.id, startIso, endIso, prev?.first_seen_at || null, cutoffIso);
+}
 
       const placeText = it.placeText || null;
       const cityFromDesc = extractCityFromDescription(desc);
