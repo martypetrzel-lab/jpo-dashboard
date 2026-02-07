@@ -31,6 +31,84 @@ const LS_AUDIO = "fwcz_audio_v1";
 const LS_AUDIO_NEXT_SUMMARY_AT = "fwcz_audio_nextSummaryAt";
 const LS_AUDIO_LAST_SHIFT_KEY = "fwcz_audio_lastShiftKey";
 
+// ==============================
+// COOKIE CONSENT + VISITS (analytics)
+// ==============================
+const LS_COOKIE_CONSENT = "fwcz_cookie_consent_v1"; // 'yes' | 'no'
+
+async function postVisitIfConsented() {
+  try {
+    const consent = localStorage.getItem(LS_COOKIE_CONSENT);
+    if (consent !== "yes") return false;
+    await fetch("/api/visit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ consent: true })
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function showCookieBanner() {
+  const b = document.getElementById("cookieBanner");
+  if (!b) return;
+  b.style.display = "flex";
+}
+
+function hideCookieBanner() {
+  const b = document.getElementById("cookieBanner");
+  if (!b) return;
+  b.style.display = "none";
+}
+
+async function initCookieConsentUi() {
+  const consent = localStorage.getItem(LS_COOKIE_CONSENT);
+  if (consent === "yes") {
+    hideCookieBanner();
+    // log visit (unique via cookie) on each load
+    postVisitIfConsented();
+  } else if (consent === "no") {
+    hideCookieBanner();
+  } else {
+    showCookieBanner();
+  }
+
+  document.getElementById("cookieAcceptBtn")?.addEventListener("click", async () => {
+    try { localStorage.setItem(LS_COOKIE_CONSENT, "yes"); } catch {}
+    hideCookieBanner();
+    await postVisitIfConsented();
+  });
+  document.getElementById("cookieRejectBtn")?.addEventListener("click", () => {
+    try { localStorage.setItem(LS_COOKIE_CONSENT, "no"); } catch {}
+    hideCookieBanner();
+  });
+}
+
+async function refreshVisitsPill() {
+  const pill = document.getElementById("visitsPill");
+  if (!pill) return;
+  if (!isOps()) { pill.style.display = "none"; return; }
+
+  try {
+    const res = await fetch("/api/visits/stats?days=7", { credentials: "include" });
+    const j = await res.json();
+    if (!j?.ok) throw new Error("bad");
+    const t = j.today || { public:{total:0,unique:0}, ops:{total:0,unique:0} };
+    const total = (t.public?.total||0) + (t.ops?.total||0);
+    const uniq = Math.max(t.public?.unique||0, t.ops?.unique||0); // unikát per mode se překrývá; ber max jako orientační
+    pill.textContent = `👁️ ${total} / ${uniq}U`;
+    pill.style.display = "";
+  } catch {
+    pill.textContent = "👁️ —";
+    pill.style.display = "";
+  }
+}
+
+= "fwcz_audio_lastShiftKey";
+
 let latestItemsSnapshot = [];
 let latestStatsSnapshot = null;
 
@@ -1270,7 +1348,9 @@ async function refreshMe() {
     showEl("adminBtn", false);
     showEl("audioBtn", false);
     showEl("briefingBtn", false);
-  }
+  } 
+  // update visits pill when auth changes
+  await refreshVisitsPill();
 }
 
 function openModal(which) {
@@ -1402,6 +1482,7 @@ async function doLogin() {
     msg("loginMsg", "OK ✅", true);
     closeModals();
     await refreshMe();
+  await refreshVisitsPill();
   } catch (e) {
     msg("loginMsg", `Chyba: ${String(e.message || e)}`, false);
   }
@@ -1412,6 +1493,7 @@ async function doLogout() {
     await apiFetch("/api/auth/logout", { method: "POST" });
   } catch {}
   await refreshMe();
+  await refreshVisitsPill();
   closeModals();
 }
 
@@ -1732,7 +1814,10 @@ function toggleTvMode() {
   document.getElementById("createUserBtn")?.addEventListener("click", adminCreateUser);
   document.getElementById("adminSaveSettings")?.addEventListener("click", adminSaveSettings);
 
-  // settings + shift
+    // cookie consent + visit logging
+  await initCookieConsentUi();
+
+// settings + shift
   await loadPublicSettings();
   tickShiftUi();
   setInterval(tickShiftUi, 1000);
@@ -1751,4 +1836,5 @@ function toggleTvMode() {
 
   // auth state
   await refreshMe();
+  await refreshVisitsPill();
 })();
