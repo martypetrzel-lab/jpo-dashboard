@@ -2047,11 +2047,84 @@ async function loadOpsRequests() {
 let pickingCoords = false;
 let tempPickMarker = null;
 
-function setPickMode(on) {
-  pickingCoords = !!on;
+// while picking, we temporarily close modals so Leaflet receives clicks
+let pickReturnModal = null;
+let pickOverlayEl = null;
+
+function ensurePickOverlay() {
+  if (pickOverlayEl) return pickOverlayEl;
+  const el = document.createElement("div");
+  el.id = "pickOverlay";
+  el.style.position = "fixed";
+  el.style.left = "14px";
+  el.style.bottom = "14px";
+  el.style.zIndex = "99999";
+  el.style.background = "rgba(15, 20, 28, 0.92)";
+  el.style.border = "1px solid rgba(255,255,255,0.12)";
+  el.style.borderRadius = "12px";
+  el.style.padding = "10px 12px";
+  el.style.backdropFilter = "blur(8px)";
+  el.style.display = "none";
+  el.style.maxWidth = "360px";
+  el.innerHTML = `
+    <div style="font-weight:600; margin-bottom:6px;">Výběr souřadnic</div>
+    <div id="pickOverlayText" style="opacity:.9; font-size:13px; line-height:1.25;">
+      Klikni do mapy pro výběr bodu.
+    </div>
+    <div style="display:flex; gap:8px; margin-top:8px; justify-content:flex-end;">
+      <button id="pickOverlayCancel" class="btn">Zrušit</button>
+    </div>
+  `;
+  document.body.appendChild(el);
+
+  // cancel pick
+  el.querySelector("#pickOverlayCancel")?.addEventListener("click", () => {
+    stopPickMode(true);
+    msg("coordsMsg", "Výběr zrušen.", true);
+  });
+
+  pickOverlayEl = el;
+  return el;
+}
+
+function startPickMode() {
+  const id = document.getElementById("coordsEventId")?.value?.trim();
+  if (!id) return msg("coordsMsg", "Nejdřív vyber událost.", false);
+
+  pickingCoords = true;
+  pickReturnModal = "admin";
+
+  // close modals so map can receive click
+  closeModals();
+
   const btn = document.getElementById("pickOnMapBtn");
-  if (btn) btn.textContent = pickingCoords ? "Klikni do mapy…" : "Vybrat na mapě";
-  msg("coordsMsg", pickingCoords ? "Klikni do mapy pro výběr bodu." : "", true);
+  if (btn) btn.textContent = "Klikni do mapy…";
+
+  const ov = ensurePickOverlay();
+  const t = ov.querySelector("#pickOverlayText");
+  if (t) t.textContent = `Klikni do mapy pro výběr bodu (událost ${id}).`;
+  ov.style.display = "";
+
+  msg("coordsMsg", "Klikni do mapy pro výběr bodu.", true);
+}
+
+function stopPickMode(reopen = false) {
+  pickingCoords = false;
+
+  const btn = document.getElementById("pickOnMapBtn");
+  if (btn) btn.textContent = "Vybrat na mapě";
+
+  if (pickOverlayEl) pickOverlayEl.style.display = "none";
+
+  if (reopen && pickReturnModal) {
+    openModal(pickReturnModal);
+  }
+  pickReturnModal = null;
+}
+
+function setPickMode(on) {
+  if (on) startPickMode();
+  else stopPickMode(true);
 }
 
 async function loadMissingCoords() {
@@ -2157,9 +2230,8 @@ async function clearCoordsForSelected() {
 function wireMissingCoordsUiOnce() {
   document.getElementById("reloadMissingCoordsBtn")?.addEventListener("click", loadMissingCoords);
   document.getElementById("pickOnMapBtn")?.addEventListener("click", () => {
-    const id = document.getElementById("coordsEventId")?.value?.trim();
-    if (!id) return msg("coordsMsg", "Nejdřív vyber událost.", false);
-    setPickMode(!pickingCoords);
+    if (pickingCoords) return setPickMode(false);
+    setPickMode(true);
   });
   document.getElementById("saveCoordsBtn")?.addEventListener("click", saveCoordsForSelected);
   document.getElementById("clearCoordsBtn")?.addEventListener("click", clearCoordsForSelected);
