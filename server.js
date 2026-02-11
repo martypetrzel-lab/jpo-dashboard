@@ -6,6 +6,24 @@ import { fileURLToPath } from "url";
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
 
+
+// ======================
+// Geocoding: timeout + circuit breaker (prevents spam when provider is down)
+// ======================
+let geocodeDisabledUntil = 0;
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 8000) {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...options, signal: controller.signal });
+    return res;
+  } finally {
+    clearTimeout(id);
+  }
+}
+
+
 import {
   initDb,
   upsertEvent,
@@ -389,12 +407,24 @@ async function geocodePlace(placeText) {
     url.searchParams.set("bounded", "1");
     url.searchParams.set("viewbox", CZ_VIEWBOX);
 
-    const r = await fetch(url.toString(), {
-      headers: { "User-Agent": GEOCODE_UA, "Accept-Language": "cs,en;q=0.8" }
-    });
+    let r;
+    try {
+      r = await fetchWithTimeout(url.toString(), {
+        headers: { "User-Agent": GEOCODE_UA, "Accept-Language": "cs,en;q=0.8" }
+      }, 8000);
+    } catch (e) {
+      geocodeDisabledUntil = Date.now() + 5 * 60 * 1000; // 5 min
+      console.warn("[geocode] provider unreachable, disabling for 5 min:", e?.message || e);
+      return null;
+    }
     if (!r.ok) continue;
 
-    const data = await r.json();
+    let data;
+    try {
+      data = await r.json();
+    } catch {
+      continue;
+    }
     if (!Array.isArray(data) || data.length === 0) continue;
 
     for (const cand of data) {
@@ -1205,6 +1235,23 @@ async function runStaleAutoClose() {
 }
 
 const port = process.env.PORT || 3000;
+
+async function initDbWithRetry() {
+  let attempt = 0;
+  while (true) {
+    try {
+      await initDbWithRetry();
+      return;
+    } catch (e) {
+      attempt++;
+      const waitMs = Math.min(30000, Math.round(1000 * Math.pow(1.6, attempt)));
+      console.error(`[db] init failed (attempt ${attempt}) - retry in ${Math.round(waitMs / 1000)}s:`, e?.message || e);
+      await new Promise((r) => setTimeout(r, waitMs));
+    }
+  }
+}
+
+
 await initDb();
 await ensureInitialAdmin();
 
