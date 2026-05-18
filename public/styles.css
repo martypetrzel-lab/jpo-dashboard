@@ -642,3 +642,10 @@ body.isGuestMode #registerBtn {
     flex-direction: column;
   }
 }
+
+
+/* Keep active/closed type cards stable after refresh */
+.typeBreakdownGrid {
+  width: 100%;
+  align-items: stretch;
+}

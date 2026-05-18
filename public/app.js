@@ -1459,6 +1459,8 @@ function showEl(id, on) {
 }
 
 
+let fwLastTypeBreakdownRows = [];
+
 function fwPrettyType(type) {
   const t = String(type || "").toLowerCase();
   if (t.includes("fire") || t.includes("pož")) return "🔥 požár";
@@ -1483,6 +1485,18 @@ function renderActiveClosedTypeBreakdown(rows) {
   const box = document.getElementById("activeClosedTypeBreakdown");
   if (!box || !Array.isArray(rows)) return;
 
+  // Důležité: po refreshi se někdy zavolal záložní render s prázdným polem
+  // a smazal správně vykreslená data. Prázdná data tedy ignorujeme,
+  // pokud už máme poslední platný stav.
+  if (rows.length > 0) {
+    fwLastTypeBreakdownRows = rows;
+  } else if (fwLastTypeBreakdownRows.length > 0) {
+    rows = fwLastTypeBreakdownRows;
+  } else {
+    box.innerHTML = "";
+    return;
+  }
+
   const map = new Map();
 
   rows.forEach((ev) => {
@@ -1495,10 +1509,7 @@ function renderActiveClosedTypeBreakdown(rows) {
   const items = [...map.entries()]
     .sort((a, b) => ((b[1].active + b[1].closed) - (a[1].active + a[1].closed)));
 
-  if (!items.length) {
-    box.innerHTML = "";
-    return;
-  }
+  if (!items.length) return;
 
   box.innerHTML = items.map(([type, stats]) => `
     <div class="typeBreakdownItem">
@@ -2693,19 +2704,3 @@ function fwOpenRegisterDialog() {
 })();
 
 
-function refreshActiveClosedTypeBreakdownFromState() {
-  const candidates = [
-    window.currentEvents,
-    window.filteredEvents,
-    window.allEvents,
-    window.events,
-    typeof filteredEvents !== "undefined" ? filteredEvents : null,
-    typeof allEvents !== "undefined" ? allEvents : null,
-    typeof events !== "undefined" ? events : null
-  ].filter(Array.isArray);
-
-  const rows = candidates.find((arr) => arr.length) || [];
-  renderActiveClosedTypeBreakdown(rows);
-}
-
-setInterval(refreshActiveClosedTypeBreakdownFromState, 3000);
