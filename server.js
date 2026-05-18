@@ -464,6 +464,28 @@ function parseFilters(req) {
   return { types, city, status, day, month };
 }
 
+function exportFiltersLabel(filters) {
+  const dayLabel = filters.day === "today"
+    ? "dnes"
+    : filters.day === "yesterday"
+      ? "včera"
+      : "vše";
+
+  const statusLabel = filters.status === "open"
+    ? "aktivní"
+    : filters.status === "closed"
+      ? "ukončené"
+      : "vše";
+
+  const typeLabelText = filters.types?.length
+    ? filters.types.map(t => typeLabel(t)).join(", ")
+    : "vše";
+
+  const cityLabel = filters.city || "vše";
+
+  return `Den: ${dayLabel} | Typ: ${typeLabelText} | Město: ${cityLabel} | Stav: ${statusLabel}`;
+}
+
 // ---------------- STATIC ----------------
 app.use(express.static(path.join(__dirname, "public")));
 
@@ -987,23 +1009,9 @@ app.get("/api/export.csv", async (req, res) => {
   const filters = parseFilters(req);
   const limit = Math.min(Number(req.query.limit || 2000), 5000);
 
-  let rows = await getEventsFiltered(filters, limit);
-  
-// Fallback: pokud filtr "den" vrátí prázdno, zkusíme export bez filtru dne (a bez měsíce).
-if ((!rows || rows.length === 0) && (filters.day === "today" || filters.day === "yesterday")) {
-  const fb = { ...filters, day: "all", month: "" };
-  rows = await getEventsFiltered(fb, limit);
-}
-// Second fallback: pokud je export pořád prázdný, zkusíme úplně bez filtrů.
-if (!rows || rows.length === 0) {
-  const fb2 = { types: [], city: "", status: "all", day: "all", month: "" };
-  rows = await getEventsFiltered(fb2, limit);
-}
-
-if ((!rows || rows.length === 0) && (filters.day === "today" || filters.day === "yesterday")) {
-    const fb = { ...filters, day: "all", month: "" };
-    rows = await getEventsFiltered(fb, limit);
-  }
+  // Export musí respektovat přesně aktuální filtry z UI.
+  // Žádný fallback bez filtrů – jinak uživatel dostane jiná data než vidí v tabulce.
+  const rows = await getEventsFiltered(filters, limit);
 
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader("Content-Disposition", `attachment; filename="jpo_vyjezdy_export.csv"`);
@@ -1011,7 +1019,11 @@ if ((!rows || rows.length === 0) && (filters.day === "today" || filters.day === 
   const out = [];
   // BOM pro Excel
   out.push("\ufeff");
+  out.push("filtry;" + csvEscape(exportFiltersLabel(filters)));
+  out.push("pocet;" + csvEscape(String(rows.length)));
+  out.push("");
   out.push("cas;stav;typ;mesto;delka;nazev;link");
+
   for (const r of rows) {
     const cas = csvEscape(fmtDate(r.pub_date || r.created_at));
     const stav = csvEscape(r.is_closed ? "ukoncena" : "aktivni");
@@ -1022,6 +1034,7 @@ if ((!rows || rows.length === 0) && (filters.day === "today" || filters.day === 
     const link = csvEscape(r.link || "");
     out.push([cas, stav, typ, mesto, delka, nazev, link].join(";"));
   }
+
   res.send(out.join("\n"));
 });
 
@@ -1051,27 +1064,11 @@ app.get("/api/export.pdf", async (req, res) => {
   const filters = parseFilters(req);
   const limit = Math.min(Number(req.query.limit || 800), 2000);
 
-  let rows = await getEventsFiltered(filters, limit);
+  // Export PDF musí respektovat přesně aktuální filtry z UI.
+  // Žádný fallback bez filtrů – jinak PDF neodpovídá tabulce na webu.
+  const rows = await getEventsFiltered(filters, limit);
 
-  // Fallback: pokud filtr "den" (today/yesterday) z nějakého důvodu vrátí prázdno,
-  // zkusíme export bez filtru dne (a bez měsíce), aby export nebyl prázdný.
-  let usedFallback = false;
-  if ((!rows || rows.length === 0) && (filters.day === "today" || filters.day === "yesterday")) {
-    const fb = { ...filters, day: "all", month: "" };
-    rows = await getEventsFiltered(fb, limit);
-    usedFallback = true;
-  }
-
-  
-// Second fallback: pokud je export pořád prázdný, zkusíme úplně bez filtrů (poslední záchrana),
-// aby export nevracel prázdný list.
-if (!rows || rows.length === 0) {
-  const fb2 = { types: [], city: "", status: "all", day: "all", month: "" };
-  rows = await getEventsFiltered(fb2, limit);
-  usedFallback = true;
-}
-
-res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Type", "application/pdf");
   res.setHeader("Content-Disposition", `attachment; filename="jpo_vyjezdy_export.pdf"`);
 
   const doc = new PDFDocument({ size: "A4", layout: "landscape", margin: 24 });
@@ -1083,11 +1080,17 @@ res.setHeader("Content-Type", "application/pdf");
   doc.fontSize(18).fillColor("#000").text("JPO výjezdy – export");
   doc.moveDown(0.2);
     doc.fontSize(10).fillColor("#333").text(`Vygenerováno: ${now.toLocaleString("cs-CZ")}`);
-  if (usedFallback) {
-    doc.moveDown(0.2);
-    doc.fontSize(9).fillColor("#b45309").text("Pozn.: Export byl vygenerován bez filtru dne (fallback), aby nebyl prázdný.");
-  }
+  doc.moveDown(0.2);
+  doc.fontSize(10).fillColor("#333").text(`Filtry: ${exportFiltersLabel(filters)}`);
+  doc.moveDown(0.2);
+  doc.fontSize(10).fillColor("#333").text(`Počet záznamů v exportu: ${rows.length}`);
   doc.moveDown(0.8);
+
+  if (rows.length === 0) {
+    doc.fontSize(13).fillColor("#b45309").text("Pro aktuální filtry nebyly nalezeny žádné záznamy.");
+    doc.end();
+    return;
+  }
 
   const col = {
     time: 24,
