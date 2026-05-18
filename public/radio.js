@@ -1,8 +1,8 @@
-// FireWatch Talk v0.7
+// FireWatch Talk v0.8
 // Soukromý týmový hlasový chat FireWatchCZ.
 // Přenos hlasu: server-relay PCM přes WebSocket.
 // Vlastní zvuk PTT: nahraj soubor do /public/sounds/ptt-press.mp3.
-// Nově: vlastní místnosti s volitelným heslem.
+// Nově: poslední hlasová zpráva od každého uživatele v místnosti, pouze v paměti serveru.
 
 (function () {
   const STORAGE_ROOM = "firewatch_talk_room_v3";
@@ -37,6 +37,8 @@
   let reconnectTimer = null;
   let keepAliveTimer = null;
   let pttSoundFailed = false;
+  let voiceMessages = [];
+  let replayActive = false;
 
   function wsUrl() {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -186,7 +188,7 @@
       <div class="ops-radio-card">
         <div class="ops-radio-head">
           <div>
-            <h2>FireWatch Talk <span class="ops-radio-version">v0.7</span></h2>
+            <h2>FireWatch Talk <span class="ops-radio-version">v0.8</span></h2>
             <p>Soukromý hlasový chat FireWatchCZ pro testování a týmovou komunikaci.</p>
             <p class="ops-radio-disclaimer">Není určen pro komunikaci složek IZS ani pro řízení zásahů.</p>
           </div>
@@ -236,6 +238,17 @@
             <ul data-radio-users>
               <li>Zatím nikdo</li>
             </ul>
+          </div>
+
+          <div class="ops-radio-history">
+            <div class="ops-radio-history-head">
+              <h3>Poslední hlasové zprávy</h3>
+              <span>vždy jen poslední od každého uživatele</span>
+            </div>
+            <ul data-radio-history>
+              <li>Zatím žádná zpráva</li>
+            </ul>
+            <p class="ops-radio-hint">Zprávy jsou pouze dočasně v paměti serveru, neukládají se do databáze.</p>
           </div>
         </div>
       </div>
@@ -375,6 +388,7 @@
     setConnectButton(false);
     setStatus("Odpojeno", "idle");
     setTx("Nikdo");
+    updateVoiceMessages([]);
 
     const select = mount?.querySelector("#opsRadioRoomLive");
     const ptt = mount?.querySelector("#opsRadioPtt");
@@ -420,6 +434,7 @@
       myName = data.name || myName;
       myRole = data.role || myRole;
       updateRooms(data.rooms || data.roomCounts || data.channels || []);
+      updateVoiceMessages(data.voiceMessages || []);
       room = normalizeRoom(data.currentRoom || data.room || data.channel || room);
       if (!getRoomMeta(room) && rooms[0]) room = normalizeRoom(rooms[0].room);
       localStorage.setItem(STORAGE_ROOM, room);
@@ -469,6 +484,7 @@
       room = normalizeRoom(data.room || room);
       localStorage.setItem(STORAGE_ROOM, room);
       resetPlaybackClock();
+      updateVoiceMessages([]);
       refreshRoomSelect();
       setStatus(`Připojeno: ${roomLabel(room)}`, "ok");
       return;
@@ -490,11 +506,31 @@
         localStorage.setItem(STORAGE_ROOM, room);
       }
       refreshRoomSelect();
+      updateVoiceMessages(data.voiceMessages || []);
 
       const isMe = data.txClientId && data.txClientId === clientId;
       setStatus(`Připojeno: ${roomLabel(room)}`, data.transmitting ? (isMe ? "tx" : "rx") : "ok");
       setTx(data.transmitting ? (data.txName || "Někdo") : "Nikdo");
       renderUsers(Array.isArray(data.clients) ? data.clients : []);
+      return;
+    }
+
+    if (data.type === "voice_replay_start") {
+      replayActive = true;
+      resetPlaybackClock();
+      setStatus(`Přehrávám: ${data.name || "zprávu"}`, "rx");
+      return;
+    }
+
+    if (data.type === "voice_replay_end") {
+      replayActive = false;
+      setStatus(`Připojeno: ${roomLabel(room)}`, "ok");
+      return;
+    }
+
+    if (data.type === "voice_replay_error") {
+      replayActive = false;
+      setStatus(data.message || "Zpráva nejde přehrát", "error");
       return;
     }
 
@@ -586,6 +622,67 @@
     ul.innerHTML = users
       .map((user) => `<li>${escapeHtml(user.name)} <span class="ops-radio-role">${escapeHtml(user.role || "")}</span>${user.transmitting ? " <strong>mluví</strong>" : ""}</li>`)
       .join("");
+  }
+
+  function updateVoiceMessages(payload) {
+    if (!Array.isArray(payload)) return;
+
+    voiceMessages = payload.map((item) => ({
+      id: String(item.id || ""),
+      userId: String(item.userId || ""),
+      name: item.name || "Uživatel",
+      role: item.role || "",
+      room: normalizeRoom(item.room || room),
+      durationMs: Math.max(0, Number(item.durationMs || 0)),
+      bytes: Math.max(0, Number(item.bytes || 0)),
+      endedAt: Number(item.endedAt || 0),
+      timeLabel: item.timeLabel || ""
+    })).filter((item) => item.userId);
+
+    renderVoiceMessages();
+  }
+
+  function formatDuration(ms) {
+    const seconds = Math.max(1, Math.round(Number(ms || 0) / 1000));
+    return `${seconds} s`;
+  }
+
+  function renderVoiceMessages() {
+    const ul = mount?.querySelector("[data-radio-history]");
+    if (!ul) return;
+
+    if (!voiceMessages.length) {
+      ul.innerHTML = "<li>Zatím žádná zpráva</li>";
+      return;
+    }
+
+    ul.innerHTML = voiceMessages
+      .map((msg) => `
+        <li class="ops-radio-history-item">
+          <div>
+            <strong>${escapeHtml(msg.name)}</strong>
+            <span>${escapeHtml(msg.timeLabel || "")}${msg.timeLabel ? " • " : ""}${escapeHtml(formatDuration(msg.durationMs))}</span>
+          </div>
+          <button type="button" data-replay-user="${escapeHtml(msg.userId)}">▶ Přehrát</button>
+        </li>
+      `)
+      .join("");
+
+    ul.querySelectorAll("[data-replay-user]").forEach((button) => {
+      button.addEventListener("click", () => replayVoiceMessage(button.getAttribute("data-replay-user")));
+    });
+  }
+
+  function replayVoiceMessage(userId) {
+    if (!authenticated || !ws || ws.readyState !== WebSocket.OPEN) {
+      setStatus("Nejdřív připoj Talk", "error");
+      return;
+    }
+
+    if (!userId) return;
+    replayActive = true;
+    resetPlaybackClock();
+    ws.send(JSON.stringify({ type: "replay_voice_message", room, userId }));
   }
 
   function changeRoom(event) {

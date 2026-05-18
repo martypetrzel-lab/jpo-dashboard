@@ -5,11 +5,11 @@ import {
   deleteSessionByTokenSha
 } from "./db.js";
 
-// FireWatch Talk v0.7
+// FireWatch Talk v0.8
 // Soukromý týmový hlasový chat FireWatchCZ.
 // Není určen pro komunikaci složek IZS ani pro řízení zásahů.
 // Přenos hlasu: server-relay PCM přes WebSocket.
-// Nově: vlastní místnosti pro přihlášené uživatele, volitelně s heslem.
+// Nově: poslední hlasová zpráva od každého uživatele v místnosti, pouze v paměti serveru.
 
 const DEFAULT_ROOM = "HLAVNÍ";
 const SYSTEM_ROOMS = [
@@ -24,6 +24,8 @@ const HEARTBEAT_GRACE_MS = 70000;
 const MAX_CUSTOM_ROOMS = Math.max(5, Number(process.env.FIREWATCH_TALK_MAX_CUSTOM_ROOMS || 50));
 const MAX_ROOM_NAME_LENGTH = 32;
 const ROOM_PASSWORD_SALT = process.env.FIREWATCH_TALK_ROOM_PASSWORD_SALT || "firewatch-talk-v07";
+const MAX_STORED_VOICE_MESSAGE_BYTES = Math.max(256000, Number(process.env.FIREWATCH_TALK_MAX_VOICE_MESSAGE_BYTES || 3_000_000));
+const MAX_STORED_VOICE_MESSAGE_MS = Math.max(5000, Number(process.env.FIREWATCH_TALK_MAX_VOICE_MESSAGE_MS || 90000));
 
 function parseCookiesFromHeader(headerValue) {
   const out = {};
@@ -144,16 +146,26 @@ function publicClientName(client) {
   return client?.name || "Uživatel";
 }
 
+
+function formatVoiceTime(ts) {
+  const d = new Date(ts || Date.now());
+  return d.toLocaleTimeString("cs-CZ", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
 export function attachOpsRadio(server, options = {}) {
   const enabled = String(process.env.RADIO_ENABLED || options.enabled || "true").toLowerCase() !== "false";
 
   const rooms = new Map();
   const roomState = new Map();
   const clients = new Map();
+  // Dočasná historie: v každé místnosti držíme jen poslední zprávu od každého uživatele.
+  // Neukládá se do databáze ani na disk; po restartu serveru zmizí.
+  const lastVoiceMessages = new Map();
 
   for (const room of SYSTEM_ROOMS) {
     rooms.set(room.room, { ...room, createdAt: Date.now(), createdByUserId: null, createdByName: "FireWatch" });
     roomState.set(room.room, { txClientId: null, txName: null });
+    lastVoiceMessages.set(room.room, new Map());
   }
 
   const wss = new WebSocketServer({
@@ -214,6 +226,86 @@ export function attachOpsRadio(server, options = {}) {
       .map((roomMeta) => roomDescriptorForClient(roomMeta, client));
   }
 
+  function getVoiceSummaryForRoom(room) {
+    const map = lastVoiceMessages.get(room);
+    if (!map) return [];
+
+    return [...map.values()]
+      .sort((a, b) => b.endedAt - a.endedAt)
+      .map((msg) => ({
+        id: msg.id,
+        userId: msg.userId,
+        name: msg.name,
+        role: msg.role,
+        room: msg.room,
+        durationMs: msg.durationMs,
+        bytes: msg.bytes,
+        endedAt: msg.endedAt,
+        timeLabel: formatVoiceTime(msg.endedAt)
+      }));
+  }
+
+  function saveLastVoiceMessage(client, reason = "release") {
+    const rec = client.currentVoiceMessage;
+    client.currentVoiceMessage = null;
+
+    if (!rec || !rec.chunks?.length || rec.bytes <= 0) return;
+
+    const endedAt = Date.now();
+    const durationMs = Math.max(0, endedAt - rec.startedAt);
+    if (durationMs < 250) return;
+
+    const room = rec.room;
+    if (!lastVoiceMessages.has(room)) lastVoiceMessages.set(room, new Map());
+
+    const map = lastVoiceMessages.get(room);
+    map.set(String(client.userId), {
+      id: crypto.randomUUID(),
+      userId: String(client.userId),
+      name: publicClientName(client),
+      role: client.role,
+      room,
+      startedAt: rec.startedAt,
+      endedAt,
+      durationMs,
+      bytes: rec.bytes,
+      reason,
+      chunks: rec.chunks
+    });
+  }
+
+  function clearRoomVoiceMessages(room) {
+    lastVoiceMessages.delete(room);
+  }
+
+  function sendVoiceMessageReplay(client, targetUserId) {
+    const roomMap = lastVoiceMessages.get(client.room);
+    const message = roomMap?.get(String(targetUserId));
+
+    if (!message) {
+      sendJson(client.ws, { type: "voice_replay_error", message: "Hlasová zpráva už není dostupná." });
+      return;
+    }
+
+    sendJson(client.ws, {
+      type: "voice_replay_start",
+      id: message.id,
+      userId: message.userId,
+      name: message.name,
+      room: message.room,
+      durationMs: message.durationMs,
+      endedAt: message.endedAt,
+      timeLabel: formatVoiceTime(message.endedAt)
+    });
+
+    for (const chunk of message.chunks) {
+      if (client.ws.readyState !== client.ws.OPEN) break;
+      client.ws.send(chunk, { binary: true });
+    }
+
+    sendJson(client.ws, { type: "voice_replay_end", id: message.id, userId: message.userId });
+  }
+
   function sendClientState(client, onlyRoom = null) {
     const currentRoomMeta = getRoomMeta(client.room);
     const st = roomState.get(client.room) || { txClientId: null, txName: null };
@@ -230,7 +322,8 @@ export function attachOpsRadio(server, options = {}) {
       transmitting: Boolean(st.txClientId),
       txClientId: st.txClientId,
       txName: st.txName,
-      clients: currentRoomMeta ? getClientsInRoom(client.room) : []
+      clients: currentRoomMeta ? getClientsInRoom(client.room) : [],
+      voiceMessages: currentRoomMeta ? getVoiceSummaryForRoom(client.room) : []
     });
   }
 
@@ -250,6 +343,7 @@ export function attachOpsRadio(server, options = {}) {
     if (!st) return;
 
     if (st.txClientId === client.id) {
+      saveLastVoiceMessage(client, reason);
       st.txClientId = null;
       st.txName = null;
 
@@ -322,6 +416,7 @@ export function attachOpsRadio(server, options = {}) {
       role: auth.user.role,
       room: initialRoom,
       unlockedRooms: new Set([initialRoom, DEFAULT_ROOM, "TEST"]),
+      currentVoiceMessage: null,
       createdAt: Date.now(),
       lastSeenAt: Date.now()
     };
@@ -341,7 +436,8 @@ export function attachOpsRadio(server, options = {}) {
       currentRoom: client.room,
       rooms: getRoomListForClient(client),
       channels: getRoomListForClient(client).map((item) => item.room),
-      roomCounts: getRoomListForClient(client)
+      roomCounts: getRoomListForClient(client),
+      voiceMessages: getVoiceSummaryForRoom(client.room)
     });
 
     broadcastAllRoomStates();
@@ -352,6 +448,16 @@ export function attachOpsRadio(server, options = {}) {
       if (isBinary) {
         const st = roomState.get(client.room);
         if (!st || st.txClientId !== client.id) return;
+
+        if (client.currentVoiceMessage && client.currentVoiceMessage.room === client.room) {
+          const chunk = Buffer.isBuffer(message) ? Buffer.from(message) : Buffer.from(message);
+          const nextBytes = client.currentVoiceMessage.bytes + chunk.byteLength;
+          const nextDuration = Date.now() - client.currentVoiceMessage.startedAt;
+          if (nextBytes <= MAX_STORED_VOICE_MESSAGE_BYTES && nextDuration <= MAX_STORED_VOICE_MESSAGE_MS) {
+            client.currentVoiceMessage.chunks.push(chunk);
+            client.currentVoiceMessage.bytes = nextBytes;
+          }
+        }
 
         for (const other of clients.values()) {
           if (
@@ -411,6 +517,7 @@ export function attachOpsRadio(server, options = {}) {
 
         rooms.set(nextRoom, roomMeta);
         roomState.set(nextRoom, { txClientId: null, txName: null });
+        lastVoiceMessages.set(nextRoom, new Map());
         client.unlockedRooms.add(nextRoom);
 
         sendJson(ws, { type: "room_created", room: nextRoom, label: roomMeta.label, hasPassword: roomMeta.hasPassword });
@@ -436,6 +543,7 @@ export function attachOpsRadio(server, options = {}) {
         moveClientsOutOfRoom(targetRoom);
         rooms.delete(targetRoom);
         roomState.delete(targetRoom);
+        clearRoomVoiceMessages(targetRoom);
         for (const c of clients.values()) c.unlockedRooms.delete(targetRoom);
         broadcastAllRoomStates();
         return;
@@ -489,6 +597,12 @@ export function attachOpsRadio(server, options = {}) {
 
         st.txClientId = client.id;
         st.txName = publicClientName(client);
+        client.currentVoiceMessage = {
+          room: client.room,
+          startedAt: Date.now(),
+          chunks: [],
+          bytes: 0
+        };
 
         for (const other of clients.values()) {
           if (other.room === client.room) {
@@ -503,6 +617,11 @@ export function attachOpsRadio(server, options = {}) {
         }
 
         broadcastRoomState(client.room);
+        return;
+      }
+
+      if (data.type === "replay_voice_message") {
+        sendVoiceMessageReplay(client, data.userId);
         return;
       }
 
@@ -529,6 +648,6 @@ export function attachOpsRadio(server, options = {}) {
     });
   });
 
-  console.log(`[FW TALK] v0.7 WebSocket/PCM relay běží na /ops-radio | enabled=${enabled} | customRooms=true`);
+  console.log(`[FW TALK] v0.8 WebSocket/PCM relay běží na /ops-radio | enabled=${enabled} | customRooms=true | lastVoicePerUser=memory`);
   return { wss };
 }
