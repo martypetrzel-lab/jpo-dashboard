@@ -1319,6 +1319,7 @@ async function loadAll() {
 
     renderChart(statsJson.byDay || []);
     renderCounts(statsJson.openCount, statsJson.closedCount);
+    renderActiveClosedTypeBreakdown(items);
     renderTopCities(statsJson.topCities || []);
     renderLongest(statsJson.longest || []);
 
@@ -1469,6 +1470,9 @@ function fwPrettyType(type) {
 }
 
 function fwIsClosedEvent(ev) {
+  if (ev?.is_closed === true) return true;
+  if (ev?.is_closed === false) return false;
+
   const status = String(ev?.status || ev?.state || ev?.stav || "").toLowerCase();
   if (status.includes("ukon") || status.includes("closed") || status.includes("done") || status.includes("resolved")) return true;
   if (ev?.ended_at || ev?.closed_at || ev?.end_at || ev?.finished_at || ev?.resolved_at) return true;
@@ -1482,7 +1486,7 @@ function renderActiveClosedTypeBreakdown(rows) {
   const map = new Map();
 
   rows.forEach((ev) => {
-    const type = fwPrettyType(ev.type || ev.kind || ev.category || ev.event_type);
+    const type = fwPrettyType(ev.event_type || ev.type || ev.kind || ev.category);
     if (!map.has(type)) map.set(type, { active: 0, closed: 0 });
     if (fwIsClosedEvent(ev)) map.get(type).closed += 1;
     else map.get(type).active += 1;
