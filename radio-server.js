@@ -5,12 +5,12 @@ import {
   deleteSessionByTokenSha
 } from "./db.js";
 
-// FireWatchCZ OPS Radio v0.5
+// FireWatchCZ OPS Radio v0.6
 // Interní internetová PTT vysílačka pro přihlášené role ops/admin.
 // Přenos hlasu je server-relay PCM přes WebSocket. WebSocket řeší i OPS autorizaci,
 // kanály a PTT zámek. Tohle je stabilnější pro mobil ↔ PC než krátké WebM chunky.
 
-const DEFAULT_CHANNELS = ["OPS", "JEDNOTKA", "VELITEL", "TECHNICKY", "TEST"];
+const DEFAULT_CHANNELS = ["OPS", "ADMIN", "TEST"];
 const SESSION_COOKIE = process.env.SESSION_COOKIE_NAME || "FWSESS";
 
 function parseCookiesFromHeader(headerValue) {
@@ -276,6 +276,7 @@ export function attachOpsRadio(server, options = {}) {
 
       if (data.type === "ping") {
         sendJson(ws, { type: "pong", ts: Date.now() });
+        return;
       }
     });
 

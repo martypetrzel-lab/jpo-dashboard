@@ -1,4 +1,4 @@
-// FireWatchCZ OPS Radio v0.5
+// FireWatchCZ OPS Radio v0.6
 // Frontend pro OPS/admin režim.
 // Přenos hlasu: server-relay PCM přes WebSocket.
 // Cíl: stabilní mobil ↔ PC příjem bez chrčení a bez závislosti na WebRTC/TURN.
@@ -22,10 +22,14 @@
   let visible = false;
   let clientId = null;
   let channel = localStorage.getItem(STORAGE_CHANNEL) || "OPS";
-  let channels = ["OPS", "JEDNOTKA", "VELITEL", "TECHNICKY", "TEST"];
+  let channels = ["OPS", "ADMIN", "TEST"];
   let myName = "OPS";
   let packetSeq = 0;
   let nextPlaybackTime = 0;
+  let heartbeatTimer = null;
+  let reconnectTimer = null;
+  let wantConnected = false;
+  let reconnectAttempt = 0;
 
   function wsUrl() {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -111,6 +115,10 @@
 
   function render() {
     if (!mount) return;
+    if (!channels.includes(channel)) {
+      channel = channels.includes("OPS") ? "OPS" : channels[0];
+      localStorage.setItem(STORAGE_CHANNEL, channel);
+    }
 
     mount.innerHTML = `
       <div class="ops-radio-card">
@@ -125,7 +133,7 @@
         <div class="ops-radio-panel">
           <div class="ops-radio-row">
             <label>
-              Kanál
+              Místnost
               <select id="opsRadioChannelLive">${channelOptions()}</select>
             </label>
             <div class="ops-radio-tx">
@@ -196,7 +204,8 @@
     setHiddenByRole(!allowed);
 
     if (!allowed) {
-      closeRadio();
+      // Neodpojujeme rádio automaticky při krátkém výpadku auth dotazu nebo skrytí OPS prvků.
+      // Samotný server při novém spojení stále ověřuje roli ops/admin.
       return;
     }
 
@@ -226,21 +235,34 @@
   }
 
   async function connectRadio() {
-    if (!visible) return;
+    if (!visible && !wantConnected) return;
 
     if (ws && ws.readyState === WebSocket.OPEN) {
-      closeRadio();
+      closeRadio({ manual: true });
       return;
     }
+
+    wantConnected = true;
+    clearReconnectTimer();
 
     await unlockAudio();
 
     const micOk = await prepareLocalAudio();
-    if (!micOk) return;
+    if (!micOk) {
+      wantConnected = false;
+      return;
+    }
+
+    openSocket();
+  }
+
+  function openSocket() {
+    if (!wantConnected) return;
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
 
     ws = new WebSocket(wsUrl());
     ws.binaryType = "arraybuffer";
-    setStatus("Připojuji…", "connecting");
+    setStatus(reconnectAttempt > 0 ? "Obnovuji spojení…" : "Připojuji…", "connecting");
 
     ws.addEventListener("message", (event) => {
       if (typeof event.data === "string") {
@@ -254,11 +276,18 @@
       authenticated = false;
       pttActive = false;
       clientId = null;
+      stopHeartbeat();
       stopTransmit();
-      setStatus("Odpojeno", "error");
-      setConnectButton(false);
       const ptt = mount?.querySelector("#opsRadioPtt");
       if (ptt) ptt.disabled = true;
+
+      if (wantConnected) {
+        setStatus("Spojení spadlo, obnovuji…", "connecting");
+        scheduleReconnect();
+      } else {
+        setStatus("Odpojeno", "error");
+        setConnectButton(false);
+      }
     });
 
     ws.addEventListener("error", () => {
@@ -266,7 +295,11 @@
     });
   }
 
-  function closeRadio() {
+  function closeRadio(options = {}) {
+    const manual = Boolean(options.manual);
+    if (manual) wantConnected = false;
+    clearReconnectTimer();
+    stopHeartbeat();
     try { ws?.close(); } catch {}
     ws = null;
     authenticated = false;
@@ -275,6 +308,38 @@
     stopTransmit();
     stopLocalAudio();
     setConnectButton(false);
+    const ptt = mount?.querySelector("#opsRadioPtt");
+    if (ptt) ptt.disabled = true;
+  }
+
+  function scheduleReconnect() {
+    if (!wantConnected) return;
+    clearReconnectTimer();
+    reconnectAttempt += 1;
+    const delay = Math.min(12000, 1200 + reconnectAttempt * 900);
+    reconnectTimer = window.setTimeout(() => {
+      reconnectTimer = null;
+      openSocket();
+    }, delay);
+  }
+
+  function clearReconnectTimer() {
+    if (reconnectTimer) window.clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+
+  function startHeartbeat() {
+    stopHeartbeat();
+    heartbeatTimer = window.setInterval(() => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        try { ws.send(JSON.stringify({ type: "ping", ts: Date.now() })); } catch {}
+      }
+    }, 20000);
+  }
+
+  function stopHeartbeat() {
+    if (heartbeatTimer) window.clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
   }
 
   function stopLocalAudio() {
@@ -312,15 +377,18 @@
       const ptt = mount?.querySelector("#opsRadioPtt");
       if (ptt) ptt.disabled = false;
 
+      reconnectAttempt = 0;
+      startHeartbeat();
       setConnectButton(true);
-      setStatus(`Připojeno: ${channel}`, "ok");
+      setStatus(`Místnost: ${channel}`, "ok");
       beep(660, 55);
       return;
     }
 
     if (data.type === "auth_error") {
       setStatus(data.message || "Nemáš OPS oprávnění", "error");
-      closeRadio();
+      wantConnected = false;
+      closeRadio({ manual: true });
       return;
     }
 
@@ -332,7 +400,7 @@
     if (data.type === "radio_state") {
       if (data.channel === channel) {
         const isMe = data.txClientId && data.txClientId === clientId;
-        setStatus(`Připojeno: ${channel}`, data.transmitting ? (isMe ? "tx" : "rx") : "ok");
+        setStatus(`Místnost: ${channel}`, data.transmitting ? (isMe ? "tx" : "rx") : "ok");
         setTx(data.transmitting ? (data.txName || "Někdo") : "Nikdo");
         renderUsers(Array.isArray(data.clients) ? data.clients : []);
       }
@@ -365,7 +433,7 @@
         pttActive = false;
         stopTransmit();
       }
-      setStatus(`Připojeno: ${channel}`, "ok");
+      setStatus(`Místnost: ${channel}`, "ok");
       setTx("Nikdo");
       beep(440, 35);
     }
@@ -392,7 +460,7 @@
 
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: "join_channel", channel }));
-      setStatus(`Přepínám na ${channel}…`, "connecting");
+      setStatus(`Přepínám místnost na ${channel}…`, "connecting");
     }
   }
 
@@ -544,6 +612,17 @@
   window.firewatchOpsRadioSetVisible = async function firewatchOpsRadioSetVisible(isOpsAllowed) {
     await setVisibleByAuth(Boolean(isOpsAllowed));
   };
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && wantConnected) {
+      unlockAudio();
+      if (!ws || ws.readyState === WebSocket.CLOSED) {
+        scheduleReconnect();
+      } else if (ws.readyState === WebSocket.OPEN) {
+        try { ws.send(JSON.stringify({ type: "ping", ts: Date.now() })); } catch {}
+      }
+    }
+  });
 
   document.addEventListener("DOMContentLoaded", async () => {
     mount = document.getElementById("opsRadioMount");
