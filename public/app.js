@@ -5,6 +5,8 @@ let routesLayer, vehiclesLayer;
 // OPS auth state (musí být nahoře kvůli TTS, které může běžet už při prvním loadu)
 let currentUser = null; // {id, username, role}
 const LS_GUEST_HERO_DISMISSED = "fwcz_guestHeroDismissed";
+const LS_TALK_PANEL_OPEN = "fwcz_talkPanelOpen";
+let talkPanelOpen = localStorage.getItem(LS_TALK_PANEL_OPEN) === "1";
 
 // ✅ simulace – jen NOVÉ a AKTIVNÍ události (od načtení stránky)
 const seenEventIds = new Set();
@@ -1455,23 +1457,95 @@ function showEl(id, on) {
   el.style.display = on ? "" : "none";
 }
 
+
+function fwPrettyType(type) {
+  const t = String(type || "").toLowerCase();
+  if (t.includes("fire") || t.includes("pož")) return "🔥 požár";
+  if (t.includes("traffic") || t.includes("nehod") || t.includes("doprav")) return "🚗 dopravní nehoda";
+  if (t.includes("rescue") || t.includes("zách")) return "🚑 záchrana";
+  if (t.includes("false") || t.includes("plan") || t.includes("poplach")) return "🚫 planý poplach";
+  if (t.includes("tech") || t.includes("techn")) return "🛠 technická pomoc";
+  return "❓ jiné";
+}
+
+function fwIsClosedEvent(ev) {
+  const status = String(ev?.status || ev?.state || ev?.stav || "").toLowerCase();
+  if (status.includes("ukon") || status.includes("closed") || status.includes("done") || status.includes("resolved")) return true;
+  if (ev?.ended_at || ev?.closed_at || ev?.end_at || ev?.finished_at || ev?.resolved_at) return true;
+  return false;
+}
+
+function renderActiveClosedTypeBreakdown(rows) {
+  const box = document.getElementById("activeClosedTypeBreakdown");
+  if (!box || !Array.isArray(rows)) return;
+
+  const map = new Map();
+
+  rows.forEach((ev) => {
+    const type = fwPrettyType(ev.type || ev.kind || ev.category || ev.event_type);
+    if (!map.has(type)) map.set(type, { active: 0, closed: 0 });
+    if (fwIsClosedEvent(ev)) map.get(type).closed += 1;
+    else map.get(type).active += 1;
+  });
+
+  const items = [...map.entries()]
+    .sort((a, b) => ((b[1].active + b[1].closed) - (a[1].active + a[1].closed)));
+
+  if (!items.length) {
+    box.innerHTML = "";
+    return;
+  }
+
+  box.innerHTML = items.map(([type, stats]) => `
+    <div class="typeBreakdownItem">
+      <div class="typeBreakdownTitle">${type}</div>
+      <div class="typeBreakdownNums">
+        <span><b>${stats.active}</b> aktivní</span>
+        <span><b>${stats.closed}</b> ukončené</span>
+      </div>
+    </div>
+  `).join("");
+}
+
 function syncPublicGuestUi() {
   const isLogged = !!currentUser;
   const isGuest = !isLogged;
   const hero = document.getElementById("publicGuestHero");
   const talkLocked = document.getElementById("talkLockedCard");
+  const talkMount = document.getElementById("opsRadioMount");
+  const talkLauncher = document.getElementById("talkLauncherCard");
+  const toggleTalkBtn = document.getElementById("toggleTalkBtn");
 
   if (hero) {
     const dismissed = localStorage.getItem(LS_GUEST_HERO_DISMISSED) === "1";
     hero.style.display = (isGuest && !dismissed) ? "" : "none";
   }
 
+  if (talkLauncher) {
+    talkLauncher.style.display = "";
+  }
+
+  if (talkMount) {
+    talkMount.style.display = (isLogged && talkPanelOpen) ? "" : "none";
+  }
+
   if (talkLocked) {
-    talkLocked.style.display = isGuest ? "" : "none";
+    talkLocked.style.display = (isGuest && talkPanelOpen) ? "" : "none";
+  }
+
+  if (toggleTalkBtn) {
+    if (talkPanelOpen) {
+      toggleTalkBtn.textContent = "Skrýt FireWatch Talk";
+      toggleTalkBtn.classList.add("active");
+    } else {
+      toggleTalkBtn.textContent = "Otevřít FireWatch Talk";
+      toggleTalkBtn.classList.remove("active");
+    }
   }
 
   document.body.classList.toggle("isGuestMode", isGuest);
   document.body.classList.toggle("isLoggedMode", isLogged);
+  document.body.classList.toggle("isTalkOpen", talkPanelOpen);
 }
 
 
@@ -1499,7 +1573,7 @@ async function refreshMe() {
     showEl("adminBtn", role === "admin");
     showEl("audioBtn", isOps);
     showEl("briefingBtn", isOps);
-    window.firewatchOpsRadioSetVisible?.(true);
+    window.firewatchOpsRadioSetVisible?.(talkPanelOpen);
   } else {
     setModePill("HOST");
     showEl("loginBtn", true);
@@ -2386,6 +2460,16 @@ refreshMe();
   await sendVisitPing();
 })();
 
+
+function toggleTalkPanel() {
+  talkPanelOpen = !talkPanelOpen;
+  localStorage.setItem(LS_TALK_PANEL_OPEN, talkPanelOpen ? "1" : "0");
+  if (typeof window.firewatchOpsRadioSetVisible === "function") {
+    window.firewatchOpsRadioSetVisible(!!currentUser && talkPanelOpen);
+  }
+  syncPublicGuestUi();
+}
+
 // FireWatchCZ guest-mode safety wiring.
 // This fallback keeps top-bar buttons working even if earlier init code changes.
 (function firewatchSafetyWireButtons() {
@@ -2403,6 +2487,7 @@ refreshMe();
     syncPublicGuestUi?.();
   });
 
+  on("toggleTalkBtn", toggleTalkPanel);
   on("guestLoginBtn", () => byId("loginBtn")?.click());
   on("guestRegisterBtn", () => byId("registerBtn")?.click());
   on("talkLockedLoginBtn", () => byId("loginBtn")?.click());
@@ -2602,3 +2687,21 @@ function fwOpenRegisterDialog() {
   wire("talkLockedLoginBtn", fwOpenLoginDialog);
   wire("talkLockedRegisterBtn", fwOpenRegisterDialog);
 })();
+
+
+function refreshActiveClosedTypeBreakdownFromState() {
+  const candidates = [
+    window.currentEvents,
+    window.filteredEvents,
+    window.allEvents,
+    window.events,
+    typeof filteredEvents !== "undefined" ? filteredEvents : null,
+    typeof allEvents !== "undefined" ? allEvents : null,
+    typeof events !== "undefined" ? events : null
+  ].filter(Array.isArray);
+
+  const rows = candidates.find((arr) => arr.length) || [];
+  renderActiveClosedTypeBreakdown(rows);
+}
+
+setInterval(refreshActiveClosedTypeBreakdownFromState, 3000);

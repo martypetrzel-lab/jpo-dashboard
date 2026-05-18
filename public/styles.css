@@ -576,3 +576,69 @@ body.isGuestMode #registerBtn {
   gap: 10px;
   margin-top: 12px;
 }
+
+
+/* Talk compact toggle */
+.talkLauncherCard {
+  margin-bottom: 12px;
+}
+
+.talkLauncherMain {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.talkLauncherMain h2 {
+  margin: 0 0 4px;
+}
+
+.talkLauncherMain p {
+  margin: 0;
+  color: rgba(235,245,255,0.72);
+}
+
+#toggleTalkBtn.active {
+  background: rgba(130, 70, 80, 0.95);
+  border-color: rgba(255, 120, 130, 0.35);
+}
+
+/* Active/closed type breakdown */
+.typeBreakdownGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.typeBreakdownItem {
+  padding: 12px;
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 16px;
+  background: rgba(255,255,255,0.045);
+}
+
+.typeBreakdownTitle {
+  font-weight: 900;
+  margin-bottom: 8px;
+}
+
+.typeBreakdownNums {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  color: rgba(235,245,255,0.78);
+}
+
+.typeBreakdownNums b {
+  color: #ffffff;
+  font-size: 18px;
+}
+
+@media (max-width: 760px) {
+  .talkLauncherMain {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}

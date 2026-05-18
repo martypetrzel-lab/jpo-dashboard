@@ -163,6 +163,17 @@
 
   <main class="grid">
 
+
+    <section id="talkLauncherCard" class="card talkLauncherCard">
+      <div class="talkLauncherMain">
+        <div>
+          <h2>FireWatch Talk</h2>
+          <p>Soukromý týmový hlasový chat je schovaný, aby nepřekážel hlavnímu přehledu.</p>
+        </div>
+        <button id="toggleTalkBtn" class="btn primary">Otevřít FireWatch Talk</button>
+      </div>
+    </section>
+
     <section id="opsRadioMount" class="card opsRadioCardShell" style="display:none;"></section>
 
     <section id="talkLockedCard" class="card publicLockedCard" style="display:none;">
@@ -210,6 +221,7 @@
       <div class="cardHeader">
         <h2>Aktivní × ukončené</h2>
         <div class="hint">Počet (30 dní, podle filtrů)</div>
+      <div id="activeClosedTypeBreakdown" class="typeBreakdownGrid"></div>
       </div>
       <div class="splitStats">
         <div class="splitCard">
