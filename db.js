@@ -565,7 +565,7 @@ export async function getEventsFiltered(filters, limit = 400) {
   }
 
   if (city) {
-    where.push(`(COALESCE(city_text,'') ILIKE $${i} OR COALESCE(place_text,'') ILIKE $${i})`);
+    where.push(`(COALESCE(city_text,'') ILIKE $${i} OR COALESCE(place_text,'') ILIKE $${i} OR COALESCE(title,'') ILIKE $${i} OR COALESCE(description_raw,'') ILIKE $${i})`);
     params.push(`%${city}%`);
     i++;
   }

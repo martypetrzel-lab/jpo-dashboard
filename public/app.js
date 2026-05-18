@@ -1304,8 +1304,26 @@ async function loadAll() {
 
     if (!eventsRes.ok || !statsRes.ok) throw new Error("bad http");
 
-    const eventsJson = await eventsRes.json();
+    let eventsJson = await eventsRes.json();
     const statsJson = await statsRes.json();
+
+    // Praktické chování pro filtr města:
+    // když uživatel hledá město a aktuální den nemá záznamy, tabulka by působila rozbitě,
+    // zatímco statistiky ukazují 30denní výsledek. Proto jen v tomto případě zkusíme
+    // načíst stejné město napříč všemi dny.
+    let usedCityDayFallback = false;
+    if ((!eventsJson.items || eventsJson.items.length === 0) && filters.city && (filters.day === "today" || filters.day === "yesterday")) {
+      const fallbackFilters = { ...filters, day: "all" };
+      const qFallback = buildEventsQuery(fallbackFilters);
+      const fallbackRes = await fetch(`/api/events${qFallback ? `?${qFallback}&_=${Date.now()}` : `?_=${Date.now()}`}`, { cache: "no-store" });
+      if (fallbackRes.ok) {
+        const fallbackJson = await fallbackRes.json();
+        if (fallbackJson.items && fallbackJson.items.length > 0) {
+          eventsJson = fallbackJson;
+          usedCityDayFallback = true;
+        }
+      }
+    }
 
     const items = eventsJson.items || [];
     // snapshot pro audio souhrn
@@ -1324,7 +1342,7 @@ async function loadAll() {
     renderLongest(statsJson.longest || []);
 
     const missing = items.filter(x => x.lat == null || x.lon == null).length;
-    setStatus(`OK • ${items.length} záznamů • bez souřadnic ${missing}`, true);
+    setStatus(`OK • ${items.length} záznamů • bez souřadnic ${missing}${usedCityDayFallback ? " • město zobrazeno ze všech dnů" : ""}`, true);
   } catch {
     setStatus("chyba načítání", false);
   } finally {
