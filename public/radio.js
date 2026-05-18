@@ -1,14 +1,19 @@
-// FireWatchCZ OPS Radio v0.6
-// Frontend pro OPS/admin režim.
+// FireWatch Talk v0.6
+// Soukromý týmový hlasový chat FireWatchCZ.
 // Přenos hlasu: server-relay PCM přes WebSocket.
-// Cíl: stabilní mobil ↔ PC příjem bez chrčení a bez závislosti na WebRTC/TURN.
+// Vlastní zvuk PTT: nahraj soubor do /public/sounds/ptt-press.mp3.
 
 (function () {
-  const STORAGE_CHANNEL = "firewatchcz_radio_channel_v1";
+  const STORAGE_ROOM = "firewatch_talk_room_v2";
   const TARGET_SAMPLE_RATE = 16000;
   const PROCESSOR_BUFFER_SIZE = 2048;
   const PACKET_HEADER_SIZE = 12;
   const MAGIC = [0x46, 0x57, 0x52, 0x35]; // FWR5
+  const DEFAULT_ROOM = "HLAVNÍ";
+  const PTT_SOUND_URL = "/sounds/ptt-press.mp3";
+  const PTT_SOUND_VOLUME = 0.42;
+  const RECONNECT_DELAY_MS = 1800;
+  const KEEPALIVE_MS = 20000;
 
   let mount = null;
   let ws = null;
@@ -21,15 +26,17 @@
   let pttActive = false;
   let visible = false;
   let clientId = null;
-  let channel = localStorage.getItem(STORAGE_CHANNEL) || "OPS";
-  let channels = ["OPS", "ADMIN", "TEST"];
-  let myName = "OPS";
+  let room = normalizeRoom(localStorage.getItem(STORAGE_ROOM) || DEFAULT_ROOM);
+  let rooms = ["HLAVNÍ", "SPRÁVA", "TEST"];
+  let roomCounts = [];
+  let myName = "Uživatel";
   let packetSeq = 0;
   let nextPlaybackTime = 0;
-  let heartbeatTimer = null;
+  let manualCloseRequested = false;
   let reconnectTimer = null;
-  let wantConnected = false;
-  let reconnectAttempt = 0;
+  let keepAliveTimer = null;
+  let pttSoundReady = false;
+  let pttSoundFailed = false;
 
   function wsUrl() {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -44,9 +51,37 @@
       .replaceAll('"', "&quot;");
   }
 
-  function channelOptions() {
-    return channels
-      .map((ch) => `<option value="${escapeHtml(ch)}" ${ch === channel ? "selected" : ""}>${escapeHtml(ch)}</option>`)
+  function normalizeRoom(value) {
+    const raw = String(value || DEFAULT_ROOM).trim().toUpperCase();
+    if (["OPS", "JEDNOTKA", "VELITEL", "TECHNICKY"].includes(raw)) return DEFAULT_ROOM;
+    if (["ADMIN", "SPRAVA", "SPRÁVA"].includes(raw)) return "SPRÁVA";
+    if (raw === "TEST") return "TEST";
+    if (raw === "HLAVNI" || raw === "HLAVNÍ") return DEFAULT_ROOM;
+    return raw || DEFAULT_ROOM;
+  }
+
+  function roomLabel(value) {
+    const normalized = normalizeRoom(value);
+    if (normalized === "HLAVNÍ") return "Hlavní";
+    if (normalized === "SPRÁVA") return "Správa";
+    if (normalized === "TEST") return "Test";
+    return normalized;
+  }
+
+  function roomCount(value) {
+    const normalized = normalizeRoom(value);
+    return roomCounts.find((item) => item.room === normalized)?.count ?? null;
+  }
+
+  function roomOptions() {
+    return rooms
+      .map((item) => normalizeRoom(item))
+      .filter(Boolean)
+      .map((item) => {
+        const count = roomCount(item);
+        const label = count === null ? roomLabel(item) : `${roomLabel(item)} (${count})`;
+        return `<option value="${escapeHtml(item)}" ${item === room ? "selected" : ""}>${escapeHtml(label)}</option>`;
+      })
       .join("");
   }
 
@@ -73,7 +108,35 @@
     }
   }
 
-  async function beep(freq = 880, duration = 55) {
+  function preloadPttSound() {
+    if (pttSoundReady || pttSoundFailed) return;
+
+    const audio = new Audio(PTT_SOUND_URL);
+    audio.preload = "auto";
+    audio.volume = PTT_SOUND_VOLUME;
+    audio.addEventListener("canplaythrough", () => { pttSoundReady = true; }, { once: true });
+    audio.addEventListener("error", () => { pttSoundFailed = true; }, { once: true });
+
+    // Většina mobilů zvuk stejně dovolí až po dotyku, ale preload nevadí.
+    try { audio.load(); } catch {}
+  }
+
+  async function playPttPressSound() {
+    // Požadavek: vlastní MP3 při stisknutí PTT.
+    // Soubor: public/sounds/ptt-press.mp3 -> URL /sounds/ptt-press.mp3
+    try {
+      const audio = new Audio(PTT_SOUND_URL);
+      audio.volume = PTT_SOUND_VOLUME;
+      audio.currentTime = 0;
+      await audio.play();
+      return true;
+    } catch {
+      pttSoundFailed = true;
+      return false;
+    }
+  }
+
+  async function fallbackBeep(freq = 880, duration = 55) {
     if (window.__fwczRadioNoBeep) return;
     try {
       const ctx = await unlockAudio();
@@ -84,7 +147,7 @@
 
       oscillator.frequency.value = freq;
       oscillator.type = "sine";
-      gain.gain.value = 0.018;
+      gain.gain.value = 0.016;
 
       oscillator.connect(gain);
       gain.connect(ctx.destination);
@@ -93,6 +156,11 @@
     } catch {
       // nepovinné
     }
+  }
+
+  async function pttCue() {
+    const ok = await playPttPressSound();
+    if (!ok) await fallbackBeep(760, 45);
   }
 
   function setStatus(text, state = "idle") {
@@ -115,17 +183,14 @@
 
   function render() {
     if (!mount) return;
-    if (!channels.includes(channel)) {
-      channel = channels.includes("OPS") ? "OPS" : channels[0];
-      localStorage.setItem(STORAGE_CHANNEL, channel);
-    }
 
     mount.innerHTML = `
       <div class="ops-radio-card">
         <div class="ops-radio-head">
           <div>
-            <h2>OPS Rádio</h2>
-            <p>Interní internetová vysílačka FireWatchCZ. Dostupné pouze pro OPS/admin.</p>
+            <h2>FireWatch Talk</h2>
+            <p>Soukromý hlasový chat FireWatchCZ pro testování a týmovou komunikaci.</p>
+            <p class="ops-radio-disclaimer">Není určen pro komunikaci složek IZS ani pro řízení zásahů.</p>
           </div>
           <div class="ops-radio-live" data-radio-status data-state="idle">Nepřipojeno</div>
         </div>
@@ -134,22 +199,21 @@
           <div class="ops-radio-row">
             <label>
               Místnost
-              <select id="opsRadioChannelLive">${channelOptions()}</select>
+              <select id="opsRadioRoomLive">${roomOptions()}</select>
             </label>
             <div class="ops-radio-tx">
-              <span>Právě vysílá</span>
+              <span>Právě mluví</span>
               <strong data-radio-tx>Nikdo</strong>
             </div>
+            <button class="ops-radio-connect" id="opsRadioConnect">Připojit</button>
           </div>
 
-          <button class="ops-radio-connect" id="opsRadioConnect">Připojit rádio</button>
-
           <button class="ops-radio-ptt" id="opsRadioPtt" disabled>
-            DRŽ PRO VYSÍLÁNÍ
+            DRŽ PRO MLUVENÍ
           </button>
 
           <div class="ops-radio-users">
-            <h3>Připojeni</h3>
+            <h3>Připojeni v místnosti</h3>
             <ul data-radio-users>
               <li>Zatím nikdo</li>
             </ul>
@@ -158,9 +222,10 @@
       </div>
     `;
 
-    mount.querySelector("#opsRadioConnect")?.addEventListener("click", connectRadio);
-    mount.querySelector("#opsRadioChannelLive")?.addEventListener("change", changeChannel);
+    mount.querySelector("#opsRadioConnect")?.addEventListener("click", toggleRadioConnection);
+    mount.querySelector("#opsRadioRoomLive")?.addEventListener("change", changeRoom);
     setupPttButton();
+    preloadPttSound();
   }
 
   function setupPttButton() {
@@ -170,6 +235,7 @@
     const down = async (event) => {
       event.preventDefault();
       await unlockAudio();
+      await pttCue();
       requestPtt();
     };
 
@@ -189,7 +255,7 @@
       const response = await fetch("/api/auth/me", { credentials: "include" });
       const data = await response.json().catch(() => ({}));
       const role = String(data?.user?.role || "public");
-      myName = data?.user?.username || "OPS";
+      myName = data?.user?.username || "Uživatel";
       return role === "ops" || role === "admin";
     } catch {
       return false;
@@ -204,8 +270,8 @@
     setHiddenByRole(!allowed);
 
     if (!allowed) {
-      // Neodpojujeme rádio automaticky při krátkém výpadku auth dotazu nebo skrytí OPS prvků.
-      // Samotný server při novém spojení stále ověřuje roli ops/admin.
+      manualCloseRequested = true;
+      closeRadio();
       return;
     }
 
@@ -228,41 +294,38 @@
       });
       return true;
     } catch (error) {
-      console.warn("[OPS RADIO] microphone error", error);
+      console.warn("[FW TALK] microphone error", error);
       setStatus("Mikrofon není povolený", "error");
       return false;
     }
   }
 
-  async function connectRadio() {
-    if (!visible && !wantConnected) return;
-
+  function toggleRadioConnection() {
     if (ws && ws.readyState === WebSocket.OPEN) {
-      closeRadio({ manual: true });
+      manualCloseRequested = true;
+      closeRadio();
+      setStatus("Ruční odpojení", "idle");
       return;
     }
 
-    wantConnected = true;
+    connectRadio(false);
+  }
+
+  async function connectRadio(isReconnect = false) {
+    if (!visible) return;
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+
     clearReconnectTimer();
+    manualCloseRequested = false;
 
     await unlockAudio();
 
     const micOk = await prepareLocalAudio();
-    if (!micOk) {
-      wantConnected = false;
-      return;
-    }
-
-    openSocket();
-  }
-
-  function openSocket() {
-    if (!wantConnected) return;
-    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+    if (!micOk) return;
 
     ws = new WebSocket(wsUrl());
     ws.binaryType = "arraybuffer";
-    setStatus(reconnectAttempt > 0 ? "Obnovuji spojení…" : "Připojuji…", "connecting");
+    setStatus(isReconnect ? "Obnovuji spojení…" : "Připojuji…", "connecting");
 
     ws.addEventListener("message", (event) => {
       if (typeof event.data === "string") {
@@ -276,30 +339,56 @@
       authenticated = false;
       pttActive = false;
       clientId = null;
-      stopHeartbeat();
       stopTransmit();
+      stopKeepAlive();
+      setConnectButton(false);
+
       const ptt = mount?.querySelector("#opsRadioPtt");
       if (ptt) ptt.disabled = true;
 
-      if (wantConnected) {
-        setStatus("Spojení spadlo, obnovuji…", "connecting");
-        scheduleReconnect();
-      } else {
-        setStatus("Odpojeno", "error");
-        setConnectButton(false);
+      if (manualCloseRequested || !visible) {
+        setStatus("Nepřipojeno", "idle");
+        return;
       }
+
+      setStatus("Spojení spadlo, obnovuji…", "connecting");
+      scheduleReconnect();
     });
 
     ws.addEventListener("error", () => {
-      setStatus("Chyba spojení", "error");
+      if (!manualCloseRequested) setStatus("Chyba spojení", "error");
     });
   }
 
-  function closeRadio(options = {}) {
-    const manual = Boolean(options.manual);
-    if (manual) wantConnected = false;
+  function scheduleReconnect() {
     clearReconnectTimer();
-    stopHeartbeat();
+    reconnectTimer = window.setTimeout(() => {
+      reconnectTimer = null;
+      connectRadio(true);
+    }, RECONNECT_DELAY_MS);
+  }
+
+  function clearReconnectTimer() {
+    if (reconnectTimer) window.clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+
+  function startKeepAlive() {
+    stopKeepAlive();
+    keepAliveTimer = window.setInterval(() => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({ type: "ping", ts: Date.now() }));
+    }, KEEPALIVE_MS);
+  }
+
+  function stopKeepAlive() {
+    if (keepAliveTimer) window.clearInterval(keepAliveTimer);
+    keepAliveTimer = null;
+  }
+
+  function closeRadio() {
+    clearReconnectTimer();
+    stopKeepAlive();
     try { ws?.close(); } catch {}
     ws = null;
     authenticated = false;
@@ -308,38 +397,9 @@
     stopTransmit();
     stopLocalAudio();
     setConnectButton(false);
+    setTx("Nikdo");
     const ptt = mount?.querySelector("#opsRadioPtt");
     if (ptt) ptt.disabled = true;
-  }
-
-  function scheduleReconnect() {
-    if (!wantConnected) return;
-    clearReconnectTimer();
-    reconnectAttempt += 1;
-    const delay = Math.min(12000, 1200 + reconnectAttempt * 900);
-    reconnectTimer = window.setTimeout(() => {
-      reconnectTimer = null;
-      openSocket();
-    }, delay);
-  }
-
-  function clearReconnectTimer() {
-    if (reconnectTimer) window.clearTimeout(reconnectTimer);
-    reconnectTimer = null;
-  }
-
-  function startHeartbeat() {
-    stopHeartbeat();
-    heartbeatTimer = window.setInterval(() => {
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        try { ws.send(JSON.stringify({ type: "ping", ts: Date.now() })); } catch {}
-      }
-    }, 20000);
-  }
-
-  function stopHeartbeat() {
-    if (heartbeatTimer) window.clearInterval(heartbeatTimer);
-    heartbeatTimer = null;
   }
 
   function stopLocalAudio() {
@@ -353,54 +413,67 @@
   function setConnectButton(connected) {
     const btn = mount?.querySelector("#opsRadioConnect");
     if (!btn) return;
-    btn.textContent = connected ? "Odpojit rádio" : "Připojit rádio";
+    btn.textContent = connected ? "Odpojit" : "Připojit";
   }
 
   function handleControlMessage(raw) {
     let data = null;
     try { data = JSON.parse(raw); } catch { return; }
 
+    if (data.type === "ping") {
+      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "pong", ts: Date.now() }));
+      return;
+    }
+
+    if (data.type === "pong") return;
+
     if (data.type === "auth_ok") {
       authenticated = true;
       clientId = data.clientId;
       myName = data.name || myName;
-      if (Array.isArray(data.channels)) channels = data.channels;
-      channel = data.channel || channel;
-      localStorage.setItem(STORAGE_CHANNEL, channel);
+      if (Array.isArray(data.rooms)) rooms = data.rooms.map(normalizeRoom);
+      else if (Array.isArray(data.channels)) rooms = data.channels.map(normalizeRoom);
+      if (Array.isArray(data.roomCounts)) roomCounts = data.roomCounts;
 
-      const select = mount?.querySelector("#opsRadioChannelLive");
-      if (select) {
-        select.innerHTML = channelOptions();
-        select.value = channel;
-      }
+      room = normalizeRoom(data.room || data.channel || room);
+      if (!rooms.includes(room)) room = rooms[0] || DEFAULT_ROOM;
+      localStorage.setItem(STORAGE_ROOM, room);
+
+      refreshRoomSelect();
 
       const ptt = mount?.querySelector("#opsRadioPtt");
       if (ptt) ptt.disabled = false;
 
-      reconnectAttempt = 0;
-      startHeartbeat();
       setConnectButton(true);
-      setStatus(`Místnost: ${channel}`, "ok");
-      beep(660, 55);
+      setStatus(`Připojeno: ${roomLabel(room)}`, "ok");
+      startKeepAlive();
+      fallbackBeep(620, 45);
       return;
     }
 
     if (data.type === "auth_error") {
-      setStatus(data.message || "Nemáš OPS oprávnění", "error");
-      wantConnected = false;
-      closeRadio({ manual: true });
+      setStatus(data.message || "Nemáš oprávnění", "error");
+      manualCloseRequested = true;
+      closeRadio();
       return;
     }
 
     if (data.type === "error") {
-      setStatus(data.message || "Chyba rádia", "error");
+      setStatus(data.message || "Chyba", "error");
+      refreshRoomSelect();
       return;
     }
 
     if (data.type === "radio_state") {
-      if (data.channel === channel) {
+      if (Array.isArray(data.rooms)) rooms = data.rooms.map(normalizeRoom);
+      else if (Array.isArray(data.channels)) rooms = data.channels.map(normalizeRoom);
+      if (Array.isArray(data.roomCounts)) roomCounts = data.roomCounts;
+      refreshRoomSelect();
+
+      const stateRoom = normalizeRoom(data.room || data.channel);
+      if (stateRoom === room) {
         const isMe = data.txClientId && data.txClientId === clientId;
-        setStatus(`Místnost: ${channel}`, data.transmitting ? (isMe ? "tx" : "rx") : "ok");
+        setStatus(`Připojeno: ${roomLabel(room)}`, data.transmitting ? (isMe ? "tx" : "rx") : "ok");
         setTx(data.transmitting ? (data.txName || "Někdo") : "Nikdo");
         renderUsers(Array.isArray(data.clients) ? data.clients : []);
       }
@@ -411,10 +484,10 @@
       if (data.self) {
         pttActive = true;
         startTransmit();
-        setStatus("Vysíláš", "tx");
+        setStatus("Mluvíš", "tx");
       } else {
         setStatus(`Příjem: ${data.by || "někdo"}`, "rx");
-        beep(880, 35);
+        fallbackBeep(880, 30);
         resetPlaybackClock();
       }
       return;
@@ -423,7 +496,7 @@
     if (data.type === "ptt_denied") {
       pttActive = false;
       stopTransmit();
-      setStatus(data.message || "Kanál je obsazený", "error");
+      setStatus(data.message || "Místnost je obsazená", "error");
       mount?.querySelector("#opsRadioPtt")?.classList.remove("is-transmitting");
       return;
     }
@@ -433,10 +506,19 @@
         pttActive = false;
         stopTransmit();
       }
-      setStatus(`Místnost: ${channel}`, "ok");
+      setStatus(`Připojeno: ${roomLabel(room)}`, "ok");
       setTx("Nikdo");
-      beep(440, 35);
+      fallbackBeep(430, 30);
     }
+  }
+
+  function refreshRoomSelect() {
+    const select = mount?.querySelector("#opsRadioRoomLive");
+    if (!select) return;
+    const oldValue = select.value;
+    select.innerHTML = roomOptions();
+    select.value = rooms.includes(room) ? room : (rooms[0] || DEFAULT_ROOM);
+    if (select.value !== oldValue && oldValue === room) select.value = room;
   }
 
   function renderUsers(users) {
@@ -449,18 +531,18 @@
     }
 
     ul.innerHTML = users
-      .map((user) => `<li>${escapeHtml(user.name)} <span class="ops-radio-role">${escapeHtml(user.role || "")}</span>${user.transmitting ? " <strong>vysílá</strong>" : ""}</li>`)
+      .map((user) => `<li>${escapeHtml(user.name)} <span class="ops-radio-role">${escapeHtml(user.role || "")}</span>${user.transmitting ? " <strong>mluví</strong>" : ""}</li>`)
       .join("");
   }
 
-  function changeChannel(event) {
-    channel = event.target.value || "OPS";
-    localStorage.setItem(STORAGE_CHANNEL, channel);
+  function changeRoom(event) {
+    room = normalizeRoom(event.target.value || DEFAULT_ROOM);
+    localStorage.setItem(STORAGE_ROOM, room);
     resetPlaybackClock();
 
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "join_channel", channel }));
-      setStatus(`Přepínám místnost na ${channel}…`, "connecting");
+      ws.send(JSON.stringify({ type: "join_room", room }));
+      setStatus(`Přepínám na ${roomLabel(room)}…`, "connecting");
     }
   }
 
@@ -470,7 +552,7 @@
     const ptt = mount?.querySelector("#opsRadioPtt");
     if (ptt) ptt.classList.add("is-transmitting");
 
-    ws.send(JSON.stringify({ type: "ptt_request", channel }));
+    ws.send(JSON.stringify({ type: "ptt_request", room }));
   }
 
   function releasePtt() {
@@ -479,7 +561,7 @@
 
     if (!authenticated || !ws || ws.readyState !== WebSocket.OPEN) return;
 
-    ws.send(JSON.stringify({ type: "ptt_release", channel }));
+    ws.send(JSON.stringify({ type: "ptt_release", room }));
     pttActive = false;
     stopTransmit();
   }
@@ -507,7 +589,7 @@
       processor.connect(zeroGain);
       zeroGain.connect(audioContext.destination);
     } catch (error) {
-      console.warn("[OPS RADIO] start transmit error", error);
+      console.warn("[FW TALK] start transmit error", error);
       setStatus("Mikrofon nejde spustit", "error");
     }
   }
@@ -614,14 +696,8 @@
   };
 
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible" && wantConnected) {
-      unlockAudio();
-      if (!ws || ws.readyState === WebSocket.CLOSED) {
-        scheduleReconnect();
-      } else if (ws.readyState === WebSocket.OPEN) {
-        try { ws.send(JSON.stringify({ type: "ping", ts: Date.now() })); } catch {}
-      }
-    }
+    // Neodpojovat při přepnutí aplikace/záložky. Jen uvolnit PTT, pokud právě drží.
+    if (document.hidden && pttActive) releasePtt();
   });
 
   document.addEventListener("DOMContentLoaded", async () => {

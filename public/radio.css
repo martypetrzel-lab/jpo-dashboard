@@ -31,6 +31,12 @@
   font-size: 0.92rem;
 }
 
+.ops-radio-head .ops-radio-disclaimer {
+  opacity: 0.9;
+  font-size: 0.78rem;
+  color: #ffd37a;
+}
+
 .ops-radio-live {
   padding: 6px 10px;
   border-radius: 999px;
@@ -125,7 +131,7 @@
   font-weight: 950;
   letter-spacing: 0.04em;
   color: #fff;
-  background: linear-gradient(180deg, #c62121, #7d1111);
+  background: linear-gradient(180deg, #2f6fed, #1747a8);
   box-shadow: inset 0 -6px 0 rgba(0, 0, 0, 0.25), 0 12px 24px rgba(0, 0, 0, 0.22);
   cursor: pointer;
   user-select: none;

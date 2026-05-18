@@ -5,13 +5,17 @@ import {
   deleteSessionByTokenSha
 } from "./db.js";
 
-// FireWatchCZ OPS Radio v0.6
-// Interní internetová PTT vysílačka pro přihlášené role ops/admin.
-// Přenos hlasu je server-relay PCM přes WebSocket. WebSocket řeší i OPS autorizaci,
-// kanály a PTT zámek. Tohle je stabilnější pro mobil ↔ PC než krátké WebM chunky.
+// FireWatch Talk v0.6
+// Soukromý týmový hlasový chat FireWatchCZ pro testování a týmovou komunikaci.
+// Není určen pro komunikaci složek IZS ani pro řízení zásahů.
+// Přenos hlasu: server-relay PCM přes WebSocket.
 
-const DEFAULT_CHANNELS = ["OPS", "ADMIN", "TEST"];
+const DEFAULT_ROOMS = ["HLAVNÍ", "SPRÁVA", "TEST"];
+const DEFAULT_ROOM = "HLAVNÍ";
+const ADMIN_ONLY_ROOMS = new Set(["SPRÁVA"]);
 const SESSION_COOKIE = process.env.SESSION_COOKIE_NAME || "FWSESS";
+const HEARTBEAT_INTERVAL_MS = 25000;
+const HEARTBEAT_GRACE_MS = 70000;
 
 function parseCookiesFromHeader(headerValue) {
   const out = {};
@@ -60,7 +64,7 @@ async function authFromWsRequest(req) {
       }
     };
   } catch (error) {
-    console.error("[OPS RADIO] auth error:", error?.message || error);
+    console.error("[FW TALK] auth error:", error?.message || error);
     return null;
   }
 }
@@ -73,9 +77,33 @@ function safeJsonParse(raw) {
   }
 }
 
-function normalizeChannel(channel) {
-  const value = String(channel || "OPS").trim().toUpperCase();
-  return value || "OPS";
+function normalizeRoom(room) {
+  const value = String(room || DEFAULT_ROOM).trim().toUpperCase();
+
+  // Zpětná kompatibilita se starými uloženými názvy v prohlížeči.
+  if (["OPS", "JEDNOTKA", "VELITEL", "TECHNICKY"].includes(value)) return DEFAULT_ROOM;
+  if (["ADMIN", "SPRAVA", "SPRÁVA"].includes(value)) return "SPRÁVA";
+  if (value === "TEST") return "TEST";
+
+  return value || DEFAULT_ROOM;
+}
+
+function roomAllowedForRole(room, role) {
+  if (ADMIN_ONLY_ROOMS.has(room)) return role === "admin";
+  return true;
+}
+
+function publicRoomsForRole(rooms, role) {
+  return rooms.filter((room) => roomAllowedForRole(room, role));
+}
+
+function firstAllowedRoom(rooms, role, preferredRoom = DEFAULT_ROOM) {
+  const normalized = normalizeRoom(preferredRoom);
+  if (rooms.includes(normalized) && roomAllowedForRole(normalized, role)) return normalized;
+
+  if (rooms.includes(DEFAULT_ROOM) && roomAllowedForRole(DEFAULT_ROOM, role)) return DEFAULT_ROOM;
+
+  return publicRoomsForRole(rooms, role)[0] || rooms[0];
 }
 
 function sendJson(ws, data) {
@@ -85,9 +113,9 @@ function sendJson(ws, data) {
 
 export function attachOpsRadio(server, options = {}) {
   const enabled = String(process.env.RADIO_ENABLED || options.enabled || "true").toLowerCase() !== "false";
-  const channels = Array.isArray(options.channels) && options.channels.length
-    ? options.channels.map(normalizeChannel)
-    : DEFAULT_CHANNELS;
+  const rooms = Array.isArray(options.rooms) && options.rooms.length
+    ? options.rooms.map(normalizeRoom)
+    : DEFAULT_ROOMS;
 
   const wss = new WebSocketServer({
     server,
@@ -95,47 +123,65 @@ export function attachOpsRadio(server, options = {}) {
   });
 
   const clients = new Map();
-  const channelState = new Map();
+  const roomState = new Map();
 
-  for (const channel of channels) {
-    channelState.set(channel, {
+  for (const room of rooms) {
+    roomState.set(room, {
       txClientId: null,
       txName: null
     });
   }
 
-  function getClientsInChannel(channel) {
+  function getClientsInRoom(room) {
     return [...clients.values()]
-      .filter((client) => client.channel === channel)
+      .filter((client) => client.room === room)
       .map((client) => ({
         id: client.id,
         name: client.name,
         role: client.role,
-        channel: client.channel,
-        transmitting: channelState.get(channel)?.txClientId === client.id
+        room: client.room,
+        transmitting: roomState.get(room)?.txClientId === client.id
       }));
   }
 
-  function broadcastChannelState(channel) {
-    const st = channelState.get(channel) || { txClientId: null, txName: null };
-    const payload = {
-      type: "radio_state",
-      enabled,
-      channel,
-      channels,
-      transmitting: Boolean(st.txClientId),
-      txClientId: st.txClientId,
-      txName: st.txName,
-      clients: getClientsInChannel(channel)
-    };
+  function getRoomCounts() {
+    return rooms.map((room) => ({
+      room,
+      count: [...clients.values()].filter((client) => client.room === room).length,
+      transmitting: Boolean(roomState.get(room)?.txClientId),
+      txName: roomState.get(room)?.txName || null
+    }));
+  }
+
+  function broadcastRoomState(room) {
+    const st = roomState.get(room) || { txClientId: null, txName: null };
 
     for (const client of clients.values()) {
-      if (client.channel === channel) sendJson(client.ws, payload);
+      const clientRooms = publicRoomsForRole(rooms, client.role);
+      const payload = {
+        type: "radio_state",
+        enabled,
+        room,
+        channel: room,
+        rooms: clientRooms,
+        channels: clientRooms,
+        roomCounts: getRoomCounts().filter((item) => clientRooms.includes(item.room)),
+        transmitting: Boolean(st.txClientId),
+        txClientId: st.txClientId,
+        txName: st.txName,
+        clients: getClientsInRoom(client.room)
+      };
+
+      if (client.room === room) sendJson(client.ws, payload);
     }
   }
 
+  function broadcastAllRoomCounts() {
+    for (const room of rooms) broadcastRoomState(room);
+  }
+
   function releaseTx(client, reason = "release") {
-    const st = channelState.get(client.channel);
+    const st = roomState.get(client.room);
     if (!st) return;
 
     if (st.txClientId === client.id) {
@@ -143,44 +189,61 @@ export function attachOpsRadio(server, options = {}) {
       st.txName = null;
 
       for (const other of clients.values()) {
-        if (other.channel === client.channel) {
+        if (other.room === client.room) {
           sendJson(other.ws, {
             type: "ptt_released",
-            channel: client.channel,
+            room: client.room,
+            channel: client.room,
             by: client.name,
             reason
           });
         }
       }
 
-      broadcastChannelState(client.channel);
+      broadcastRoomState(client.room);
     }
   }
 
+  const heartbeat = setInterval(() => {
+    const now = Date.now();
+    for (const client of clients.values()) {
+      if (now - client.lastSeenAt > HEARTBEAT_GRACE_MS) {
+        try { client.ws.close(4000, "heartbeat timeout"); } catch {}
+        continue;
+      }
+      sendJson(client.ws, { type: "ping", ts: now });
+    }
+  }, HEARTBEAT_INTERVAL_MS);
+  heartbeat.unref?.();
+
+  wss.on("close", () => clearInterval(heartbeat));
+
   wss.on("connection", async (ws, req) => {
     if (!enabled) {
-      sendJson(ws, { type: "error", message: "OPS rádio je na serveru vypnuté." });
+      sendJson(ws, { type: "error", message: "FireWatch Talk je na serveru vypnutý." });
       ws.close(1008, "radio disabled");
       return;
     }
 
     const auth = await authFromWsRequest(req);
     if (!auth?.user) {
-      sendJson(ws, { type: "auth_error", message: "OPS rádio je dostupné jen po přihlášení jako ops/admin." });
+      sendJson(ws, { type: "auth_error", message: "FireWatch Talk je dostupný jen po přihlášení jako ops/admin." });
       ws.close(1008, "unauthorized");
       return;
     }
 
     const id = crypto.randomUUID();
-    const initialChannel = channels.includes("OPS") ? "OPS" : channels[0];
+    const userRooms = publicRoomsForRole(rooms, auth.user.role);
+    const initialRoom = firstAllowedRoom(rooms, auth.user.role, DEFAULT_ROOM);
 
     const client = {
       id,
       ws,
-      name: auth.user.username || "OPS",
+      name: auth.user.username || "Uživatel",
       role: auth.user.role,
-      channel: initialChannel,
-      createdAt: Date.now()
+      room: initialRoom,
+      createdAt: Date.now(),
+      lastSeenAt: Date.now()
     };
 
     clients.set(id, client);
@@ -191,21 +254,26 @@ export function attachOpsRadio(server, options = {}) {
       clientId: id,
       name: client.name,
       role: client.role,
-      channel: client.channel,
-      channels
+      room: client.room,
+      channel: client.room,
+      rooms: userRooms,
+      channels: userRooms,
+      roomCounts: getRoomCounts().filter((item) => userRooms.includes(item.room))
     });
 
-    broadcastChannelState(client.channel);
+    broadcastAllRoomCounts();
 
     ws.on("message", (message, isBinary) => {
+      client.lastSeenAt = Date.now();
+
       if (isBinary) {
-        const st = channelState.get(client.channel);
+        const st = roomState.get(client.room);
         if (!st || st.txClientId !== client.id) return;
 
         for (const other of clients.values()) {
           if (
             other.id !== client.id &&
-            other.channel === client.channel &&
+            other.room === client.room &&
             other.ws.readyState === other.ws.OPEN
           ) {
             other.ws.send(message, { binary: true });
@@ -220,33 +288,38 @@ export function attachOpsRadio(server, options = {}) {
         return;
       }
 
-      if (data.type === "join_channel") {
-        const nextChannel = normalizeChannel(data.channel);
-        if (!channels.includes(nextChannel)) {
-          sendJson(ws, { type: "error", message: "Neplatný kanál." });
+      if (data.type === "pong" || data.type === "ping") {
+        sendJson(ws, { type: "pong", ts: Date.now() });
+        return;
+      }
+
+      if (data.type === "join_channel" || data.type === "join_room") {
+        const nextRoom = normalizeRoom(data.room || data.channel);
+        if (!rooms.includes(nextRoom) || !roomAllowedForRole(nextRoom, client.role)) {
+          sendJson(ws, { type: "error", message: "Do této místnosti nemáš přístup." });
           return;
         }
 
-        const oldChannel = client.channel;
-        releaseTx(client, "channel_change");
-        client.channel = nextChannel;
+        const oldRoom = client.room;
+        releaseTx(client, "room_change");
+        client.room = nextRoom;
 
-        broadcastChannelState(oldChannel);
-        broadcastChannelState(nextChannel);
+        broadcastRoomState(oldRoom);
+        broadcastRoomState(nextRoom);
         return;
       }
 
       if (data.type === "ptt_request") {
-        const st = channelState.get(client.channel);
+        const st = roomState.get(client.room);
         if (!st) {
-          sendJson(ws, { type: "ptt_denied", message: "Kanál neexistuje." });
+          sendJson(ws, { type: "ptt_denied", message: "Místnost neexistuje." });
           return;
         }
 
         if (st.txClientId && st.txClientId !== client.id) {
           sendJson(ws, {
             type: "ptt_denied",
-            message: `Kanál právě používá ${st.txName || "jiný uživatel"}.`
+            message: `Právě mluví ${st.txName || "jiný uživatel"}.`
           });
           return;
         }
@@ -255,17 +328,18 @@ export function attachOpsRadio(server, options = {}) {
         st.txName = client.name;
 
         for (const other of clients.values()) {
-          if (other.channel === client.channel) {
+          if (other.room === client.room) {
             sendJson(other.ws, {
               type: "ptt_granted",
-              channel: client.channel,
+              room: client.room,
+              channel: client.room,
               by: client.name,
               self: other.id === client.id
             });
           }
         }
 
-        broadcastChannelState(client.channel);
+        broadcastRoomState(client.room);
         return;
       }
 
@@ -273,28 +347,23 @@ export function attachOpsRadio(server, options = {}) {
         releaseTx(client, "button_release");
         return;
       }
-
-      if (data.type === "ping") {
-        sendJson(ws, { type: "pong", ts: Date.now() });
-        return;
-      }
     });
 
     ws.on("close", () => {
       releaseTx(client, "disconnect");
-      const oldChannel = client.channel;
+      const oldRoom = client.room;
       clients.delete(id);
-      broadcastChannelState(oldChannel);
+      broadcastRoomState(oldRoom);
     });
 
     ws.on("error", () => {
       releaseTx(client, "socket_error");
-      const oldChannel = client.channel;
+      const oldRoom = client.room;
       clients.delete(id);
-      broadcastChannelState(oldChannel);
+      broadcastRoomState(oldRoom);
     });
   });
 
-  console.log(`[OPS RADIO] WebSocket/PCM relay běží na /ops-radio | enabled=${enabled} | channels=${channels.join(", ")}`);
+  console.log(`[FW TALK] WebSocket/PCM relay běží na /ops-radio | enabled=${enabled} | rooms=${rooms.join(", ")}`);
   return { wss };
 }
