@@ -4,6 +4,9 @@ let routesLayer, vehiclesLayer;
 
 // OPS auth state (musí být nahoře kvůli TTS, které může běžet už při prvním loadu)
 let currentUser = null; // {id, username, role}
+const LS_GUEST_HERO_DISMISSED = "fwcz_guestHeroDismissed";
+const LS_PUBLIC_ADVANCED_STATS = "fwcz_publicAdvancedStatsOpen";
+let publicAdvancedStatsOpen = localStorage.getItem(LS_PUBLIC_ADVANCED_STATS) === "1";
 
 // ✅ simulace – jen NOVÉ a AKTIVNÍ události (od načtení stránky)
 const seenEventIds = new Set();
@@ -1435,8 +1438,17 @@ function setModePill(modeText, roleText = "") {
   const el = document.getElementById("modePill");
   if (!el) return;
   el.textContent = roleText ? `${modeText} • ${roleText}` : modeText;
-  el.style.background = modeText === "OPS" ? "rgba(60, 180, 120, 0.20)" : "rgba(255,255,255,0.06)";
-  el.style.borderColor = modeText === "OPS" ? "rgba(60, 180, 120, 0.35)" : "rgba(255,255,255,0.12)";
+
+  if (modeText === "OPS") {
+    el.style.background = "rgba(60, 180, 120, 0.20)";
+    el.style.borderColor = "rgba(60, 180, 120, 0.35)";
+  } else if (modeText === "HOST") {
+    el.style.background = "rgba(90, 160, 255, 0.16)";
+    el.style.borderColor = "rgba(90, 160, 255, 0.34)";
+  } else {
+    el.style.background = "rgba(255,255,255,0.06)";
+    el.style.borderColor = "rgba(255,255,255,0.12)";
+  }
 }
 
 function showEl(id, on) {
@@ -1444,6 +1456,46 @@ function showEl(id, on) {
   if (!el) return;
   el.style.display = on ? "" : "none";
 }
+
+function syncPublicGuestUi() {
+  const isLogged = !!currentUser;
+  const isGuest = !isLogged;
+  const hero = document.getElementById("publicGuestHero");
+  const talkLocked = document.getElementById("talkLockedCard");
+  const statsToggleCard = document.getElementById("publicStatsToggleCard");
+  const toggleBtn = document.getElementById("toggleAdvancedStatsBtn");
+
+  if (hero) {
+    const dismissed = localStorage.getItem(LS_GUEST_HERO_DISMISSED) === "1";
+    hero.style.display = (isGuest && !dismissed) ? "" : "none";
+  }
+
+  if (talkLocked) {
+    talkLocked.style.display = isGuest ? "" : "none";
+  }
+
+  if (statsToggleCard) {
+    statsToggleCard.style.display = isGuest ? "" : "none";
+  }
+
+  document.querySelectorAll(".publicAdvancedStats").forEach((el) => {
+    el.style.display = (!isGuest || publicAdvancedStatsOpen) ? "" : "none";
+  });
+
+  if (toggleBtn) {
+    toggleBtn.textContent = publicAdvancedStatsOpen ? "Skrýt rozšířené statistiky" : "Zobrazit více statistik";
+  }
+
+  document.body.classList.toggle("isGuestMode", isGuest);
+  document.body.classList.toggle("isLoggedMode", isLogged);
+}
+
+function setPublicAdvancedStats(open) {
+  publicAdvancedStatsOpen = !!open;
+  localStorage.setItem(LS_PUBLIC_ADVANCED_STATS, publicAdvancedStatsOpen ? "1" : "0");
+  syncPublicGuestUi();
+}
+
 
 async function refreshMe() {
   try {
@@ -1460,7 +1512,7 @@ async function refreshMe() {
     const role = String(currentUser.role || "public");
     const isOps = (role === "ops" || role === "admin");
 
-    setModePill(isOps ? "OPS" : "PUBLIC", role);
+    setModePill(isOps ? "OPS" : "ÚČET", role);
 
     showEl("loginBtn", false);
     showEl("registerBtn", false);
@@ -1471,7 +1523,7 @@ async function refreshMe() {
     showEl("briefingBtn", isOps);
     window.firewatchOpsRadioSetVisible?.(true);
   } else {
-    setModePill("PUBLIC");
+    setModePill("HOST");
     showEl("loginBtn", true);
     showEl("registerBtn", true);
     showEl("logoutBtn", false);
@@ -1481,6 +1533,8 @@ async function refreshMe() {
     showEl("briefingBtn", false);
     window.firewatchOpsRadioSetVisible?.(false);
   }
+
+  syncPublicGuestUi();
 }
 
 function openModal(which) {
@@ -2290,6 +2344,7 @@ function toggleTvMode() {
   loadMasterMute();
   applyMasterMute();
   wireAudioUiOnce();
+wirePublicGuestUiOnce();
   syncAudioUi();
 
   // buttons
@@ -2349,6 +2404,7 @@ function toggleTvMode() {
   setInterval(audioTickSummary, 30 * 1000);
 
   // auth state
-  await refreshMe();
+  await syncPublicGuestUi();
+refreshMe();
   await sendVisitPing();
 })();

@@ -56,7 +56,7 @@
       <button id="briefingBtn" class="btn" title="Hlasový briefing (OPS)" style="display:none;">🗣️</button>
 
       <span id="modePill" class="pill pillMode">PUBLIC</span>
-      <button id="loginBtn" class="btn">Ops login</button>
+      <button id="loginBtn" class="btn">Přihlásit</button>
       <button id="registerBtn" class="btn">Registrace</button>
       <button id="adminBtn" class="btn" style="display:none;">Admin</button>
       <button id="logoutBtn" class="btn" style="display:none;">Odhlásit</button>
@@ -66,6 +66,28 @@
       <button id="refreshBtn" class="btn">Obnovit</button>
     </div>
   </header>
+
+  <section id="publicGuestHero" class="publicHero" style="display:none;">
+    <div class="publicHeroMain">
+      <div class="publicHeroKicker">Veřejný režim</div>
+      <h2>Prohlížej FireWatch CZ bez registrace</h2>
+      <p>
+        Jako host můžeš zobrazit veřejný přehled událostí, mapu, základní statistiky a poslední výjezdy.
+        Přihlášení odemkne FireWatch Talk, vlastní nastavení a další rozšířené funkce.
+      </p>
+      <div class="publicHeroActions">
+        <button id="guestContinueBtn" class="btn primary">Pokračovat jako host</button>
+        <button id="guestLoginBtn" class="btn">Přihlásit</button>
+        <button id="guestRegisterBtn" class="btn">Registrovat</button>
+      </div>
+    </div>
+    <div class="publicHeroSide">
+      <div class="publicHeroItem">🗺️ Mapa událostí</div>
+      <div class="publicHeroItem">📊 Základní statistiky</div>
+      <div class="publicHeroItem">🔎 Filtry a detail</div>
+      <div class="publicHeroItem locked">🎙️ FireWatch Talk po přihlášení</div>
+    </div>
+  </section>
 
   <section class="filters">
     <div class="filtersRow">
@@ -142,6 +164,21 @@
   <main class="grid">
 
     <section id="opsRadioMount" class="card opsRadioCardShell" style="display:none;"></section>
+
+    <section id="talkLockedCard" class="card publicLockedCard" style="display:none;">
+      <div class="cardHeader">
+        <h2>FireWatch Talk</h2>
+        <div class="hint">Dostupné po přihlášení</div>
+      </div>
+      <p>
+        Soukromý týmový hlasový chat, místnosti, PTT komunikace a statusy jsou dostupné pouze pro přihlášené uživatele.
+      </p>
+      <div class="btnRow">
+        <button id="talkLockedLoginBtn" class="btn primary">Přihlásit</button>
+        <button id="talkLockedRegisterBtn" class="btn">Registrovat</button>
+      </div>
+    </section>
+
     <section class="card mapCard">
       <div class="cardHeader">
         <h2>Mapa výjezdů</h2>
@@ -160,7 +197,18 @@
       </div>
     </section>
 
-    <section class="card">
+
+    <section id="publicStatsToggleCard" class="card publicStatsToggleCard">
+      <div class="cardHeader">
+        <h2>Rozšířené statistiky</h2>
+        <div class="hint">Necháváme web přehledný. Další statistiky si můžeš rozbalit.</div>
+      </div>
+      <div class="btnRow">
+        <button id="toggleAdvancedStatsBtn" class="btn">Zobrazit více statistik</button>
+      </div>
+    </section>
+
+    <section class="card publicAdvancedStats">
       <div class="cardHeader">
         <h2>Statistika (30 dní)</h2>
         <div class="hint">Počet výjezdů po dnech</div>
@@ -170,7 +218,7 @@
       </div>
     </section>
 
-    <section class="card">
+    <section class="card publicAdvancedStats">
       <div class="cardHeader">
         <h2>Aktivní × ukončené</h2>
         <div class="hint">Počet (30 dní, podle filtrů)</div>
@@ -187,7 +235,7 @@
       </div>
     </section>
 
-    <section class="card">
+    <section class="card publicAdvancedStats">
       <div class="cardHeader">
         <h2>Žebříček měst</h2>
         <div class="hint">Top 15 (30 dní)</div>
@@ -195,7 +243,7 @@
       <div class="list" id="topCities"></div>
     </section>
 
-    <section class="card">
+    <section class="card publicAdvancedStats">
       <div class="cardHeader">
         <h2>Nejdelší zásahy</h2>
         <div class="hint">Jen kde se spočítala délka</div>
