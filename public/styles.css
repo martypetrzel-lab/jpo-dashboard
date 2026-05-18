@@ -494,10 +494,6 @@ tbody tr:hover td {
   line-height: 1.45;
 }
 
-.publicStatsToggleCard {
-  border-color: rgba(90, 160, 255, 0.18);
-}
-
 body.isGuestMode #loginBtn,
 body.isGuestMode #registerBtn {
   border-color: rgba(90,160,255,0.28);
@@ -509,4 +505,9 @@ body.isGuestMode #registerBtn {
     margin: 10px;
     padding: 14px;
   }
+}
+
+.publicLockedCard .btnRow,
+.publicHeroActions {
+  align-items: center;
 }

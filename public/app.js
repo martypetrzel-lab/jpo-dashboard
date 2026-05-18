@@ -5,8 +5,6 @@ let routesLayer, vehiclesLayer;
 // OPS auth state (musí být nahoře kvůli TTS, které může běžet už při prvním loadu)
 let currentUser = null; // {id, username, role}
 const LS_GUEST_HERO_DISMISSED = "fwcz_guestHeroDismissed";
-const LS_PUBLIC_ADVANCED_STATS = "fwcz_publicAdvancedStatsOpen";
-let publicAdvancedStatsOpen = localStorage.getItem(LS_PUBLIC_ADVANCED_STATS) === "1";
 
 // ✅ simulace – jen NOVÉ a AKTIVNÍ události (od načtení stránky)
 const seenEventIds = new Set();
@@ -1462,8 +1460,6 @@ function syncPublicGuestUi() {
   const isGuest = !isLogged;
   const hero = document.getElementById("publicGuestHero");
   const talkLocked = document.getElementById("talkLockedCard");
-  const statsToggleCard = document.getElementById("publicStatsToggleCard");
-  const toggleBtn = document.getElementById("toggleAdvancedStatsBtn");
 
   if (hero) {
     const dismissed = localStorage.getItem(LS_GUEST_HERO_DISMISSED) === "1";
@@ -1474,26 +1470,8 @@ function syncPublicGuestUi() {
     talkLocked.style.display = isGuest ? "" : "none";
   }
 
-  if (statsToggleCard) {
-    statsToggleCard.style.display = isGuest ? "" : "none";
-  }
-
-  document.querySelectorAll(".publicAdvancedStats").forEach((el) => {
-    el.style.display = (!isGuest || publicAdvancedStatsOpen) ? "" : "none";
-  });
-
-  if (toggleBtn) {
-    toggleBtn.textContent = publicAdvancedStatsOpen ? "Skrýt rozšířené statistiky" : "Zobrazit více statistik";
-  }
-
   document.body.classList.toggle("isGuestMode", isGuest);
   document.body.classList.toggle("isLoggedMode", isLogged);
-}
-
-function setPublicAdvancedStats(open) {
-  publicAdvancedStatsOpen = !!open;
-  localStorage.setItem(LS_PUBLIC_ADVANCED_STATS, publicAdvancedStatsOpen ? "1" : "0");
-  syncPublicGuestUi();
 }
 
 
