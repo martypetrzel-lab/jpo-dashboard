@@ -395,3 +395,262 @@
     width: 100%;
   }
 }
+
+
+/* FireWatch Talk v0.9 */
+.ops-radio-row-main {
+  grid-template-columns: minmax(170px, 1.4fr) auto minmax(140px, 1fr) auto;
+}
+
+.ops-radio-version {
+  font-size: 0.72rem;
+  opacity: 0.75;
+}
+
+.ops-radio-icon-btn {
+  border: 0;
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 1.15rem;
+  cursor: pointer;
+  background: rgba(255,255,255,0.12);
+  color: #fff;
+}
+
+.ops-radio-icon-btn.is-active {
+  background: rgba(255, 211, 122, 0.22);
+}
+
+.ops-radio-presence {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: end;
+  margin: 10px 0;
+}
+
+.ops-radio-presence label {
+  display: grid;
+  gap: 6px;
+  font-weight: 800;
+}
+
+.ops-radio-presence select {
+  width: 100%;
+  box-sizing: border-box;
+  border: 0;
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 0.95rem;
+  outline: none;
+}
+
+.ops-radio-dnd {
+  border: 0;
+  border-radius: 12px;
+  padding: 11px 12px;
+  font-weight: 900;
+  cursor: pointer;
+  background: rgba(255,255,255,0.12);
+  color: #fff;
+}
+
+.ops-radio-dnd.is-active {
+  background: rgba(255, 70, 70, 0.28);
+}
+
+.ops-radio-quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin: 8px 0 12px;
+}
+
+.ops-radio-quick button {
+  border: 0;
+  border-radius: 999px;
+  padding: 8px 10px;
+  font-weight: 800;
+  cursor: pointer;
+  background: rgba(255,255,255,0.12);
+  color: #fff;
+}
+
+.ops-radio-user-item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: start;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+
+.ops-radio-user-item:last-child {
+  border-bottom: 0;
+}
+
+.ops-radio-user-item strong {
+  display: block;
+}
+
+.ops-radio-user-item strong span {
+  opacity: 0.7;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.ops-radio-user-item small {
+  display: block;
+  opacity: 0.82;
+  margin-top: 2px;
+  line-height: 1.35;
+}
+
+.ops-radio-user-item.is-speaking {
+  color: #fff1a8;
+}
+
+.ops-radio-user-item.is-dnd {
+  opacity: 0.82;
+}
+
+.ops-radio-admin-user {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.ops-radio-admin-user button,
+.ops-radio-admin-actions button {
+  border: 0;
+  border-radius: 10px;
+  padding: 7px 9px;
+  font-size: 0.82rem;
+  font-weight: 800;
+  cursor: pointer;
+  background: rgba(255,255,255,0.14);
+  color: #fff;
+}
+
+.ops-radio-chat,
+.ops-radio-admin {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  padding: 11px;
+  margin-top: 10px;
+}
+
+.ops-radio-chat-head,
+.ops-radio-admin-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ops-radio-chat-head h3 {
+  margin: 0;
+}
+
+.ops-radio-chat-head span {
+  opacity: 0.7;
+  font-size: 0.78rem;
+}
+
+.ops-radio-chat ul {
+  list-style: none;
+  margin: 8px 0;
+  padding: 0;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.ops-radio-chat-item {
+  padding: 7px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+
+.ops-radio-chat-item:last-child {
+  border-bottom: 0;
+}
+
+.ops-radio-chat-item div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ops-radio-chat-item span {
+  opacity: 0.65;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.ops-radio-chat-item p {
+  margin: 3px 0 0;
+  line-height: 1.35;
+}
+
+.ops-radio-chat-item.is-reaction p {
+  font-weight: 900;
+}
+
+.ops-radio-chat-item.is-system {
+  opacity: 0.78;
+  font-style: italic;
+}
+
+.ops-radio-chat-form {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+.ops-radio-chat-form input {
+  min-width: 0;
+  border: 0;
+  border-radius: 12px;
+  padding: 10px 11px;
+  font-size: 0.95rem;
+  outline: none;
+}
+
+.ops-radio-chat-form button {
+  border: 0;
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.ops-radio-admin summary {
+  cursor: pointer;
+  font-weight: 900;
+}
+
+.ops-radio-admin-actions {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+@media (max-width: 760px) {
+  .ops-radio-row-main,
+  .ops-radio-presence {
+    grid-template-columns: 1fr;
+  }
+
+  .ops-radio-icon-btn {
+    width: 100%;
+  }
+
+  .ops-radio-chat-form {
+    grid-template-columns: 1fr;
+  }
+
+  .ops-radio-quick button {
+    flex: 1 1 calc(50% - 8px);
+  }
+}

@@ -5,11 +5,11 @@ import {
   deleteSessionByTokenSha
 } from "./db.js";
 
-// FireWatch Talk v0.8
+// FireWatch Talk v0.9
 // Soukromý týmový hlasový chat FireWatchCZ.
 // Není určen pro komunikaci složek IZS ani pro řízení zásahů.
 // Přenos hlasu: server-relay PCM přes WebSocket.
-// Nově: poslední hlasová zpráva od každého uživatele v místnosti, pouze v paměti serveru.
+// Nově: stavy uživatelů, rychlé reakce/statusy, textový chat, Nerušit a admin nástroje.
 
 const DEFAULT_ROOM = "HLAVNÍ";
 const SYSTEM_ROOMS = [
@@ -26,6 +26,19 @@ const MAX_ROOM_NAME_LENGTH = 32;
 const ROOM_PASSWORD_SALT = process.env.FIREWATCH_TALK_ROOM_PASSWORD_SALT || "firewatch-talk-v07";
 const MAX_STORED_VOICE_MESSAGE_BYTES = Math.max(256000, Number(process.env.FIREWATCH_TALK_MAX_VOICE_MESSAGE_BYTES || 3_000_000));
 const MAX_STORED_VOICE_MESSAGE_MS = Math.max(5000, Number(process.env.FIREWATCH_TALK_MAX_VOICE_MESSAGE_MS || 90000));
+const MAX_CHAT_MESSAGES_PER_ROOM = Math.max(10, Number(process.env.FIREWATCH_TALK_MAX_CHAT_MESSAGES_PER_ROOM || 30));
+const MAX_CHAT_MESSAGE_LENGTH = Math.max(80, Number(process.env.FIREWATCH_TALK_MAX_CHAT_MESSAGE_LENGTH || 500));
+
+const USER_STATUSES = new Set(["online", "ready", "busy", "away", "listening"]);
+const QUICK_REACTIONS = {
+  understood: "✅ Rozumím",
+  seen: "👀 Vidím",
+  wait: "⏳ Počkej",
+  cannot: "❌ Nemůžu",
+  ok: "👌 OK",
+  test: "🧪 Test"
+};
+
 
 function parseCookiesFromHeader(headerValue) {
   const out = {};
@@ -146,6 +159,34 @@ function publicClientName(client) {
   return client?.name || "Uživatel";
 }
 
+function normalizeUserStatus(value) {
+  const status = String(value || "online").trim().toLowerCase();
+  return USER_STATUSES.has(status) ? status : "online";
+}
+
+function cleanChatMessage(value) {
+  return String(value || "")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, MAX_CHAT_MESSAGE_LENGTH);
+}
+
+function publicChatMessage(message) {
+  return {
+    id: message.id,
+    room: message.room,
+    userId: message.userId,
+    name: message.name,
+    role: message.role,
+    kind: message.kind,
+    text: message.text,
+    createdAt: message.createdAt,
+    timeLabel: formatVoiceTime(message.createdAt),
+    system: Boolean(message.system)
+  };
+}
+
 
 function formatVoiceTime(ts) {
   const d = new Date(ts || Date.now());
@@ -161,11 +202,13 @@ export function attachOpsRadio(server, options = {}) {
   // Dočasná historie: v každé místnosti držíme jen poslední zprávu od každého uživatele.
   // Neukládá se do databáze ani na disk; po restartu serveru zmizí.
   const lastVoiceMessages = new Map();
+  const chatMessages = new Map();
 
   for (const room of SYSTEM_ROOMS) {
     rooms.set(room.room, { ...room, createdAt: Date.now(), createdByUserId: null, createdByName: "FireWatch" });
     roomState.set(room.room, { txClientId: null, txName: null });
     lastVoiceMessages.set(room.room, new Map());
+    chatMessages.set(room.room, []);
   }
 
   const wss = new WebSocketServer({
@@ -199,6 +242,11 @@ export function attachOpsRadio(server, options = {}) {
         name: client.name,
         role: client.role,
         room: client.room,
+        status: client.status || "online",
+        dnd: Boolean(client.dnd),
+        muted: Boolean(client.muted),
+        device: client.device || "web",
+        lastReaction: client.lastReaction || null,
         transmitting: roomState.get(room)?.txClientId === client.id
       }));
   }
@@ -243,6 +291,41 @@ export function attachOpsRadio(server, options = {}) {
         endedAt: msg.endedAt,
         timeLabel: formatVoiceTime(msg.endedAt)
       }));
+  }
+
+  function getChatSummaryForRoom(room) {
+    return (chatMessages.get(room) || []).map(publicChatMessage);
+  }
+
+  function addRoomChatMessage(room, client, text, kind = "chat", system = false) {
+    const cleanText = cleanChatMessage(text);
+    if (!cleanText) return null;
+
+    if (!chatMessages.has(room)) chatMessages.set(room, []);
+    const list = chatMessages.get(room);
+
+    const message = {
+      id: crypto.randomUUID(),
+      room,
+      userId: client ? String(client.userId) : "system",
+      name: client ? publicClientName(client) : "FireWatch Talk",
+      role: client?.role || "system",
+      kind,
+      text: cleanText,
+      createdAt: Date.now(),
+      system
+    };
+
+    list.push(message);
+    while (list.length > MAX_CHAT_MESSAGES_PER_ROOM) list.shift();
+
+    broadcastRoomState(room);
+    return message;
+  }
+
+  function clearRoomChatMessages(room) {
+    chatMessages.set(room, []);
+    broadcastRoomState(room);
   }
 
   function saveLastVoiceMessage(client, reason = "release") {
@@ -323,7 +406,11 @@ export function attachOpsRadio(server, options = {}) {
       txClientId: st.txClientId,
       txName: st.txName,
       clients: currentRoomMeta ? getClientsInRoom(client.room) : [],
-      voiceMessages: currentRoomMeta ? getVoiceSummaryForRoom(client.room) : []
+      voiceMessages: currentRoomMeta ? getVoiceSummaryForRoom(client.room) : [],
+      chatMessages: currentRoomMeta ? getChatSummaryForRoom(client.room) : [],
+      currentUserStatus: client.status || "online",
+      currentUserDnd: Boolean(client.dnd),
+      currentUserMuted: Boolean(client.muted)
     });
   }
 
@@ -417,6 +504,11 @@ export function attachOpsRadio(server, options = {}) {
       room: initialRoom,
       unlockedRooms: new Set([initialRoom, DEFAULT_ROOM, "TEST"]),
       currentVoiceMessage: null,
+      status: "online",
+      dnd: false,
+      muted: false,
+      lastReaction: null,
+      device: /mobile|android|iphone|ipad/i.test(String(req.headers["user-agent"] || "")) ? "mobile" : "desktop",
       createdAt: Date.now(),
       lastSeenAt: Date.now()
     };
@@ -437,7 +529,11 @@ export function attachOpsRadio(server, options = {}) {
       rooms: getRoomListForClient(client),
       channels: getRoomListForClient(client).map((item) => item.room),
       roomCounts: getRoomListForClient(client),
-      voiceMessages: getVoiceSummaryForRoom(client.room)
+      voiceMessages: getVoiceSummaryForRoom(client.room),
+      chatMessages: getChatSummaryForRoom(client.room),
+      currentUserStatus: client.status,
+      currentUserDnd: client.dnd,
+      currentUserMuted: client.muted
     });
 
     broadcastAllRoomStates();
@@ -518,6 +614,7 @@ export function attachOpsRadio(server, options = {}) {
         rooms.set(nextRoom, roomMeta);
         roomState.set(nextRoom, { txClientId: null, txName: null });
         lastVoiceMessages.set(nextRoom, new Map());
+        chatMessages.set(nextRoom, []);
         client.unlockedRooms.add(nextRoom);
 
         sendJson(ws, { type: "room_created", room: nextRoom, label: roomMeta.label, hasPassword: roomMeta.hasPassword });
@@ -544,6 +641,7 @@ export function attachOpsRadio(server, options = {}) {
         rooms.delete(targetRoom);
         roomState.delete(targetRoom);
         clearRoomVoiceMessages(targetRoom);
+        chatMessages.delete(targetRoom);
         for (const c of clients.values()) c.unlockedRooms.delete(targetRoom);
         broadcastAllRoomStates();
         return;
@@ -580,7 +678,113 @@ export function attachOpsRadio(server, options = {}) {
         return;
       }
 
+
+      if (data.type === "set_presence") {
+        client.status = normalizeUserStatus(data.status);
+        client.dnd = Boolean(data.dnd);
+        broadcastRoomState(client.room);
+        return;
+      }
+
+      if (data.type === "send_reaction") {
+        const key = String(data.reaction || "").trim();
+        const text = QUICK_REACTIONS[key] || cleanChatMessage(data.text || "");
+        if (!text) {
+          sendJson(ws, { type: "error", message: "Neplatný status / reakce." });
+          return;
+        }
+
+        client.lastReaction = text;
+        addRoomChatMessage(client.room, client, text, "reaction", false);
+        return;
+      }
+
+      if (data.type === "send_chat_message") {
+        const text = cleanChatMessage(data.text || "");
+        if (!text) {
+          sendJson(ws, { type: "error", message: "Zpráva je prázdná." });
+          return;
+        }
+
+        addRoomChatMessage(client.room, client, text, "chat", false);
+        return;
+      }
+
+      if (data.type === "admin_clear_chat") {
+        if (client.role !== "admin") {
+          sendJson(ws, { type: "error", message: "Tuto akci může provést jen admin." });
+          return;
+        }
+
+        clearRoomChatMessages(client.room);
+        addRoomChatMessage(client.room, null, "Admin vyčistil textový chat místnosti.", "system", true);
+        return;
+      }
+
+      if (data.type === "admin_clear_voice") {
+        if (client.role !== "admin") {
+          sendJson(ws, { type: "error", message: "Tuto akci může provést jen admin." });
+          return;
+        }
+
+        lastVoiceMessages.set(client.room, new Map());
+        addRoomChatMessage(client.room, null, "Admin vyčistil poslední hlasové zprávy místnosti.", "system", true);
+        broadcastRoomState(client.room);
+        return;
+      }
+
+      if (data.type === "admin_kick_user") {
+        if (client.role !== "admin") {
+          sendJson(ws, { type: "error", message: "Tuto akci může provést jen admin." });
+          return;
+        }
+
+        const targetId = String(data.clientId || "");
+        const target = clients.get(targetId);
+        if (!target || target.room !== client.room) {
+          sendJson(ws, { type: "error", message: "Uživatel není v této místnosti." });
+          return;
+        }
+
+        if (target.id === client.id) {
+          sendJson(ws, { type: "error", message: "Sám sebe takto odpojit nejde." });
+          return;
+        }
+
+        releaseTx(target, "admin_kick");
+        sendJson(target.ws, { type: "admin_notice", message: "Byl jsi odpojen správcem." });
+        try { target.ws.close(4001, "admin kick"); } catch {}
+        addRoomChatMessage(client.room, null, `Admin odpojil uživatele ${publicClientName(target)}.`, "system", true);
+        return;
+      }
+
+      if (data.type === "admin_mute_user") {
+        if (client.role !== "admin") {
+          sendJson(ws, { type: "error", message: "Tuto akci může provést jen admin." });
+          return;
+        }
+
+        const targetId = String(data.clientId || "");
+        const target = clients.get(targetId);
+        if (!target || target.room !== client.room) {
+          sendJson(ws, { type: "error", message: "Uživatel není v této místnosti." });
+          return;
+        }
+
+        target.muted = Boolean(data.muted);
+        if (target.muted) releaseTx(target, "admin_mute");
+        sendJson(target.ws, { type: "admin_notice", message: target.muted ? "Správce ti dočasně vypnul možnost mluvit." : "Správce ti znovu povolil mluvení." });
+        addRoomChatMessage(client.room, null, `${publicClientName(target)}: ${target.muted ? "mluvení vypnuto správcem" : "mluvení znovu povoleno"}.`, "system", true);
+        broadcastRoomState(client.room);
+        return;
+      }
+
       if (data.type === "ptt_request") {
+        if (client.muted) {
+          sendJson(ws, { type: "ptt_denied", message: "Správce ti dočasně vypnul možnost mluvit v Talku." });
+          return;
+        }
+
         const st = roomState.get(client.room);
         if (!st) {
           sendJson(ws, { type: "ptt_denied", message: "Místnost neexistuje." });
@@ -648,6 +852,6 @@ export function attachOpsRadio(server, options = {}) {
     });
   });
 
-  console.log(`[FW TALK] v0.8 WebSocket/PCM relay běží na /ops-radio | enabled=${enabled} | customRooms=true | lastVoicePerUser=memory`);
+  console.log(`[FW TALK] v0.9 WebSocket/PCM relay běží na /ops-radio | enabled=${enabled} | customRooms=true | lastVoicePerUser=memory`);
   return { wss };
 }

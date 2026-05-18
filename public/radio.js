@@ -1,11 +1,14 @@
-// FireWatch Talk v0.8
+// FireWatch Talk v0.9
 // Soukromý týmový hlasový chat FireWatchCZ.
 // Přenos hlasu: server-relay PCM přes WebSocket.
 // Vlastní zvuk PTT: nahraj soubor do /public/sounds/ptt-press.mp3.
-// Nově: poslední hlasová zpráva od každého uživatele v místnosti, pouze v paměti serveru.
+// Nově: stav uživatele, rychlé statusy, textový chat, oblíbené místnosti, Nerušit a admin nástroje.
 
 (function () {
   const STORAGE_ROOM = "firewatch_talk_room_v3";
+  const STORAGE_STATUS = "firewatch_talk_status_v1";
+  const STORAGE_DND = "firewatch_talk_dnd_v1";
+  const STORAGE_FAVORITES = "firewatch_talk_favorite_rooms_v1";
   const TARGET_SAMPLE_RATE = 16000;
   const PROCESSOR_BUFFER_SIZE = 2048;
   const PACKET_HEADER_SIZE = 12;
@@ -39,6 +42,11 @@
   let pttSoundFailed = false;
   let voiceMessages = [];
   let replayActive = false;
+  let chatMessages = [];
+  let currentUsers = [];
+  let myStatus = localStorage.getItem(STORAGE_STATUS) || "online";
+  let dndEnabled = localStorage.getItem(STORAGE_DND) === "true";
+  let favoriteRooms = loadFavoriteRooms();
 
   function wsUrl() {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -85,17 +93,62 @@
   }
 
   function roomOptions() {
-    return rooms
+    const sorted = [...rooms].sort((a, b) => {
+      const af = isFavoriteRoom(a.room) ? 0 : 1;
+      const bf = isFavoriteRoom(b.room) ? 0 : 1;
+      if (af !== bf) return af - bf;
+      return String(a.label || a.room).localeCompare(String(b.label || b.room), "cs");
+    });
+
+    return sorted
       .map((item) => {
         const value = normalizeRoom(item.room);
+        const fav = isFavoriteRoom(value) ? "⭐ " : "";
         const lock = item.locked ? "🔒 " : "";
         const custom = item.isCustom ? " • vlastní" : "";
         const count = Number.isFinite(Number(item.count)) ? ` (${item.count})` : "";
-        const label = `${lock}${item.label || roomLabel(value)}${count}${custom}`;
+        const label = `${fav}${lock}${item.label || roomLabel(value)}${count}${custom}`;
         return `<option value="${escapeHtml(value)}" ${value === room ? "selected" : ""}>${escapeHtml(label)}</option>`;
       })
       .join("");
   }
+
+  function loadFavoriteRooms() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(STORAGE_FAVORITES) || "[]");
+      return new Set(Array.isArray(parsed) ? parsed.map(normalizeRoom).filter(Boolean) : []);
+    } catch {
+      return new Set();
+    }
+  }
+
+  function saveFavoriteRooms() {
+    localStorage.setItem(STORAGE_FAVORITES, JSON.stringify([...favoriteRooms]));
+  }
+
+  function isFavoriteRoom(value) {
+    return favoriteRooms.has(normalizeRoom(value));
+  }
+
+  function updateFavoriteButton() {
+    const btn = mount?.querySelector("#fwTalkFavoriteRoom");
+    if (!btn) return;
+    const active = isFavoriteRoom(room);
+    btn.textContent = active ? "⭐" : "☆";
+    btn.classList.toggle("is-active", active);
+    btn.title = active ? "Odebrat z oblíbených" : "Přidat do oblíbených";
+  }
+
+  function toggleFavoriteRoom() {
+    const value = normalizeRoom(room);
+    if (!value) return;
+    if (favoriteRooms.has(value)) favoriteRooms.delete(value);
+    else favoriteRooms.add(value);
+    saveFavoriteRooms();
+    refreshRoomSelect();
+    setStatus(favoriteRooms.has(value) ? "Místnost přidána do oblíbených" : "Místnost odebrána z oblíbených", "ok");
+  }
+
 
   function getAudioContextClass() {
     return window.AudioContext || window.webkitAudioContext;
@@ -188,7 +241,7 @@
       <div class="ops-radio-card">
         <div class="ops-radio-head">
           <div>
-            <h2>FireWatch Talk <span class="ops-radio-version">v0.8</span></h2>
+            <h2>FireWatch Talk <span class="ops-radio-version">v0.9</span></h2>
             <p>Soukromý hlasový chat FireWatchCZ pro testování a týmovou komunikaci.</p>
             <p class="ops-radio-disclaimer">Není určen pro komunikaci složek IZS ani pro řízení zásahů.</p>
           </div>
@@ -202,6 +255,8 @@
               <select id="opsRadioRoomLive" disabled></select>
             </label>
 
+            <button id="fwTalkFavoriteRoom" class="ops-radio-icon-btn" type="button" title="Oblíbená místnost">☆</button>
+
             <div class="ops-radio-tx">
               <span>Právě mluví</span>
               <strong data-radio-tx>Nikdo</strong>
@@ -210,9 +265,32 @@
             <button class="ops-radio-connect" id="opsRadioConnect">Připojit Talk</button>
           </div>
 
+          <div class="ops-radio-presence">
+            <label>
+              Můj stav
+              <select id="fwTalkStatus">
+                <option value="online">🟢 Online</option>
+                <option value="ready">✅ Připraven</option>
+                <option value="listening">👂 Poslouchám</option>
+                <option value="busy">🔴 Zaneprázdněn</option>
+                <option value="away">🌙 Pryč</option>
+              </select>
+            </label>
+            <button id="fwTalkDnd" class="ops-radio-dnd" type="button">🔔 Nerušit: vyp</button>
+          </div>
+
           <button class="ops-radio-ptt" id="opsRadioPtt" disabled>
             DRŽ PRO MLUVENÍ
           </button>
+
+          <div class="ops-radio-quick">
+            <button type="button" data-reaction="understood">✅ Rozumím</button>
+            <button type="button" data-reaction="seen">👀 Vidím</button>
+            <button type="button" data-reaction="wait">⏳ Počkej</button>
+            <button type="button" data-reaction="cannot">❌ Nemůžu</button>
+            <button type="button" data-reaction="ok">👌 OK</button>
+            <button type="button" data-reaction="test">🧪 Test</button>
+          </div>
 
           <details class="ops-radio-create">
             <summary>Vytvořit vlastní místnost</summary>
@@ -240,6 +318,20 @@
             </ul>
           </div>
 
+          <div class="ops-radio-chat">
+            <div class="ops-radio-chat-head">
+              <h3>Textový chat / statusy</h3>
+              <span>dočasně v paměti serveru</span>
+            </div>
+            <ul data-radio-chat>
+              <li>Zatím žádná zpráva</li>
+            </ul>
+            <form id="fwTalkChatForm" class="ops-radio-chat-form">
+              <input id="fwTalkChatInput" type="text" maxlength="500" placeholder="Napsat krátkou zprávu do místnosti…">
+              <button type="submit">Odeslat</button>
+            </form>
+          </div>
+
           <div class="ops-radio-history">
             <div class="ops-radio-history-head">
               <h3>Poslední hlasové zprávy</h3>
@@ -248,8 +340,17 @@
             <ul data-radio-history>
               <li>Zatím žádná zpráva</li>
             </ul>
-            <p class="ops-radio-hint">Zprávy jsou pouze dočasně v paměti serveru, neukládají se do databáze.</p>
+            <p class="ops-radio-hint">Hlasové zprávy jsou pouze dočasně v paměti serveru, neukládají se do databáze.</p>
           </div>
+
+          <details id="fwTalkAdminTools" class="ops-radio-admin" hidden>
+            <summary>Admin nástroje</summary>
+            <div class="ops-radio-admin-actions">
+              <button id="fwTalkAdminClearChat" type="button">Vyčistit textový chat</button>
+              <button id="fwTalkAdminClearVoice" type="button">Vyčistit hlasové zprávy</button>
+            </div>
+            <p class="ops-radio-hint">Admin nástroje platí pro aktuální místnost.</p>
+          </details>
         </div>
       </div>
     `;
@@ -258,6 +359,20 @@
     mount.querySelector("#opsRadioRoomLive")?.addEventListener("change", changeRoom);
     mount.querySelector("#fwTalkCreateRoom")?.addEventListener("click", createRoom);
     mount.querySelector("#fwTalkDeleteRoom")?.addEventListener("click", deleteCurrentRoom);
+    mount.querySelector("#fwTalkStatus")?.addEventListener("change", updatePresenceFromUi);
+    mount.querySelector("#fwTalkDnd")?.addEventListener("click", toggleDnd);
+    mount.querySelector("#fwTalkFavoriteRoom")?.addEventListener("click", toggleFavoriteRoom);
+    mount.querySelector("#fwTalkChatForm")?.addEventListener("submit", sendChatFromForm);
+    mount.querySelector("#fwTalkAdminClearChat")?.addEventListener("click", adminClearChat);
+    mount.querySelector("#fwTalkAdminClearVoice")?.addEventListener("click", adminClearVoice);
+    mount.querySelectorAll("[data-reaction]").forEach((button) => {
+      button.addEventListener("click", () => sendReaction(button.getAttribute("data-reaction")));
+    });
+
+    const statusSelect = mount.querySelector("#fwTalkStatus");
+    if (statusSelect) statusSelect.value = myStatus;
+    updateDndButton();
+    updateAdminVisibility();
     setupPttButton();
     refreshRoomSelect();
   }
@@ -389,6 +504,7 @@
     setStatus("Odpojeno", "idle");
     setTx("Nikdo");
     updateVoiceMessages([]);
+    updateChatMessages([]);
 
     const select = mount?.querySelector("#opsRadioRoomLive");
     const ptt = mount?.querySelector("#opsRadioPtt");
@@ -433,8 +549,15 @@
       clientId = data.clientId;
       myName = data.name || myName;
       myRole = data.role || myRole;
+      myStatus = data.currentUserStatus || myStatus;
+      dndEnabled = Boolean(data.currentUserDnd ?? dndEnabled);
+      const statusSelect = mount?.querySelector("#fwTalkStatus");
+      if (statusSelect) statusSelect.value = myStatus;
+      updateDndButton();
+      updateAdminVisibility();
       updateRooms(data.rooms || data.roomCounts || data.channels || []);
       updateVoiceMessages(data.voiceMessages || []);
+      updateChatMessages(data.chatMessages || []);
       room = normalizeRoom(data.currentRoom || data.room || data.channel || room);
       if (!getRoomMeta(room) && rooms[0]) room = normalizeRoom(rooms[0].room);
       localStorage.setItem(STORAGE_ROOM, room);
@@ -449,6 +572,7 @@
       setConnectButton(true);
       setStatus(`Připojeno: ${roomLabel(room)}`, "ok");
       startKeepAlive();
+      sendPresence();
       fallbackBeep(620, 45);
       return;
     }
@@ -462,6 +586,11 @@
 
     if (data.type === "error" || data.type === "room_create_error") {
       setStatus(data.message || "Chyba", "error");
+      return;
+    }
+
+    if (data.type === "admin_notice") {
+      setStatus(data.message || "Admin akce", "error");
       return;
     }
 
@@ -485,6 +614,7 @@
       localStorage.setItem(STORAGE_ROOM, room);
       resetPlaybackClock();
       updateVoiceMessages([]);
+      updateChatMessages([]);
       refreshRoomSelect();
       setStatus(`Připojeno: ${roomLabel(room)}`, "ok");
       return;
@@ -507,6 +637,14 @@
       }
       refreshRoomSelect();
       updateVoiceMessages(data.voiceMessages || []);
+      updateChatMessages(data.chatMessages || []);
+      if (data.currentUserStatus) {
+        myStatus = data.currentUserStatus;
+        const statusSelect = mount?.querySelector("#fwTalkStatus");
+        if (statusSelect) statusSelect.value = myStatus;
+      }
+      dndEnabled = Boolean(data.currentUserDnd ?? dndEnabled);
+      updateDndButton();
 
       const isMe = data.txClientId && data.txClientId === clientId;
       setStatus(`Připojeno: ${roomLabel(room)}`, data.transmitting ? (isMe ? "tx" : "rx") : "ok");
@@ -541,7 +679,7 @@
         setStatus("Mluvíš", "tx");
       } else {
         setStatus(`Příjem: ${data.by || "někdo"}`, "rx");
-        fallbackBeep(880, 30);
+        if (!dndEnabled) fallbackBeep(880, 30);
         resetPlaybackClock();
       }
       return;
@@ -562,7 +700,7 @@
       }
       setStatus(`Připojeno: ${roomLabel(room)}`, "ok");
       setTx("Nikdo");
-      fallbackBeep(430, 30);
+      if (!dndEnabled) fallbackBeep(430, 30);
     }
   }
 
@@ -600,6 +738,8 @@
       select.value = room;
     }
     updateDeleteButton();
+    updateFavoriteButton();
+    updateAdminVisibility();
   }
 
   function updateDeleteButton() {
@@ -610,18 +750,188 @@
     btn.hidden = !canDelete;
   }
 
+  function updateAdminVisibility() {
+    const box = mount?.querySelector("#fwTalkAdminTools");
+    if (!box) return;
+    box.hidden = myRole !== "admin";
+  }
+
+  function statusLabel(status) {
+    const map = {
+      online: "🟢 online",
+      ready: "✅ připraven",
+      listening: "👂 poslouchá",
+      busy: "🔴 zaneprázdněn",
+      away: "🌙 pryč"
+    };
+    return map[status] || map.online;
+  }
+
+  function updateDndButton() {
+    const btn = mount?.querySelector("#fwTalkDnd");
+    if (!btn) return;
+    btn.textContent = dndEnabled ? "🔕 Nerušit: zap" : "🔔 Nerušit: vyp";
+    btn.classList.toggle("is-active", dndEnabled);
+  }
+
+  function sendPresence() {
+    localStorage.setItem(STORAGE_STATUS, myStatus);
+    localStorage.setItem(STORAGE_DND, String(dndEnabled));
+    updateDndButton();
+
+    if (ws && ws.readyState === WebSocket.OPEN && authenticated) {
+      ws.send(JSON.stringify({ type: "set_presence", status: myStatus, dnd: dndEnabled }));
+    }
+  }
+
+  function updatePresenceFromUi(event) {
+    myStatus = event?.target?.value || "online";
+    sendPresence();
+  }
+
+  function toggleDnd() {
+    dndEnabled = !dndEnabled;
+    sendPresence();
+  }
+
+  function sendReaction(reaction) {
+    if (!authenticated || !ws || ws.readyState !== WebSocket.OPEN) {
+      setStatus("Nejdřív připoj Talk", "error");
+      return;
+    }
+
+    ws.send(JSON.stringify({ type: "send_reaction", room, reaction }));
+  }
+
+  function sendChatFromForm(event) {
+    event.preventDefault();
+
+    if (!authenticated || !ws || ws.readyState !== WebSocket.OPEN) {
+      setStatus("Nejdřív připoj Talk", "error");
+      return;
+    }
+
+    const input = mount?.querySelector("#fwTalkChatInput");
+    const text = String(input?.value || "").trim();
+    if (!text) return;
+
+    ws.send(JSON.stringify({ type: "send_chat_message", room, text }));
+    if (input) input.value = "";
+  }
+
+  function adminClearChat() {
+    if (myRole !== "admin") return;
+    if (!window.confirm("Vyčistit textový chat v aktuální místnosti?")) return;
+    ws?.send(JSON.stringify({ type: "admin_clear_chat", room }));
+  }
+
+  function adminClearVoice() {
+    if (myRole !== "admin") return;
+    if (!window.confirm("Vyčistit poslední hlasové zprávy v aktuální místnosti?")) return;
+    ws?.send(JSON.stringify({ type: "admin_clear_voice", room }));
+  }
+
+  function adminMuteUser(targetClientId, muted) {
+    if (myRole !== "admin" || !targetClientId) return;
+    ws?.send(JSON.stringify({ type: "admin_mute_user", room, clientId: targetClientId, muted: Boolean(muted) }));
+  }
+
+  function adminKickUser(targetClientId) {
+    if (myRole !== "admin" || !targetClientId) return;
+    if (!window.confirm("Opravdu odpojit uživatele z Talku?")) return;
+    ws?.send(JSON.stringify({ type: "admin_kick_user", room, clientId: targetClientId }));
+  }
+
   function renderUsers(users) {
     const ul = mount?.querySelector("[data-radio-users]");
     if (!ul) return;
 
-    if (!users.length) {
+    currentUsers = Array.isArray(users) ? users : [];
+
+    if (!currentUsers.length) {
       ul.innerHTML = "<li>Zatím nikdo</li>";
       return;
     }
 
-    ul.innerHTML = users
-      .map((user) => `<li>${escapeHtml(user.name)} <span class="ops-radio-role">${escapeHtml(user.role || "")}</span>${user.transmitting ? " <strong>mluví</strong>" : ""}</li>`)
+    ul.innerHTML = currentUsers
+      .map((user) => {
+        const isMe = user.id === clientId;
+        const adminControls = myRole === "admin" && !isMe
+          ? `<div class="ops-radio-admin-user">
+               <button type="button" data-admin-mute="${escapeHtml(user.id)}" data-muted="${user.muted ? "false" : "true"}">${user.muted ? "Povolit mluvení" : "Ztlumit mluvení"}</button>
+               <button type="button" data-admin-kick="${escapeHtml(user.id)}">Odpojit</button>
+             </div>`
+          : "";
+
+        return `
+          <li class="ops-radio-user-item ${user.transmitting ? "is-speaking" : ""} ${user.dnd ? "is-dnd" : ""}">
+            <div>
+              <strong>${escapeHtml(user.name)}${isMe ? " <span>ty</span>" : ""}</strong>
+              <small>
+                ${escapeHtml(statusLabel(user.status))}
+                ${user.dnd ? " • 🔕 Nerušit" : ""}
+                ${user.muted ? " • 🔇 mluvení vypnuto" : ""}
+                ${user.transmitting ? " • 🎙️ mluví" : ""}
+                ${user.lastReaction ? ` • ${escapeHtml(user.lastReaction)}` : ""}
+              </small>
+            </div>
+            <span class="ops-radio-role">${escapeHtml(user.role || "")}${user.device === "mobile" ? " 📱" : " 💻"}</span>
+            ${adminControls}
+          </li>
+        `;
+      })
       .join("");
+
+    ul.querySelectorAll("[data-admin-mute]").forEach((button) => {
+      button.addEventListener("click", () => adminMuteUser(button.getAttribute("data-admin-mute"), button.getAttribute("data-muted") === "true"));
+    });
+
+    ul.querySelectorAll("[data-admin-kick]").forEach((button) => {
+      button.addEventListener("click", () => adminKickUser(button.getAttribute("data-admin-kick")));
+    });
+  }
+
+  function updateChatMessages(payload) {
+    if (!Array.isArray(payload)) return;
+
+    chatMessages = payload.map((item) => ({
+      id: String(item.id || ""),
+      room: normalizeRoom(item.room || room),
+      userId: String(item.userId || ""),
+      name: item.name || "Uživatel",
+      role: item.role || "",
+      kind: item.kind || "chat",
+      text: item.text || "",
+      createdAt: Number(item.createdAt || 0),
+      timeLabel: item.timeLabel || "",
+      system: Boolean(item.system)
+    })).filter((item) => item.text);
+
+    renderChatMessages();
+  }
+
+  function renderChatMessages() {
+    const ul = mount?.querySelector("[data-radio-chat]");
+    if (!ul) return;
+
+    if (!chatMessages.length) {
+      ul.innerHTML = "<li>Zatím žádná zpráva</li>";
+      return;
+    }
+
+    ul.innerHTML = chatMessages
+      .map((msg) => `
+        <li class="ops-radio-chat-item ${msg.kind === "reaction" ? "is-reaction" : ""} ${msg.system ? "is-system" : ""}">
+          <div>
+            <strong>${escapeHtml(msg.system ? "Systém" : msg.name)}</strong>
+            <span>${escapeHtml(msg.timeLabel || "")}${msg.role && !msg.system ? ` • ${escapeHtml(msg.role)}` : ""}</span>
+          </div>
+          <p>${escapeHtml(msg.text)}</p>
+        </li>
+      `)
+      .join("");
+
+    ul.scrollTop = ul.scrollHeight;
   }
 
   function updateVoiceMessages(payload) {
