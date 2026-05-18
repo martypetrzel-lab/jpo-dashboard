@@ -1,15 +1,21 @@
-// FireWatchCZ OPS Radio v0.1
-// Frontend pro OPS/admin režim. Přenos hlasu: WebSocket + MediaRecorder Opus chunk.
+// FireWatchCZ OPS Radio v0.2
+// Frontend pro OPS/admin režim.
+// Přenos hlasu: WebSocket + raw PCM 16 kHz mono Int16.
+// Důvod: MediaRecorder/WebM chunky se na mobilech a mezi prohlížeči často nepřehrávají spolehlivě.
 
 (function () {
   const STORAGE_CHANNEL = "firewatchcz_radio_channel_v1";
+  const AUDIO_SAMPLE_RATE = 16000;
+  const PLAYBACK_BUFFER_SEC = 0.08;
 
   let mount = null;
   let ws = null;
-  let mediaRecorder = null;
   let micStream = null;
-  let audioQueue = [];
-  let playing = false;
+  let captureContext = null;
+  let captureSource = null;
+  let captureProcessor = null;
+  let playbackContext = null;
+  let playbackTime = 0;
   let authenticated = false;
   let pttActive = false;
   let visible = false;
@@ -36,26 +42,43 @@
       .join("");
   }
 
-  function beep(freq = 880, duration = 80) {
+  function getAudioContextClass() {
+    return window.AudioContext || window.webkitAudioContext;
+  }
+
+  async function unlockAudio() {
+    const AudioContextClass = getAudioContextClass();
+    if (!AudioContextClass) return null;
+
+    if (!playbackContext || playbackContext.state === "closed") {
+      playbackContext = new AudioContextClass({ sampleRate: AUDIO_SAMPLE_RATE });
+      playbackTime = playbackContext.currentTime;
+    }
+
+    if (playbackContext.state === "suspended") {
+      try { await playbackContext.resume(); } catch {}
+    }
+
+    return playbackContext;
+  }
+
+  async function beep(freq = 880, duration = 80) {
     if (window.__fwczRadioNoBeep) return;
     try {
-      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-      const ctx = new AudioContextClass();
+      const ctx = await unlockAudio();
+      if (!ctx) return;
+
       const oscillator = ctx.createOscillator();
       const gain = ctx.createGain();
 
       oscillator.frequency.value = freq;
       oscillator.type = "sine";
-      gain.gain.value = 0.045;
+      gain.gain.value = 0.035;
 
       oscillator.connect(gain);
       gain.connect(ctx.destination);
       oscillator.start();
-
-      setTimeout(() => {
-        oscillator.stop();
-        ctx.close();
-      }, duration);
+      oscillator.stop(ctx.currentTime + duration / 1000);
     } catch {
       // nepovinné
     }
@@ -129,8 +152,9 @@
     const ptt = mount?.querySelector("#opsRadioPtt");
     if (!ptt) return;
 
-    const down = (event) => {
+    const down = async (event) => {
       event.preventDefault();
+      await unlockAudio();
       requestPtt();
     };
 
@@ -172,13 +196,15 @@
     if (!mount.innerHTML.trim()) render();
   }
 
-  function connectRadio() {
+  async function connectRadio() {
     if (!visible) return;
 
     if (ws && ws.readyState === WebSocket.OPEN) {
       closeRadio();
       return;
     }
+
+    await unlockAudio();
 
     ws = new WebSocket(wsUrl());
     ws.binaryType = "arraybuffer";
@@ -261,7 +287,8 @@
 
     if (data.type === "radio_state") {
       if (data.channel === channel) {
-        setStatus(`Připojeno: ${channel}`, data.transmitting ? "rx" : "ok");
+        const isMe = data.txName && data.txName === myName;
+        setStatus(`Připojeno: ${channel}`, data.transmitting ? (isMe ? "tx" : "rx") : "ok");
         setTx(data.transmitting ? (data.txName || "Někdo") : "Nikdo");
         renderUsers(data.clients || []);
       }
@@ -275,7 +302,7 @@
         startRecording();
       } else {
         setStatus(`Příjem: ${data.by || "někdo"}`, "rx");
-        beep(880, 70);
+        beep(880, 55);
       }
       return;
     }
@@ -284,6 +311,7 @@
       pttActive = false;
       setStatus(data.message || "Kanál je obsazený", "error");
       mount?.querySelector("#opsRadioPtt")?.classList.remove("is-transmitting");
+      stopRecording();
       return;
     }
 
@@ -294,7 +322,7 @@
       }
       setStatus(`Připojeno: ${channel}`, "ok");
       setTx("Nikdo");
-      beep(440, 70);
+      beep(440, 55);
     }
   }
 
@@ -343,48 +371,57 @@
   }
 
   async function startRecording() {
-    if (!pttActive || mediaRecorder) return;
+    if (!pttActive || captureContext || captureProcessor) return;
 
     try {
       micStream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
-          autoGainControl: true
+          autoGainControl: true,
+          channelCount: 1
         },
         video: false
       });
 
-      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-        ? "audio/webm;codecs=opus"
-        : "audio/webm";
+      const AudioContextClass = getAudioContextClass();
+      if (!AudioContextClass) throw new Error("AudioContext není dostupný.");
 
-      mediaRecorder = new MediaRecorder(micStream, {
-        mimeType,
-        audioBitsPerSecond: 24000
-      });
+      captureContext = new AudioContextClass();
+      captureSource = captureContext.createMediaStreamSource(micStream);
+      captureProcessor = captureContext.createScriptProcessor(2048, 1, 1);
 
-      mediaRecorder.addEventListener("dataavailable", async (event) => {
-        if (!event.data || event.data.size === 0) return;
+      captureProcessor.onaudioprocess = (event) => {
         if (!pttActive || !ws || ws.readyState !== WebSocket.OPEN) return;
 
-        const buffer = await event.data.arrayBuffer();
-        ws.send(buffer);
-      });
+        const input = event.inputBuffer.getChannelData(0);
+        const pcm16 = downsampleFloat32ToInt16(input, captureContext.sampleRate, AUDIO_SAMPLE_RATE);
+        if (pcm16 && pcm16.byteLength > 0) {
+          ws.send(pcm16.buffer);
+        }
+      };
 
-      mediaRecorder.start(180);
-    } catch {
+      captureSource.connect(captureProcessor);
+      captureProcessor.connect(captureContext.destination);
+
+      if (captureContext.state === "suspended") {
+        try { await captureContext.resume(); } catch {}
+      }
+    } catch (error) {
+      console.warn("[OPS RADIO] microphone error", error);
       setStatus("Mikrofon není povolený", "error");
       releasePtt();
     }
   }
 
   function stopRecording() {
-    try {
-      if (mediaRecorder && mediaRecorder.state !== "inactive") mediaRecorder.stop();
-    } catch {}
+    try { if (captureProcessor) captureProcessor.disconnect(); } catch {}
+    try { if (captureSource) captureSource.disconnect(); } catch {}
+    try { if (captureContext && captureContext.state !== "closed") captureContext.close(); } catch {}
 
-    mediaRecorder = null;
+    captureProcessor = null;
+    captureSource = null;
+    captureContext = null;
 
     if (micStream) {
       micStream.getTracks().forEach((track) => track.stop());
@@ -392,37 +429,78 @@
     micStream = null;
   }
 
-  function handleAudioChunk(data) {
-    audioQueue.push(data);
-    if (!playing) playNextChunk();
-  }
+  function downsampleFloat32ToInt16(input, inputSampleRate, outputSampleRate) {
+    if (!input || !input.length) return new Int16Array(0);
 
-  function playNextChunk() {
-    if (!audioQueue.length) {
-      playing = false;
-      return;
+    if (inputSampleRate === outputSampleRate) {
+      const out = new Int16Array(input.length);
+      for (let i = 0; i < input.length; i++) {
+        const s = Math.max(-1, Math.min(1, input[i]));
+        out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+      }
+      return out;
     }
 
-    playing = true;
-    const chunk = audioQueue.shift();
-    const blob = new Blob([chunk], { type: "audio/webm;codecs=opus" });
-    const url = URL.createObjectURL(blob);
-    const audio = new Audio(url);
+    const ratio = inputSampleRate / outputSampleRate;
+    const newLength = Math.max(1, Math.round(input.length / ratio));
+    const out = new Int16Array(newLength);
 
-    audio.addEventListener("ended", () => {
-      URL.revokeObjectURL(url);
-      playNextChunk();
-    });
+    let offsetResult = 0;
+    let offsetBuffer = 0;
 
-    audio.addEventListener("error", () => {
-      URL.revokeObjectURL(url);
-      playNextChunk();
-    });
+    while (offsetResult < out.length) {
+      const nextOffsetBuffer = Math.round((offsetResult + 1) * ratio);
+      let accum = 0;
+      let count = 0;
 
-    audio.play().catch(() => {
-      URL.revokeObjectURL(url);
-      playNextChunk();
-    });
+      for (let i = offsetBuffer; i < nextOffsetBuffer && i < input.length; i++) {
+        accum += input[i];
+        count++;
+      }
+
+      const sample = count ? accum / count : 0;
+      const s = Math.max(-1, Math.min(1, sample));
+      out[offsetResult] = s < 0 ? s * 0x8000 : s * 0x7fff;
+
+      offsetResult++;
+      offsetBuffer = nextOffsetBuffer;
+    }
+
+    return out;
+  }
+
+  async function handleAudioChunk(data) {
+    try {
+      const ctx = await unlockAudio();
+      if (!ctx) return;
+
+      const arrayBuffer = data instanceof ArrayBuffer ? data : await data.arrayBuffer();
+      if (!arrayBuffer || arrayBuffer.byteLength < 2) return;
+
+      const pcm = new Int16Array(arrayBuffer);
+      if (!pcm.length) return;
+
+      const audioBuffer = ctx.createBuffer(1, pcm.length, AUDIO_SAMPLE_RATE);
+      const channelData = audioBuffer.getChannelData(0);
+
+      for (let i = 0; i < pcm.length; i++) {
+        channelData[i] = pcm[i] / 32768;
+      }
+
+      const source = ctx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(ctx.destination);
+
+      const now = ctx.currentTime;
+      if (!playbackTime || playbackTime < now + 0.02) {
+        playbackTime = now + PLAYBACK_BUFFER_SEC;
+      }
+
+      source.start(playbackTime);
+      playbackTime += audioBuffer.duration;
+    } catch (error) {
+      console.warn("[OPS RADIO] playback error", error);
+    }
   }
 
   window.firewatchOpsRadioSetVisible = async function firewatchOpsRadioSetVisible(isOpsAllowed) {
