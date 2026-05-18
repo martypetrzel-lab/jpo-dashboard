@@ -1,12 +1,17 @@
-// FireWatchCZ OPS Radio v0.2
+// FireWatchCZ OPS Radio v0.3
 // Frontend pro OPS/admin režim.
-// Přenos hlasu: WebSocket + raw PCM 16 kHz mono Int16.
-// Důvod: MediaRecorder/WebM chunky se na mobilech a mezi prohlížeči často nepřehrávají spolehlivě.
+// Přenos hlasu: WebSocket + nativní PCM Int16 mono s hlavičkou vzorkovací frekvence.
+// Oprava proti chrčení: neposíláme přepočítané 16 kHz chunky, ale nativní sample-rate zařízení.
 
 (function () {
   const STORAGE_CHANNEL = "firewatchcz_radio_channel_v1";
-  const AUDIO_SAMPLE_RATE = 16000;
-  const PLAYBACK_BUFFER_SEC = 0.08;
+  const PLAYBACK_BUFFER_SEC = 0.18;
+  const CAPTURE_BUFFER_SIZE = 4096;
+  const PACKET_HEADER_BYTES = 12;
+  const MAGIC_0 = 0x46; // F
+  const MAGIC_1 = 0x57; // W
+  const MAGIC_2 = 0x52; // R
+  const MAGIC_3 = 0x33; // 3
 
   let mount = null;
   let ws = null;
@@ -14,6 +19,7 @@
   let captureContext = null;
   let captureSource = null;
   let captureProcessor = null;
+  let captureSilentGain = null;
   let playbackContext = null;
   let playbackTime = 0;
   let authenticated = false;
@@ -51,7 +57,7 @@
     if (!AudioContextClass) return null;
 
     if (!playbackContext || playbackContext.state === "closed") {
-      playbackContext = new AudioContextClass({ sampleRate: AUDIO_SAMPLE_RATE });
+      playbackContext = new AudioContextClass({ latencyHint: "interactive" });
       playbackTime = playbackContext.currentTime;
     }
 
@@ -62,7 +68,7 @@
     return playbackContext;
   }
 
-  async function beep(freq = 880, duration = 80) {
+  async function beep(freq = 880, duration = 70) {
     if (window.__fwczRadioNoBeep) return;
     try {
       const ctx = await unlockAudio();
@@ -73,7 +79,7 @@
 
       oscillator.frequency.value = freq;
       oscillator.type = "sine";
-      gain.gain.value = 0.035;
+      gain.gain.value = 0.025;
 
       oscillator.connect(gain);
       gain.connect(ctx.destination);
@@ -270,7 +276,7 @@
 
       setConnectButton(true);
       setStatus(`Připojeno: ${channel}`, "ok");
-      beep(660, 80);
+      beep(660, 70);
       return;
     }
 
@@ -302,7 +308,7 @@
         startRecording();
       } else {
         setStatus(`Příjem: ${data.by || "někdo"}`, "rx");
-        beep(880, 55);
+        beep(880, 45);
       }
       return;
     }
@@ -322,7 +328,7 @@
       }
       setStatus(`Připojeno: ${channel}`, "ok");
       setTx("Nikdo");
-      beep(440, 55);
+      beep(440, 45);
     }
   }
 
@@ -387,22 +393,25 @@
       const AudioContextClass = getAudioContextClass();
       if (!AudioContextClass) throw new Error("AudioContext není dostupný.");
 
-      captureContext = new AudioContextClass();
+      captureContext = new AudioContextClass({ latencyHint: "interactive" });
       captureSource = captureContext.createMediaStreamSource(micStream);
-      captureProcessor = captureContext.createScriptProcessor(2048, 1, 1);
+      captureProcessor = captureContext.createScriptProcessor(CAPTURE_BUFFER_SIZE, 1, 1);
+      captureSilentGain = captureContext.createGain();
+      captureSilentGain.gain.value = 0;
 
       captureProcessor.onaudioprocess = (event) => {
-        if (!pttActive || !ws || ws.readyState !== WebSocket.OPEN) return;
+        if (!pttActive || !ws || ws.readyState !== WebSocket.OPEN || !captureContext) return;
 
         const input = event.inputBuffer.getChannelData(0);
-        const pcm16 = downsampleFloat32ToInt16(input, captureContext.sampleRate, AUDIO_SAMPLE_RATE);
-        if (pcm16 && pcm16.byteLength > 0) {
-          ws.send(pcm16.buffer);
+        const packet = createPcmPacket(input, captureContext.sampleRate);
+        if (packet && packet.byteLength > PACKET_HEADER_BYTES) {
+          ws.send(packet);
         }
       };
 
       captureSource.connect(captureProcessor);
-      captureProcessor.connect(captureContext.destination);
+      captureProcessor.connect(captureSilentGain);
+      captureSilentGain.connect(captureContext.destination);
 
       if (captureContext.state === "suspended") {
         try { await captureContext.resume(); } catch {}
@@ -417,10 +426,12 @@
   function stopRecording() {
     try { if (captureProcessor) captureProcessor.disconnect(); } catch {}
     try { if (captureSource) captureSource.disconnect(); } catch {}
+    try { if (captureSilentGain) captureSilentGain.disconnect(); } catch {}
     try { if (captureContext && captureContext.state !== "closed") captureContext.close(); } catch {}
 
     captureProcessor = null;
     captureSource = null;
+    captureSilentGain = null;
     captureContext = null;
 
     if (micStream) {
@@ -429,44 +440,60 @@
     micStream = null;
   }
 
-  function downsampleFloat32ToInt16(input, inputSampleRate, outputSampleRate) {
-    if (!input || !input.length) return new Int16Array(0);
+  function createPcmPacket(floatSamples, sampleRate) {
+    if (!floatSamples || !floatSamples.length) return null;
 
-    if (inputSampleRate === outputSampleRate) {
-      const out = new Int16Array(input.length);
-      for (let i = 0; i < input.length; i++) {
-        const s = Math.max(-1, Math.min(1, input[i]));
-        out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-      }
-      return out;
+    const sampleCount = floatSamples.length;
+    const buffer = new ArrayBuffer(PACKET_HEADER_BYTES + sampleCount * 2);
+    const view = new DataView(buffer);
+
+    view.setUint8(0, MAGIC_0);
+    view.setUint8(1, MAGIC_1);
+    view.setUint8(2, MAGIC_2);
+    view.setUint8(3, MAGIC_3);
+    view.setUint32(4, Math.round(sampleRate || 48000), true);
+    view.setUint16(8, 1, true);
+    view.setUint16(10, sampleCount, true);
+
+    let offset = PACKET_HEADER_BYTES;
+    for (let i = 0; i < sampleCount; i++) {
+      // Lehké omezení zisku, aby mobilní mikrofony nelezly do tvrdé saturace.
+      let sample = floatSamples[i] * 0.85;
+      if (sample > 1) sample = 1;
+      else if (sample < -1) sample = -1;
+
+      const intSample = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+      view.setInt16(offset, intSample, true);
+      offset += 2;
     }
 
-    const ratio = inputSampleRate / outputSampleRate;
-    const newLength = Math.max(1, Math.round(input.length / ratio));
-    const out = new Int16Array(newLength);
+    return buffer;
+  }
 
-    let offsetResult = 0;
-    let offsetBuffer = 0;
+  function decodePcmPacket(arrayBuffer) {
+    if (!arrayBuffer || arrayBuffer.byteLength < 2) return null;
 
-    while (offsetResult < out.length) {
-      const nextOffsetBuffer = Math.round((offsetResult + 1) * ratio);
-      let accum = 0;
-      let count = 0;
+    const view = new DataView(arrayBuffer);
+    let sampleRate = 16000;
+    let payloadOffset = 0;
+    let sampleCount = Math.floor(arrayBuffer.byteLength / 2);
 
-      for (let i = offsetBuffer; i < nextOffsetBuffer && i < input.length; i++) {
-        accum += input[i];
-        count++;
-      }
+    const hasHeader = arrayBuffer.byteLength >= PACKET_HEADER_BYTES &&
+      view.getUint8(0) === MAGIC_0 &&
+      view.getUint8(1) === MAGIC_1 &&
+      view.getUint8(2) === MAGIC_2 &&
+      view.getUint8(3) === MAGIC_3;
 
-      const sample = count ? accum / count : 0;
-      const s = Math.max(-1, Math.min(1, sample));
-      out[offsetResult] = s < 0 ? s * 0x8000 : s * 0x7fff;
-
-      offsetResult++;
-      offsetBuffer = nextOffsetBuffer;
+    if (hasHeader) {
+      sampleRate = view.getUint32(4, true) || 48000;
+      payloadOffset = PACKET_HEADER_BYTES;
+      sampleCount = view.getUint16(10, true) || Math.floor((arrayBuffer.byteLength - payloadOffset) / 2);
     }
 
-    return out;
+    const maxSamples = Math.floor((arrayBuffer.byteLength - payloadOffset) / 2);
+    sampleCount = Math.min(sampleCount, maxSamples);
+
+    return { view, sampleRate, payloadOffset, sampleCount };
   }
 
   async function handleAudioChunk(data) {
@@ -475,16 +502,16 @@
       if (!ctx) return;
 
       const arrayBuffer = data instanceof ArrayBuffer ? data : await data.arrayBuffer();
-      if (!arrayBuffer || arrayBuffer.byteLength < 2) return;
+      const decoded = decodePcmPacket(arrayBuffer);
+      if (!decoded || decoded.sampleCount <= 0) return;
 
-      const pcm = new Int16Array(arrayBuffer);
-      if (!pcm.length) return;
-
-      const audioBuffer = ctx.createBuffer(1, pcm.length, AUDIO_SAMPLE_RATE);
+      const audioBuffer = ctx.createBuffer(1, decoded.sampleCount, decoded.sampleRate);
       const channelData = audioBuffer.getChannelData(0);
 
-      for (let i = 0; i < pcm.length; i++) {
-        channelData[i] = pcm[i] / 32768;
+      let offset = decoded.payloadOffset;
+      for (let i = 0; i < decoded.sampleCount; i++) {
+        channelData[i] = decoded.view.getInt16(offset, true) / 32768;
+        offset += 2;
       }
 
       const source = ctx.createBufferSource();
@@ -492,7 +519,7 @@
       source.connect(ctx.destination);
 
       const now = ctx.currentTime;
-      if (!playbackTime || playbackTime < now + 0.02) {
+      if (!playbackTime || playbackTime < now + 0.03 || playbackTime > now + 1.0) {
         playbackTime = now + PLAYBACK_BUFFER_SEC;
       }
 
