@@ -511,3 +511,68 @@ body.isGuestMode #registerBtn {
 .publicHeroActions {
   align-items: center;
 }
+
+
+/* Login/register fallback modal */
+.fwPromptOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 99999;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(8px);
+}
+
+.fwPromptBox {
+  width: min(440px, 100%);
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 22px;
+  padding: 18px;
+  background: linear-gradient(180deg, rgba(22, 30, 44, 0.98), rgba(10, 14, 22, 0.98));
+  box-shadow: 0 24px 80px rgba(0,0,0,0.45);
+}
+
+.fwPromptBox h2 {
+  margin: 0 0 14px;
+  font-size: 22px;
+}
+
+.fwPromptLabel {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0;
+  color: rgba(235,245,255,0.82);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.fwPromptInput {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid rgba(255,255,255,0.13);
+  border-radius: 14px;
+  background: rgba(255,255,255,0.06);
+  color: white;
+  padding: 12px 13px;
+  outline: none;
+}
+
+.fwPromptInput:focus {
+  border-color: rgba(90, 160, 255, 0.55);
+}
+
+.fwPromptMsg {
+  min-height: 20px;
+  margin-top: 8px;
+  color: #ffd28a;
+  font-size: 13px;
+}
+
+.fwPromptActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 12px;
+}

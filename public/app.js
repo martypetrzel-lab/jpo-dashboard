@@ -2410,3 +2410,195 @@ refreshMe();
 
   syncPublicGuestUi?.();
 })();
+
+
+// -----------------------------------------------------------------------------
+// FireWatchCZ login/register fallback
+// Keeps login and registration working in public/guest mode.
+// -----------------------------------------------------------------------------
+function fwPrompt(title, fields, onSubmit) {
+  const old = document.getElementById("fwPromptOverlay");
+  if (old) old.remove();
+
+  const overlay = document.createElement("div");
+  overlay.id = "fwPromptOverlay";
+  overlay.className = "fwPromptOverlay";
+
+  const box = document.createElement("div");
+  box.className = "fwPromptBox";
+
+  const h = document.createElement("h2");
+  h.textContent = title;
+  box.appendChild(h);
+
+  const inputs = {};
+
+  fields.forEach((f) => {
+    const label = document.createElement("label");
+    label.className = "fwPromptLabel";
+    label.textContent = f.label;
+
+    const input = document.createElement("input");
+    input.className = "fwPromptInput";
+    input.type = f.type || "text";
+    input.placeholder = f.placeholder || "";
+    input.value = f.value || "";
+    input.autocomplete = f.autocomplete || "off";
+
+    label.appendChild(input);
+    box.appendChild(label);
+    inputs[f.name] = input;
+  });
+
+  const msg = document.createElement("div");
+  msg.className = "fwPromptMsg";
+  box.appendChild(msg);
+
+  const actions = document.createElement("div");
+  actions.className = "fwPromptActions";
+
+  const cancel = document.createElement("button");
+  cancel.className = "btn";
+  cancel.textContent = "Zrušit";
+  cancel.addEventListener("click", () => overlay.remove());
+
+  const submit = document.createElement("button");
+  submit.className = "btn primary";
+  submit.textContent = title.includes("Registr") ? "Registrovat" : "Přihlásit";
+  submit.addEventListener("click", async () => {
+    msg.textContent = "";
+    submit.disabled = true;
+    try {
+      const values = {};
+      Object.entries(inputs).forEach(([key, input]) => values[key] = input.value.trim());
+
+      await onSubmit(values, msg);
+      overlay.remove();
+
+      if (typeof refreshMe === "function") await refreshMe();
+      if (typeof syncPublicGuestUi === "function") syncPublicGuestUi();
+      if (typeof loadAll === "function") loadAll();
+    } catch (e) {
+      msg.textContent = e?.message || "Akce se nepodařila.";
+    } finally {
+      submit.disabled = false;
+    }
+  });
+
+  actions.appendChild(cancel);
+  actions.appendChild(submit);
+  box.appendChild(actions);
+  overlay.appendChild(box);
+  document.body.appendChild(overlay);
+
+  const first = Object.values(inputs)[0];
+  if (first) setTimeout(() => first.focus(), 50);
+}
+
+async function fwPostJson(url, body) {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(body)
+  });
+
+  let data = null;
+  try { data = await res.json(); } catch (_) {}
+
+  if (!res.ok) {
+    const msg = data?.error || data?.message || `HTTP ${res.status}`;
+    throw new Error(msg);
+  }
+
+  return data || {};
+}
+
+function fwOpenLoginDialog() {
+  fwPrompt("Přihlášení", [
+    { name: "username", label: "Uživatelské jméno", autocomplete: "username" },
+    { name: "password", label: "Heslo", type: "password", autocomplete: "current-password" }
+  ], async (v, msg) => {
+    if (!v.username || !v.password) throw new Error("Vyplň uživatelské jméno a heslo.");
+    msg.textContent = "Přihlašuji…";
+
+    const endpoints = ["/api/auth/login", "/api/login", "/auth/login"];
+    let lastError = null;
+
+    for (const ep of endpoints) {
+      try {
+        await fwPostJson(ep, { username: v.username, password: v.password });
+        return;
+      } catch (e) {
+        lastError = e;
+      }
+    }
+
+    throw lastError || new Error("Přihlášení se nepodařilo.");
+  });
+}
+
+function fwOpenRegisterDialog() {
+  fwPrompt("Registrace", [
+    { name: "username", label: "Uživatelské jméno", autocomplete: "username" },
+    { name: "name", label: "Zobrazované jméno" },
+    { name: "password", label: "Heslo", type: "password", autocomplete: "new-password" },
+    { name: "password2", label: "Heslo znovu", type: "password", autocomplete: "new-password" }
+  ], async (v, msg) => {
+    if (!v.username || v.username.length < 3) throw new Error("Uživatelské jméno musí mít aspoň 3 znaky.");
+    if (!v.password || v.password.length < 6) throw new Error("Heslo musí mít aspoň 6 znaků.");
+    if (v.password !== v.password2) throw new Error("Hesla se neshodují.");
+
+    msg.textContent = "Registruji…";
+
+    const payload = {
+      username: v.username,
+      name: v.name || v.username,
+      displayName: v.name || v.username,
+      password: v.password
+    };
+
+    const endpoints = ["/api/auth/register", "/api/register", "/auth/register"];
+    let lastError = null;
+
+    for (const ep of endpoints) {
+      try {
+        await fwPostJson(ep, payload);
+
+        // Try auto-login after registration.
+        try {
+          await fwPostJson("/api/auth/login", { username: v.username, password: v.password });
+        } catch (_) {
+          try { await fwPostJson("/api/login", { username: v.username, password: v.password }); } catch (_) {}
+        }
+
+        return;
+      } catch (e) {
+        lastError = e;
+      }
+    }
+
+    throw lastError || new Error("Registrace se nepodařila.");
+  });
+}
+
+(function fwWireLoginRegisterFallback() {
+  function wire(id, fn) {
+    const el = document.getElementById(id);
+    if (!el) return;
+
+    // Capture phase prevents broken previous handlers from swallowing the click.
+    el.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      fn();
+    }, true);
+  }
+
+  wire("loginBtn", fwOpenLoginDialog);
+  wire("registerBtn", fwOpenRegisterDialog);
+  wire("guestLoginBtn", fwOpenLoginDialog);
+  wire("guestRegisterBtn", fwOpenRegisterDialog);
+  wire("talkLockedLoginBtn", fwOpenLoginDialog);
+  wire("talkLockedRegisterBtn", fwOpenRegisterDialog);
+})();
