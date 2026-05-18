@@ -1,23 +1,22 @@
-// FireWatchCZ OPS Radio v0.4
+// FireWatchCZ OPS Radio v0.5
 // Frontend pro OPS/admin režim.
-// Přenos hlasu: WebRTC audio. WebSocket slouží jen pro autorizaci, PTT zámek,
-// kanály a WebRTC signalizaci. Tím se odstraní chrčení/praskání z PCM chunků.
+// Přenos hlasu: server-relay PCM přes WebSocket.
+// Cíl: stabilní mobil ↔ PC příjem bez chrčení a bez závislosti na WebRTC/TURN.
 
 (function () {
   const STORAGE_CHANNEL = "firewatchcz_radio_channel_v1";
-
-  const RTC_CONFIG = {
-    iceServers: [
-      { urls: "stun:stun.l.google.com:19302" },
-      { urls: "stun:stun1.l.google.com:19302" }
-    ]
-  };
+  const TARGET_SAMPLE_RATE = 16000;
+  const PROCESSOR_BUFFER_SIZE = 2048;
+  const PACKET_HEADER_SIZE = 12;
+  const MAGIC = [0x46, 0x57, 0x52, 0x35]; // FWR5
 
   let mount = null;
   let ws = null;
+  let audioContext = null;
   let localStream = null;
-  let localAudioTrack = null;
-  let playbackContext = null;
+  let micSource = null;
+  let processor = null;
+  let zeroGain = null;
   let authenticated = false;
   let pttActive = false;
   let visible = false;
@@ -25,9 +24,8 @@
   let channel = localStorage.getItem(STORAGE_CHANNEL) || "OPS";
   let channels = ["OPS", "JEDNOTKA", "VELITEL", "TECHNICKY", "TEST"];
   let myName = "OPS";
-  let peerClients = [];
-  let peerConnections = new Map();
-  let remoteAudios = new Map();
+  let packetSeq = 0;
+  let nextPlaybackTime = 0;
 
   function wsUrl() {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -57,21 +55,21 @@
       const AudioContextClass = getAudioContextClass();
       if (!AudioContextClass) return null;
 
-      if (!playbackContext || playbackContext.state === "closed") {
-        playbackContext = new AudioContextClass({ latencyHint: "interactive" });
+      if (!audioContext || audioContext.state === "closed") {
+        audioContext = new AudioContextClass({ latencyHint: "interactive" });
       }
 
-      if (playbackContext.state === "suspended") {
-        await playbackContext.resume();
+      if (audioContext.state === "suspended") {
+        await audioContext.resume();
       }
 
-      return playbackContext;
+      return audioContext;
     } catch {
       return null;
     }
   }
 
-  async function beep(freq = 880, duration = 70) {
+  async function beep(freq = 880, duration = 55) {
     if (window.__fwczRadioNoBeep) return;
     try {
       const ctx = await unlockAudio();
@@ -82,7 +80,7 @@
 
       oscillator.frequency.value = freq;
       oscillator.type = "sine";
-      gain.gain.value = 0.025;
+      gain.gain.value = 0.018;
 
       oscillator.connect(gain);
       gain.connect(ctx.destination);
@@ -148,8 +146,6 @@
               <li>Zatím nikdo</li>
             </ul>
           </div>
-
-          <div id="opsRadioAudioMount" aria-hidden="true"></div>
         </div>
       </div>
     `;
@@ -208,9 +204,10 @@
   }
 
   async function prepareLocalAudio() {
-    if (localStream && localAudioTrack) return true;
+    if (localStream) return true;
 
     try {
+      await unlockAudio();
       localStream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
@@ -220,13 +217,7 @@
         },
         video: false
       });
-
-      localAudioTrack = localStream.getAudioTracks()[0] || null;
-      if (localAudioTrack) {
-        localAudioTrack.enabled = false;
-      }
-
-      return Boolean(localAudioTrack);
+      return true;
     } catch (error) {
       console.warn("[OPS RADIO] microphone error", error);
       setStatus("Mikrofon není povolený", "error");
@@ -254,6 +245,8 @@
     ws.addEventListener("message", (event) => {
       if (typeof event.data === "string") {
         handleControlMessage(event.data);
+      } else {
+        handleAudioPacket(event.data);
       }
     });
 
@@ -262,7 +255,6 @@
       pttActive = false;
       clientId = null;
       stopTransmit();
-      closeAllPeers();
       setStatus("Odpojeno", "error");
       setConnectButton(false);
       const ptt = mount?.querySelector("#opsRadioPtt");
@@ -281,17 +273,16 @@
     pttActive = false;
     clientId = null;
     stopTransmit();
-    closeAllPeers();
     stopLocalAudio();
     setConnectButton(false);
   }
 
   function stopLocalAudio() {
+    stopTransmit();
     if (localStream) {
       localStream.getTracks().forEach((track) => track.stop());
     }
     localStream = null;
-    localAudioTrack = null;
   }
 
   function setConnectButton(connected) {
@@ -323,7 +314,7 @@
 
       setConnectButton(true);
       setStatus(`Připojeno: ${channel}`, "ok");
-      beep(660, 70);
+      beep(660, 55);
       return;
     }
 
@@ -343,9 +334,7 @@
         const isMe = data.txClientId && data.txClientId === clientId;
         setStatus(`Připojeno: ${channel}`, data.transmitting ? (isMe ? "tx" : "rx") : "ok");
         setTx(data.transmitting ? (data.txName || "Někdo") : "Nikdo");
-        peerClients = Array.isArray(data.clients) ? data.clients : [];
-        renderUsers(peerClients);
-        syncPeers(peerClients);
+        renderUsers(Array.isArray(data.clients) ? data.clients : []);
       }
       return;
     }
@@ -357,7 +346,8 @@
         setStatus("Vysíláš", "tx");
       } else {
         setStatus(`Příjem: ${data.by || "někdo"}`, "rx");
-        beep(880, 45);
+        beep(880, 35);
+        resetPlaybackClock();
       }
       return;
     }
@@ -377,12 +367,7 @@
       }
       setStatus(`Připojeno: ${channel}`, "ok");
       setTx("Nikdo");
-      beep(440, 45);
-      return;
-    }
-
-    if (data.type === "webrtc_signal") {
-      handleRtcSignal(data.from, data.signal);
+      beep(440, 35);
     }
   }
 
@@ -403,7 +388,7 @@
   function changeChannel(event) {
     channel = event.target.value || "OPS";
     localStorage.setItem(STORAGE_CHANNEL, channel);
-    closeAllPeers();
+    resetPlaybackClock();
 
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: "join_channel", channel }));
@@ -432,202 +417,128 @@
   }
 
   function startTransmit() {
-    if (localAudioTrack) {
-      localAudioTrack.enabled = true;
+    if (!localStream || !audioContext || processor) return;
+
+    try {
+      packetSeq = 0;
+      micSource = audioContext.createMediaStreamSource(localStream);
+      processor = audioContext.createScriptProcessor(PROCESSOR_BUFFER_SIZE, 1, 1);
+      zeroGain = audioContext.createGain();
+      zeroGain.gain.value = 0;
+
+      processor.onaudioprocess = (event) => {
+        if (!pttActive || !ws || ws.readyState !== WebSocket.OPEN) return;
+        const input = event.inputBuffer.getChannelData(0);
+        const downsampled = downsampleToInt16(input, audioContext.sampleRate, TARGET_SAMPLE_RATE);
+        if (downsampled.length > 0) {
+          ws.send(makeAudioPacket(downsampled, TARGET_SAMPLE_RATE));
+        }
+      };
+
+      micSource.connect(processor);
+      processor.connect(zeroGain);
+      zeroGain.connect(audioContext.destination);
+    } catch (error) {
+      console.warn("[OPS RADIO] start transmit error", error);
+      setStatus("Mikrofon nejde spustit", "error");
     }
   }
 
   function stopTransmit() {
-    if (localAudioTrack) {
-      localAudioTrack.enabled = false;
-    }
+    try { if (processor) processor.onaudioprocess = null; } catch {}
+    try { micSource?.disconnect(); } catch {}
+    try { processor?.disconnect(); } catch {}
+    try { zeroGain?.disconnect(); } catch {}
+    micSource = null;
+    processor = null;
+    zeroGain = null;
   }
 
-  function syncPeers(users) {
-    if (!authenticated || !clientId || !localStream) return;
+  function downsampleToInt16(input, inputRate, outputRate) {
+    if (!input || !input.length) return new Int16Array(0);
 
-    const wanted = new Set(
-      users
-        .filter((user) => user.id && user.id !== clientId)
-        .map((user) => user.id)
-    );
-
-    for (const peerId of [...peerConnections.keys()]) {
-      if (!wanted.has(peerId)) closePeer(peerId);
+    if (!inputRate || inputRate === outputRate) {
+      const out = new Int16Array(input.length);
+      for (let i = 0; i < input.length; i++) out[i] = floatToInt16(input[i]);
+      return out;
     }
 
-    for (const user of users) {
-      if (!user.id || user.id === clientId) continue;
-      ensurePeer(user.id, { makeOffer: shouldCreateOffer(user.id) });
+    const ratio = inputRate / outputRate;
+    const outLength = Math.max(1, Math.floor(input.length / ratio));
+    const out = new Int16Array(outLength);
+
+    for (let i = 0; i < outLength; i++) {
+      const src = i * ratio;
+      const left = Math.floor(src);
+      const right = Math.min(left + 1, input.length - 1);
+      const weight = src - left;
+      const sample = input[left] * (1 - weight) + input[right] * weight;
+      out[i] = floatToInt16(sample);
     }
+
+    return out;
   }
 
-  function shouldCreateOffer(peerId) {
-    // Jednoduché zabránění offer-glare: nabídku vytvoří klient s lexikograficky menším ID.
-    return String(clientId) < String(peerId);
+  function floatToInt16(sample) {
+    const s = Math.max(-1, Math.min(1, sample || 0));
+    return s < 0 ? Math.round(s * 32768) : Math.round(s * 32767);
   }
 
-  async function ensurePeer(peerId, options = {}) {
-    if (!peerId || peerId === clientId) return null;
+  function makeAudioPacket(samples, sampleRate) {
+    const packet = new ArrayBuffer(PACKET_HEADER_SIZE + samples.byteLength);
+    const bytes = new Uint8Array(packet);
+    bytes[0] = MAGIC[0];
+    bytes[1] = MAGIC[1];
+    bytes[2] = MAGIC[2];
+    bytes[3] = MAGIC[3];
 
-    let entry = peerConnections.get(peerId);
-    if (entry) return entry.pc;
-
-    const pc = new RTCPeerConnection(RTC_CONFIG);
-    entry = {
-      pc,
-      makingOffer: false,
-      remoteDescriptionSet: false,
-      pendingCandidates: []
-    };
-    peerConnections.set(peerId, entry);
-
-    if (localStream) {
-      for (const track of localStream.getTracks()) {
-        pc.addTrack(track, localStream);
-      }
-    }
-
-    pc.onicecandidate = (event) => {
-      if (!event.candidate) return;
-      sendSignal(peerId, {
-        kind: "candidate",
-        candidate: event.candidate
-      });
-    };
-
-    pc.ontrack = (event) => {
-      const [stream] = event.streams;
-      if (stream) attachRemoteAudio(peerId, stream);
-    };
-
-    pc.onconnectionstatechange = () => {
-      if (["failed", "closed", "disconnected"].includes(pc.connectionState)) {
-        if (pc.connectionState === "failed") {
-          try { pc.restartIce(); } catch {}
-        }
-      }
-    };
-
-    if (options.makeOffer) {
-      await createAndSendOffer(peerId);
-    }
-
-    return pc;
+    const view = new DataView(packet);
+    view.setUint16(4, sampleRate, true);
+    view.setUint16(6, 1, true);
+    view.setUint32(8, packetSeq++, true);
+    bytes.set(new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength), PACKET_HEADER_SIZE);
+    return packet;
   }
 
-  async function createAndSendOffer(peerId) {
-    const entry = peerConnections.get(peerId);
-    if (!entry || entry.makingOffer) return;
+  async function handleAudioPacket(packet) {
+    if (!packet || packet.byteLength <= PACKET_HEADER_SIZE) return;
 
-    try {
-      entry.makingOffer = true;
-      const offer = await entry.pc.createOffer({ offerToReceiveAudio: true });
-      await entry.pc.setLocalDescription(offer);
-      sendSignal(peerId, {
-        kind: "description",
-        description: entry.pc.localDescription
-      });
-    } catch (error) {
-      console.warn("[OPS RADIO] offer error", error);
-    } finally {
-      entry.makingOffer = false;
+    const ctx = await unlockAudio();
+    if (!ctx) return;
+
+    const bytes = new Uint8Array(packet);
+    if (bytes[0] !== MAGIC[0] || bytes[1] !== MAGIC[1] || bytes[2] !== MAGIC[2] || bytes[3] !== MAGIC[3]) {
+      return;
     }
+
+    const view = new DataView(packet);
+    const sampleRate = view.getUint16(4, true) || TARGET_SAMPLE_RATE;
+    const payloadBytes = packet.byteLength - PACKET_HEADER_SIZE;
+    if (payloadBytes < 2) return;
+
+    const samples = new Int16Array(packet, PACKET_HEADER_SIZE, Math.floor(payloadBytes / 2));
+    const audioBuffer = ctx.createBuffer(1, samples.length, sampleRate);
+    const channelData = audioBuffer.getChannelData(0);
+
+    for (let i = 0; i < samples.length; i++) {
+      channelData[i] = samples[i] / 32768;
+    }
+
+    const source = ctx.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(ctx.destination);
+
+    const now = ctx.currentTime;
+    if (!nextPlaybackTime || nextPlaybackTime < now || nextPlaybackTime > now + 0.8) {
+      nextPlaybackTime = now + 0.045;
+    }
+
+    source.start(nextPlaybackTime);
+    nextPlaybackTime += audioBuffer.duration;
   }
 
-  async function handleRtcSignal(fromPeerId, signal) {
-    if (!fromPeerId || !signal || fromPeerId === clientId) return;
-
-    const pc = await ensurePeer(fromPeerId, { makeOffer: false });
-    const entry = peerConnections.get(fromPeerId);
-    if (!pc || !entry) return;
-
-    try {
-      if (signal.kind === "description" && signal.description) {
-        const description = signal.description;
-        await pc.setRemoteDescription(description);
-        entry.remoteDescriptionSet = true;
-
-        if (description.type === "offer") {
-          const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
-          sendSignal(fromPeerId, {
-            kind: "description",
-            description: pc.localDescription
-          });
-        }
-
-        while (entry.pendingCandidates.length) {
-          const candidate = entry.pendingCandidates.shift();
-          try { await pc.addIceCandidate(candidate); } catch {}
-        }
-        return;
-      }
-
-      if (signal.kind === "candidate" && signal.candidate) {
-        if (!entry.remoteDescriptionSet) {
-          entry.pendingCandidates.push(signal.candidate);
-          return;
-        }
-        await pc.addIceCandidate(signal.candidate);
-      }
-    } catch (error) {
-      console.warn("[OPS RADIO] signal error", error);
-    }
-  }
-
-  function sendSignal(to, signal) {
-    if (!ws || ws.readyState !== WebSocket.OPEN || !to || !signal) return;
-    ws.send(JSON.stringify({
-      type: "webrtc_signal",
-      to,
-      signal
-    }));
-  }
-
-  function attachRemoteAudio(peerId, stream) {
-    let audio = remoteAudios.get(peerId);
-    if (!audio) {
-      audio = document.createElement("audio");
-      audio.autoplay = true;
-      audio.playsInline = true;
-      audio.controls = false;
-      audio.dataset.peerId = peerId;
-      audio.style.display = "none";
-      remoteAudios.set(peerId, audio);
-      mount?.querySelector("#opsRadioAudioMount")?.appendChild(audio);
-    }
-
-    if (audio.srcObject !== stream) {
-      audio.srcObject = stream;
-    }
-
-    audio.play().catch(() => {
-      // Některé mobily pustí audio až po dalším dotyku. Connect/PTT volá unlockAudio,
-      // takže se to po uživatelské akci většinou samo rozběhne.
-    });
-  }
-
-  function closePeer(peerId) {
-    const entry = peerConnections.get(peerId);
-    if (entry) {
-      try { entry.pc.close(); } catch {}
-      peerConnections.delete(peerId);
-    }
-
-    const audio = remoteAudios.get(peerId);
-    if (audio) {
-      try { audio.pause(); } catch {}
-      audio.srcObject = null;
-      audio.remove();
-      remoteAudios.delete(peerId);
-    }
-  }
-
-  function closeAllPeers() {
-    for (const peerId of [...peerConnections.keys()]) {
-      closePeer(peerId);
-    }
+  function resetPlaybackClock() {
+    nextPlaybackTime = 0;
   }
 
   window.firewatchOpsRadioSetVisible = async function firewatchOpsRadioSetVisible(isOpsAllowed) {

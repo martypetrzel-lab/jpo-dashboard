@@ -5,10 +5,10 @@ import {
   deleteSessionByTokenSha
 } from "./db.js";
 
-// FireWatchCZ OPS Radio v0.4
+// FireWatchCZ OPS Radio v0.5
 // Interní internetová PTT vysílačka pro přihlášené role ops/admin.
-// Přenos hlasu je přes WebRTC. WebSocket slouží jen pro OPS autorizaci,
-// kanály, PTT zámek a WebRTC signalizaci.
+// Přenos hlasu je server-relay PCM přes WebSocket. WebSocket řeší i OPS autorizaci,
+// kanály a PTT zámek. Tohle je stabilnější pro mobil ↔ PC než krátké WebM chunky.
 
 const DEFAULT_CHANNELS = ["OPS", "JEDNOTKA", "VELITEL", "TECHNICKY", "TEST"];
 const SESSION_COOKIE = process.env.SESSION_COOKIE_NAME || "FWSESS";
@@ -157,23 +157,6 @@ export function attachOpsRadio(server, options = {}) {
     }
   }
 
-  function forwardSignal(fromClient, data) {
-    const targetId = String(data.to || "");
-    const target = clients.get(targetId);
-    if (!target) return;
-
-    // Signalizace se posílá jen v rámci stejného kanálu.
-    if (target.channel !== fromClient.channel) return;
-
-    sendJson(target.ws, {
-      type: "webrtc_signal",
-      from: fromClient.id,
-      fromName: fromClient.name,
-      channel: fromClient.channel,
-      signal: data.signal
-    });
-  }
-
   wss.on("connection", async (ws, req) => {
     if (!enabled) {
       sendJson(ws, { type: "error", message: "OPS rádio je na serveru vypnuté." });
@@ -215,9 +198,21 @@ export function attachOpsRadio(server, options = {}) {
     broadcastChannelState(client.channel);
 
     ws.on("message", (message, isBinary) => {
-      // Hlas už neposíláme přes WebSocket. Kdyby přišla binární data ze staré cache,
-      // ignorujeme je, aby nerozbila spojení.
-      if (isBinary) return;
+      if (isBinary) {
+        const st = channelState.get(client.channel);
+        if (!st || st.txClientId !== client.id) return;
+
+        for (const other of clients.values()) {
+          if (
+            other.id !== client.id &&
+            other.channel === client.channel &&
+            other.ws.readyState === other.ws.OPEN
+          ) {
+            other.ws.send(message, { binary: true });
+          }
+        }
+        return;
+      }
 
       const data = safeJsonParse(String(message));
       if (!data?.type) {
@@ -279,11 +274,6 @@ export function attachOpsRadio(server, options = {}) {
         return;
       }
 
-      if (data.type === "webrtc_signal") {
-        forwardSignal(client, data);
-        return;
-      }
-
       if (data.type === "ping") {
         sendJson(ws, { type: "pong", ts: Date.now() });
       }
@@ -304,6 +294,6 @@ export function attachOpsRadio(server, options = {}) {
     });
   });
 
-  console.log(`[OPS RADIO] WebSocket/WebRTC signalizace běží na /ops-radio | enabled=${enabled} | channels=${channels.join(", ")}`);
+  console.log(`[OPS RADIO] WebSocket/PCM relay běží na /ops-radio | enabled=${enabled} | channels=${channels.join(", ")}`);
   return { wss };
 }
