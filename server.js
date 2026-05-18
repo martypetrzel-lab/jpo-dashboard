@@ -1,10 +1,12 @@
 import express from "express";
+import http from "http";
 import PDFDocument from "pdfkit";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
+import { attachOpsRadio } from "./radio-server.js";
 
 
 // ======================
@@ -1259,4 +1261,7 @@ await ensureInitialAdmin();
 await runStaleAutoClose();
 setInterval(runStaleAutoClose, STALE_CLOSE_INTERVAL_MS);
 
-app.listen(port, () => console.log(`listening on ${port}`));
+const server = http.createServer(app);
+attachOpsRadio(server);
+
+server.listen(port, () => console.log(`listening on ${port}`));
