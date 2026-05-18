@@ -1,14 +1,15 @@
-// FireWatch Talk v0.6
+// FireWatch Talk v0.7
 // Soukromý týmový hlasový chat FireWatchCZ.
 // Přenos hlasu: server-relay PCM přes WebSocket.
 // Vlastní zvuk PTT: nahraj soubor do /public/sounds/ptt-press.mp3.
+// Nově: vlastní místnosti s volitelným heslem.
 
 (function () {
-  const STORAGE_ROOM = "firewatch_talk_room_v2";
+  const STORAGE_ROOM = "firewatch_talk_room_v3";
   const TARGET_SAMPLE_RATE = 16000;
   const PROCESSOR_BUFFER_SIZE = 2048;
   const PACKET_HEADER_SIZE = 12;
-  const MAGIC = [0x46, 0x57, 0x52, 0x35]; // FWR5
+  const MAGIC = [0x46, 0x57, 0x52, 0x37]; // FWR7
   const DEFAULT_ROOM = "HLAVNÍ";
   const PTT_SOUND_URL = "/sounds/ptt-press.mp3";
   const PTT_SOUND_VOLUME = 0.42;
@@ -27,15 +28,14 @@
   let visible = false;
   let clientId = null;
   let room = normalizeRoom(localStorage.getItem(STORAGE_ROOM) || DEFAULT_ROOM);
-  let rooms = ["HLAVNÍ", "SPRÁVA", "TEST"];
-  let roomCounts = [];
+  let rooms = [];
   let myName = "Uživatel";
+  let myRole = "public";
   let packetSeq = 0;
   let nextPlaybackTime = 0;
   let manualCloseRequested = false;
   let reconnectTimer = null;
   let keepAliveTimer = null;
-  let pttSoundReady = false;
   let pttSoundFailed = false;
 
   function wsUrl() {
@@ -51,16 +51,25 @@
       .replaceAll('"', "&quot;");
   }
 
+  function cleanLabel(value) {
+    return String(value || "")
+      .replace(/[\u0000-\u001f\u007f]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
   function normalizeRoom(value) {
-    const raw = String(value || DEFAULT_ROOM).trim().toUpperCase();
-    if (["OPS", "JEDNOTKA", "VELITEL", "TECHNICKY"].includes(raw)) return DEFAULT_ROOM;
+    const raw = cleanLabel(value).toUpperCase();
+    if (["OPS", "JEDNOTKA", "VELITEL", "TECHNICKY", "HLAVNI", "HLAVNÍ"].includes(raw)) return DEFAULT_ROOM;
     if (["ADMIN", "SPRAVA", "SPRÁVA"].includes(raw)) return "SPRÁVA";
     if (raw === "TEST") return "TEST";
-    if (raw === "HLAVNI" || raw === "HLAVNÍ") return DEFAULT_ROOM;
     return raw || DEFAULT_ROOM;
   }
 
   function roomLabel(value) {
+    const meta = getRoomMeta(value);
+    if (meta?.label) return meta.label;
+
     const normalized = normalizeRoom(value);
     if (normalized === "HLAVNÍ") return "Hlavní";
     if (normalized === "SPRÁVA") return "Správa";
@@ -68,19 +77,20 @@
     return normalized;
   }
 
-  function roomCount(value) {
+  function getRoomMeta(value) {
     const normalized = normalizeRoom(value);
-    return roomCounts.find((item) => item.room === normalized)?.count ?? null;
+    return rooms.find((item) => normalizeRoom(item.room) === normalized) || null;
   }
 
   function roomOptions() {
     return rooms
-      .map((item) => normalizeRoom(item))
-      .filter(Boolean)
       .map((item) => {
-        const count = roomCount(item);
-        const label = count === null ? roomLabel(item) : `${roomLabel(item)} (${count})`;
-        return `<option value="${escapeHtml(item)}" ${item === room ? "selected" : ""}>${escapeHtml(label)}</option>`;
+        const value = normalizeRoom(item.room);
+        const lock = item.locked ? "🔒 " : "";
+        const custom = item.isCustom ? " • vlastní" : "";
+        const count = Number.isFinite(Number(item.count)) ? ` (${item.count})` : "";
+        const label = `${lock}${item.label || roomLabel(value)}${count}${custom}`;
+        return `<option value="${escapeHtml(value)}" ${value === room ? "selected" : ""}>${escapeHtml(label)}</option>`;
       })
       .join("");
   }
@@ -95,7 +105,7 @@
       if (!AudioContextClass) return null;
 
       if (!audioContext || audioContext.state === "closed") {
-        audioContext = new AudioContextClass({ latencyHint: "interactive" });
+        audioContext = new AudioContextClass();
       }
 
       if (audioContext.state === "suspended") {
@@ -103,82 +113,70 @@
       }
 
       return audioContext;
-    } catch {
+    } catch (error) {
+      console.warn("[FW TALK] audio unlock error", error);
       return null;
     }
   }
 
-  function preloadPttSound() {
-    if (pttSoundReady || pttSoundFailed) return;
-
-    const audio = new Audio(PTT_SOUND_URL);
-    audio.preload = "auto";
-    audio.volume = PTT_SOUND_VOLUME;
-    audio.addEventListener("canplaythrough", () => { pttSoundReady = true; }, { once: true });
-    audio.addEventListener("error", () => { pttSoundFailed = true; }, { once: true });
-
-    // Většina mobilů zvuk stejně dovolí až po dotyku, ale preload nevadí.
-    try { audio.load(); } catch {}
-  }
-
-  async function playPttPressSound() {
-    // Požadavek: vlastní MP3 při stisknutí PTT.
-    // Soubor: public/sounds/ptt-press.mp3 -> URL /sounds/ptt-press.mp3
+  function fallbackBeep(freq = 700, duration = 60) {
     try {
-      const audio = new Audio(PTT_SOUND_URL);
-      audio.volume = PTT_SOUND_VOLUME;
-      audio.currentTime = 0;
-      await audio.play();
-      return true;
-    } catch {
-      pttSoundFailed = true;
-      return false;
-    }
-  }
-
-  async function fallbackBeep(freq = 880, duration = 55) {
-    if (window.__fwczRadioNoBeep) return;
-    try {
-      const ctx = await unlockAudio();
-      if (!ctx) return;
+      const ctx = audioContext;
+      if (!ctx || ctx.state === "closed") return;
 
       const oscillator = ctx.createOscillator();
       const gain = ctx.createGain();
-
       oscillator.frequency.value = freq;
       oscillator.type = "sine";
-      gain.gain.value = 0.016;
-
+      gain.gain.value = 0.035;
       oscillator.connect(gain);
       gain.connect(ctx.destination);
       oscillator.start();
-      oscillator.stop(ctx.currentTime + duration / 1000);
+      setTimeout(() => {
+        try { oscillator.stop(); } catch {}
+        try { oscillator.disconnect(); } catch {}
+        try { gain.disconnect(); } catch {}
+      }, duration);
+    } catch {}
+  }
+
+  function playPttSound() {
+    if (pttSoundFailed) {
+      fallbackBeep(720, 45);
+      return;
+    }
+
+    try {
+      const audio = new Audio(PTT_SOUND_URL);
+      audio.volume = PTT_SOUND_VOLUME;
+      audio.play().catch(() => {
+        pttSoundFailed = true;
+        fallbackBeep(720, 45);
+      });
     } catch {
-      // nepovinné
+      pttSoundFailed = true;
+      fallbackBeep(720, 45);
     }
   }
 
-  async function pttCue() {
-    const ok = await playPttPressSound();
-    if (!ok) await fallbackBeep(760, 45);
-  }
-
-  function setStatus(text, state = "idle") {
+  function setStatus(text, type = "idle") {
     const el = mount?.querySelector("[data-radio-status]");
     if (!el) return;
     el.textContent = text;
-    el.dataset.state = state;
+    el.dataset.state = type;
   }
 
   function setTx(text) {
     const el = mount?.querySelector("[data-radio-tx]");
     if (!el) return;
-    el.textContent = text || "Nikdo";
+    el.textContent = text;
   }
 
-  function setHiddenByRole(isHidden) {
-    if (!mount) return;
-    mount.style.display = isHidden ? "none" : "";
+  function setConnectButton(isConnected) {
+    const btn = mount?.querySelector("#opsRadioConnect");
+    if (!btn) return;
+    btn.textContent = isConnected ? "Odpojit Talk" : "Připojit Talk";
+    btn.dataset.connected = isConnected ? "1" : "0";
   }
 
   function render() {
@@ -188,32 +186,53 @@
       <div class="ops-radio-card">
         <div class="ops-radio-head">
           <div>
-            <h2>FireWatch Talk</h2>
+            <h2>FireWatch Talk <span class="ops-radio-version">v0.7</span></h2>
             <p>Soukromý hlasový chat FireWatchCZ pro testování a týmovou komunikaci.</p>
             <p class="ops-radio-disclaimer">Není určen pro komunikaci složek IZS ani pro řízení zásahů.</p>
           </div>
-          <div class="ops-radio-live" data-radio-status data-state="idle">Nepřipojeno</div>
+          <div class="ops-radio-live" data-radio-status data-state="idle">Odpojeno</div>
         </div>
 
         <div class="ops-radio-panel">
-          <div class="ops-radio-row">
+          <div class="ops-radio-row ops-radio-row-main">
             <label>
               Místnost
-              <select id="opsRadioRoomLive">${roomOptions()}</select>
+              <select id="opsRadioRoomLive" disabled></select>
             </label>
+
             <div class="ops-radio-tx">
               <span>Právě mluví</span>
               <strong data-radio-tx>Nikdo</strong>
             </div>
-            <button class="ops-radio-connect" id="opsRadioConnect">Připojit</button>
+
+            <button class="ops-radio-connect" id="opsRadioConnect">Připojit Talk</button>
           </div>
 
           <button class="ops-radio-ptt" id="opsRadioPtt" disabled>
             DRŽ PRO MLUVENÍ
           </button>
 
+          <details class="ops-radio-create">
+            <summary>Vytvořit vlastní místnost</summary>
+            <div class="ops-radio-create-grid">
+              <label>
+                Název místnosti
+                <input id="fwTalkNewRoomName" type="text" maxlength="32" placeholder="Např. Tým, Cvičení, Test 2">
+              </label>
+              <label>
+                Heslo místnosti <span>volitelné</span>
+                <input id="fwTalkNewRoomPassword" type="password" maxlength="64" placeholder="Prázdné = bez hesla">
+              </label>
+              <button id="fwTalkCreateRoom" type="button">Vytvořit</button>
+            </div>
+            <p class="ops-radio-hint">Používej neutrální názvy. Nevytvářej místnosti, které působí jako oficiální kanály IZS.</p>
+          </details>
+
           <div class="ops-radio-users">
-            <h3>Připojeni v místnosti</h3>
+            <div class="ops-radio-users-head">
+              <h3>Připojeni v místnosti</h3>
+              <button id="fwTalkDeleteRoom" class="ops-radio-danger" type="button" hidden>Odstranit místnost</button>
+            </div>
             <ul data-radio-users>
               <li>Zatím nikdo</li>
             </ul>
@@ -222,20 +241,20 @@
       </div>
     `;
 
-    mount.querySelector("#opsRadioConnect")?.addEventListener("click", toggleRadioConnection);
+    mount.querySelector("#opsRadioConnect")?.addEventListener("click", toggleConnection);
     mount.querySelector("#opsRadioRoomLive")?.addEventListener("change", changeRoom);
+    mount.querySelector("#fwTalkCreateRoom")?.addEventListener("click", createRoom);
+    mount.querySelector("#fwTalkDeleteRoom")?.addEventListener("click", deleteCurrentRoom);
     setupPttButton();
-    preloadPttSound();
+    refreshRoomSelect();
   }
 
   function setupPttButton() {
     const ptt = mount?.querySelector("#opsRadioPtt");
     if (!ptt) return;
 
-    const down = async (event) => {
+    const down = (event) => {
       event.preventDefault();
-      await unlockAudio();
-      await pttCue();
       requestPtt();
     };
 
@@ -250,170 +269,138 @@
     ptt.addEventListener("contextmenu", (event) => event.preventDefault());
   }
 
-  async function checkOpsAccess() {
-    try {
-      const response = await fetch("/api/auth/me", { credentials: "include" });
-      const data = await response.json().catch(() => ({}));
-      const role = String(data?.user?.role || "public");
-      myName = data?.user?.username || "Uživatel";
-      return role === "ops" || role === "admin";
-    } catch {
-      return false;
-    }
-  }
+  async function ensureMic() {
+    await unlockAudio();
 
-  async function setVisibleByAuth(forceValue) {
-    if (!mount) return;
-
-    const allowed = typeof forceValue === "boolean" ? forceValue : await checkOpsAccess();
-    visible = allowed;
-    setHiddenByRole(!allowed);
-
-    if (!allowed) {
-      manualCloseRequested = true;
-      closeRadio();
-      return;
-    }
-
-    if (!mount.innerHTML.trim()) render();
-  }
-
-  async function prepareLocalAudio() {
     if (localStream) return true;
 
     try {
-      await unlockAudio();
       localStream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
-          autoGainControl: true,
-          channelCount: 1
+          autoGainControl: true
         },
         video: false
       });
       return true;
     } catch (error) {
-      console.warn("[FW TALK] microphone error", error);
+      console.warn("[FW TALK] mic error", error);
       setStatus("Mikrofon není povolený", "error");
       return false;
     }
   }
 
-  function toggleRadioConnection() {
-    if (ws && ws.readyState === WebSocket.OPEN) {
+  async function toggleConnection() {
+    const connected = authenticated && ws && ws.readyState === WebSocket.OPEN;
+    if (connected) {
       manualCloseRequested = true;
       closeRadio();
-      setStatus("Ruční odpojení", "idle");
       return;
     }
 
-    connectRadio(false);
+    manualCloseRequested = false;
+    await connectRadio();
   }
 
-  async function connectRadio(isReconnect = false) {
+  async function connectRadio() {
     if (!visible) return;
-    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
-
-    clearReconnectTimer();
-    manualCloseRequested = false;
 
     await unlockAudio();
 
-    const micOk = await prepareLocalAudio();
-    if (!micOk) return;
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
 
-    ws = new WebSocket(wsUrl());
-    ws.binaryType = "arraybuffer";
-    setStatus(isReconnect ? "Obnovuji spojení…" : "Připojuji…", "connecting");
+    try {
+      ws = new WebSocket(wsUrl());
+      ws.binaryType = "arraybuffer";
+      setStatus("Připojuji…", "connecting");
 
-    ws.addEventListener("message", (event) => {
-      if (typeof event.data === "string") {
-        handleControlMessage(event.data);
-      } else {
-        handleAudioPacket(event.data);
-      }
-    });
+      ws.addEventListener("open", async () => {
+        authenticated = false;
+        await ensureMic();
+      });
 
-    ws.addEventListener("close", () => {
-      authenticated = false;
-      pttActive = false;
-      clientId = null;
-      stopTransmit();
-      stopKeepAlive();
-      setConnectButton(false);
+      ws.addEventListener("message", (event) => {
+        if (typeof event.data === "string") handleControlMessage(event.data);
+        else handleAudioPacket(event.data);
+      });
 
-      const ptt = mount?.querySelector("#opsRadioPtt");
-      if (ptt) ptt.disabled = true;
+      ws.addEventListener("close", () => {
+        authenticated = false;
+        stopTransmit();
+        stopKeepAlive();
+        setConnectButton(false);
+        const select = mount?.querySelector("#opsRadioRoomLive");
+        const ptt = mount?.querySelector("#opsRadioPtt");
+        if (select) select.disabled = true;
+        if (ptt) ptt.disabled = true;
 
-      if (manualCloseRequested || !visible) {
-        setStatus("Nepřipojeno", "idle");
-        return;
-      }
+        if (manualCloseRequested || !visible) {
+          setStatus("Odpojeno", "idle");
+          return;
+        }
 
-      setStatus("Spojení spadlo, obnovuji…", "connecting");
+        setStatus("Spojení spadlo, obnovuji…", "connecting");
+        scheduleReconnect();
+      });
+
+      ws.addEventListener("error", () => {
+        setStatus("Chyba spojení", "error");
+      });
+    } catch (error) {
+      console.warn("[FW TALK] connect error", error);
+      setStatus("Nejde připojit", "error");
       scheduleReconnect();
-    });
-
-    ws.addEventListener("error", () => {
-      if (!manualCloseRequested) setStatus("Chyba spojení", "error");
-    });
+    }
   }
 
   function scheduleReconnect() {
-    clearReconnectTimer();
-    reconnectTimer = window.setTimeout(() => {
-      reconnectTimer = null;
-      connectRadio(true);
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(() => {
+      if (!manualCloseRequested && visible) connectRadio();
     }, RECONNECT_DELAY_MS);
   }
 
-  function clearReconnectTimer() {
-    if (reconnectTimer) window.clearTimeout(reconnectTimer);
-    reconnectTimer = null;
-  }
-
-  function startKeepAlive() {
-    stopKeepAlive();
-    keepAliveTimer = window.setInterval(() => {
-      if (!ws || ws.readyState !== WebSocket.OPEN) return;
-      ws.send(JSON.stringify({ type: "ping", ts: Date.now() }));
-    }, KEEPALIVE_MS);
-  }
-
-  function stopKeepAlive() {
-    if (keepAliveTimer) window.clearInterval(keepAliveTimer);
-    keepAliveTimer = null;
-  }
-
   function closeRadio() {
-    clearReconnectTimer();
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
     stopKeepAlive();
-    try { ws?.close(); } catch {}
+    releasePtt();
+    stopTransmit();
+    stopMic();
+
+    try { ws?.close(1000, "manual close"); } catch {}
     ws = null;
     authenticated = false;
-    pttActive = false;
-    clientId = null;
-    stopTransmit();
-    stopLocalAudio();
     setConnectButton(false);
+    setStatus("Odpojeno", "idle");
     setTx("Nikdo");
+
+    const select = mount?.querySelector("#opsRadioRoomLive");
     const ptt = mount?.querySelector("#opsRadioPtt");
+    if (select) select.disabled = true;
     if (ptt) ptt.disabled = true;
   }
 
-  function stopLocalAudio() {
-    stopTransmit();
+  function stopMic() {
     if (localStream) {
       localStream.getTracks().forEach((track) => track.stop());
     }
     localStream = null;
   }
 
-  function setConnectButton(connected) {
-    const btn = mount?.querySelector("#opsRadioConnect");
-    if (!btn) return;
-    btn.textContent = connected ? "Odpojit" : "Připojit";
+  function startKeepAlive() {
+    stopKeepAlive();
+    keepAliveTimer = setInterval(() => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "ping", ts: Date.now() }));
+      }
+    }, KEEPALIVE_MS);
+  }
+
+  function stopKeepAlive() {
+    clearInterval(keepAliveTimer);
+    keepAliveTimer = null;
   }
 
   function handleControlMessage(raw) {
@@ -421,7 +408,7 @@
     try { data = JSON.parse(raw); } catch { return; }
 
     if (data.type === "ping") {
-      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "pong", ts: Date.now() }));
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "pong", ts: Date.now() }));
       return;
     }
 
@@ -431,17 +418,17 @@
       authenticated = true;
       clientId = data.clientId;
       myName = data.name || myName;
-      if (Array.isArray(data.rooms)) rooms = data.rooms.map(normalizeRoom);
-      else if (Array.isArray(data.channels)) rooms = data.channels.map(normalizeRoom);
-      if (Array.isArray(data.roomCounts)) roomCounts = data.roomCounts;
-
-      room = normalizeRoom(data.room || data.channel || room);
-      if (!rooms.includes(room)) room = rooms[0] || DEFAULT_ROOM;
+      myRole = data.role || myRole;
+      updateRooms(data.rooms || data.roomCounts || data.channels || []);
+      room = normalizeRoom(data.currentRoom || data.room || data.channel || room);
+      if (!getRoomMeta(room) && rooms[0]) room = normalizeRoom(rooms[0].room);
       localStorage.setItem(STORAGE_ROOM, room);
 
       refreshRoomSelect();
 
+      const select = mount?.querySelector("#opsRadioRoomLive");
       const ptt = mount?.querySelector("#opsRadioPtt");
+      if (select) select.disabled = false;
       if (ptt) ptt.disabled = false;
 
       setConnectButton(true);
@@ -458,25 +445,56 @@
       return;
     }
 
-    if (data.type === "error") {
+    if (data.type === "error" || data.type === "room_create_error") {
       setStatus(data.message || "Chyba", "error");
+      return;
+    }
+
+    if (data.type === "room_password_required") {
+      askRoomPasswordAndJoin(data.room, data.label);
+      return;
+    }
+
+    if (data.type === "room_created") {
+      setStatus(`Místnost vytvořena: ${data.label || data.room}`, "ok");
+      const nameInput = mount?.querySelector("#fwTalkNewRoomName");
+      const passInput = mount?.querySelector("#fwTalkNewRoomPassword");
+      if (nameInput) nameInput.value = "";
+      if (passInput) passInput.value = "";
+      if (data.room) joinRoom(data.room, "");
+      return;
+    }
+
+    if (data.type === "room_joined") {
+      room = normalizeRoom(data.room || room);
+      localStorage.setItem(STORAGE_ROOM, room);
+      resetPlaybackClock();
+      refreshRoomSelect();
+      setStatus(`Připojeno: ${roomLabel(room)}`, "ok");
+      return;
+    }
+
+    if (data.type === "room_deleted_current") {
+      if (data.room) room = normalizeRoom(data.room);
+      localStorage.setItem(STORAGE_ROOM, room);
+      setStatus(data.message || "Místnost byla odstraněna", "error");
       refreshRoomSelect();
       return;
     }
 
     if (data.type === "radio_state") {
-      if (Array.isArray(data.rooms)) rooms = data.rooms.map(normalizeRoom);
-      else if (Array.isArray(data.channels)) rooms = data.channels.map(normalizeRoom);
-      if (Array.isArray(data.roomCounts)) roomCounts = data.roomCounts;
+      updateRooms(data.rooms || data.roomCounts || data.channels || []);
+      const current = normalizeRoom(data.currentRoom || room);
+      if (current && current !== room && getRoomMeta(current)) {
+        room = current;
+        localStorage.setItem(STORAGE_ROOM, room);
+      }
       refreshRoomSelect();
 
-      const stateRoom = normalizeRoom(data.room || data.channel);
-      if (stateRoom === room) {
-        const isMe = data.txClientId && data.txClientId === clientId;
-        setStatus(`Připojeno: ${roomLabel(room)}`, data.transmitting ? (isMe ? "tx" : "rx") : "ok");
-        setTx(data.transmitting ? (data.txName || "Někdo") : "Nikdo");
-        renderUsers(Array.isArray(data.clients) ? data.clients : []);
-      }
+      const isMe = data.txClientId && data.txClientId === clientId;
+      setStatus(`Připojeno: ${roomLabel(room)}`, data.transmitting ? (isMe ? "tx" : "rx") : "ok");
+      setTx(data.transmitting ? (data.txName || "Někdo") : "Nikdo");
+      renderUsers(Array.isArray(data.clients) ? data.clients : []);
       return;
     }
 
@@ -512,13 +530,48 @@
     }
   }
 
+  function updateRooms(payload) {
+    if (!Array.isArray(payload)) return;
+
+    rooms = payload.map((item) => {
+      if (typeof item === "string") {
+        return { room: normalizeRoom(item), label: roomLabel(item), count: null, locked: false, hasPassword: false };
+      }
+      return {
+        room: normalizeRoom(item.room || item.channel || item.label),
+        label: item.label || roomLabel(item.room || item.channel),
+        count: Number.isFinite(Number(item.count)) ? Number(item.count) : null,
+        transmitting: Boolean(item.transmitting),
+        txName: item.txName || null,
+        hasPassword: Boolean(item.hasPassword),
+        locked: Boolean(item.locked),
+        isSystem: Boolean(item.isSystem),
+        isCustom: Boolean(item.isCustom),
+        adminOnly: Boolean(item.adminOnly),
+        createdByName: item.createdByName || null,
+        createdByMe: Boolean(item.createdByMe)
+      };
+    }).filter((item) => item.room);
+  }
+
   function refreshRoomSelect() {
     const select = mount?.querySelector("#opsRadioRoomLive");
     if (!select) return;
-    const oldValue = select.value;
     select.innerHTML = roomOptions();
-    select.value = rooms.includes(room) ? room : (rooms[0] || DEFAULT_ROOM);
-    if (select.value !== oldValue && oldValue === room) select.value = room;
+    if (rooms.some((item) => normalizeRoom(item.room) === room)) select.value = room;
+    else if (rooms[0]) {
+      room = normalizeRoom(rooms[0].room);
+      select.value = room;
+    }
+    updateDeleteButton();
+  }
+
+  function updateDeleteButton() {
+    const btn = mount?.querySelector("#fwTalkDeleteRoom");
+    if (!btn) return;
+    const meta = getRoomMeta(room);
+    const canDelete = meta?.isCustom && (meta.createdByMe || myRole === "admin");
+    btn.hidden = !canDelete;
   }
 
   function renderUsers(users) {
@@ -536,13 +589,65 @@
   }
 
   function changeRoom(event) {
-    room = normalizeRoom(event.target.value || DEFAULT_ROOM);
-    localStorage.setItem(STORAGE_ROOM, room);
+    const nextRoom = normalizeRoom(event.target.value || DEFAULT_ROOM);
+    const meta = getRoomMeta(nextRoom);
+    if (!meta) return;
+
+    if (meta.locked) {
+      askRoomPasswordAndJoin(nextRoom, meta.label || nextRoom);
+      event.target.value = room;
+      return;
+    }
+
+    joinRoom(nextRoom, "");
+  }
+
+  function askRoomPasswordAndJoin(targetRoom, label) {
+    const password = window.prompt(`Místnost „${label || targetRoom}“ je chráněná heslem. Zadej heslo:`);
+    if (password === null) {
+      refreshRoomSelect();
+      return;
+    }
+    joinRoom(targetRoom, password);
+  }
+
+  function joinRoom(targetRoom, password = "") {
+    const nextRoom = normalizeRoom(targetRoom);
     resetPlaybackClock();
 
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "join_room", room }));
-      setStatus(`Přepínám na ${roomLabel(room)}…`, "connecting");
+      ws.send(JSON.stringify({ type: "join_room", room: nextRoom, password }));
+      setStatus(`Přepínám na ${roomLabel(nextRoom)}…`, "connecting");
+    }
+  }
+
+  function createRoom() {
+    if (!authenticated || !ws || ws.readyState !== WebSocket.OPEN) {
+      setStatus("Nejdřív připoj Talk", "error");
+      return;
+    }
+
+    const name = cleanLabel(mount?.querySelector("#fwTalkNewRoomName")?.value || "");
+    const password = String(mount?.querySelector("#fwTalkNewRoomPassword")?.value || "");
+
+    if (name.length < 2) {
+      setStatus("Zadej název místnosti", "error");
+      return;
+    }
+
+    ws.send(JSON.stringify({ type: "create_room", name, password }));
+    setStatus("Vytvářím místnost…", "connecting");
+  }
+
+  function deleteCurrentRoom() {
+    const meta = getRoomMeta(room);
+    if (!meta?.isCustom) return;
+
+    const ok = window.confirm(`Opravdu odstranit místnost „${meta.label || room}“? Připojení uživatelé budou přesunuti do hlavní místnosti.`);
+    if (!ok) return;
+
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "delete_room", room }));
     }
   }
 
@@ -552,6 +657,7 @@
     const ptt = mount?.querySelector("#opsRadioPtt");
     if (ptt) ptt.classList.add("is-transmitting");
 
+    playPttSound();
     ws.send(JSON.stringify({ type: "ptt_request", room }));
   }
 
@@ -618,93 +724,92 @@
     const out = new Int16Array(outLength);
 
     for (let i = 0; i < outLength; i++) {
-      const src = i * ratio;
-      const left = Math.floor(src);
-      const right = Math.min(left + 1, input.length - 1);
-      const weight = src - left;
-      const sample = input[left] * (1 - weight) + input[right] * weight;
-      out[i] = floatToInt16(sample);
+      const start = Math.floor(i * ratio);
+      const end = Math.min(input.length, Math.floor((i + 1) * ratio));
+      let sum = 0;
+      let count = 0;
+      for (let j = start; j < end; j++) {
+        sum += input[j];
+        count++;
+      }
+      out[i] = floatToInt16(count ? sum / count : input[start] || 0);
     }
 
     return out;
   }
 
-  function floatToInt16(sample) {
-    const s = Math.max(-1, Math.min(1, sample || 0));
-    return s < 0 ? Math.round(s * 32768) : Math.round(s * 32767);
+  function floatToInt16(value) {
+    const clamped = Math.max(-1, Math.min(1, value || 0));
+    return clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff;
   }
 
   function makeAudioPacket(samples, sampleRate) {
-    const packet = new ArrayBuffer(PACKET_HEADER_SIZE + samples.byteLength);
-    const bytes = new Uint8Array(packet);
+    const bytes = new Uint8Array(PACKET_HEADER_SIZE + samples.byteLength);
     bytes[0] = MAGIC[0];
     bytes[1] = MAGIC[1];
     bytes[2] = MAGIC[2];
     bytes[3] = MAGIC[3];
 
-    const view = new DataView(packet);
+    const view = new DataView(bytes.buffer);
     view.setUint16(4, sampleRate, true);
-    view.setUint16(6, 1, true);
+    view.setUint16(6, samples.length, true);
     view.setUint32(8, packetSeq++, true);
-    bytes.set(new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength), PACKET_HEADER_SIZE);
-    return packet;
+    bytes.set(new Uint8Array(samples.buffer), PACKET_HEADER_SIZE);
+    return bytes.buffer;
   }
 
-  async function handleAudioPacket(packet) {
-    if (!packet || packet.byteLength <= PACKET_HEADER_SIZE) return;
+  function resetPlaybackClock() {
+    if (!audioContext) return;
+    nextPlaybackTime = audioContext.currentTime + 0.05;
+  }
 
+  async function handleAudioPacket(data) {
     const ctx = await unlockAudio();
     if (!ctx) return;
 
-    const bytes = new Uint8Array(packet);
-    if (bytes[0] !== MAGIC[0] || bytes[1] !== MAGIC[1] || bytes[2] !== MAGIC[2] || bytes[3] !== MAGIC[3]) {
-      return;
-    }
+    const buffer = data instanceof ArrayBuffer ? data : await data.arrayBuffer?.();
+    if (!buffer || buffer.byteLength <= PACKET_HEADER_SIZE) return;
 
-    const view = new DataView(packet);
+    const bytes = new Uint8Array(buffer);
+    if (bytes[0] !== MAGIC[0] || bytes[1] !== MAGIC[1] || bytes[2] !== MAGIC[2]) return;
+
+    const view = new DataView(buffer);
     const sampleRate = view.getUint16(4, true) || TARGET_SAMPLE_RATE;
-    const payloadBytes = packet.byteLength - PACKET_HEADER_SIZE;
-    if (payloadBytes < 2) return;
+    const sampleCount = view.getUint16(6, true);
+    if (!sampleCount) return;
 
-    const samples = new Int16Array(packet, PACKET_HEADER_SIZE, Math.floor(payloadBytes / 2));
-    const audioBuffer = ctx.createBuffer(1, samples.length, sampleRate);
-    const channelData = audioBuffer.getChannelData(0);
-
-    for (let i = 0; i < samples.length; i++) {
-      channelData[i] = samples[i] / 32768;
+    const pcm = new Int16Array(buffer, PACKET_HEADER_SIZE, sampleCount);
+    const audioBuffer = ctx.createBuffer(1, sampleCount, sampleRate);
+    const channel = audioBuffer.getChannelData(0);
+    for (let i = 0; i < sampleCount; i++) {
+      channel[i] = Math.max(-1, Math.min(1, pcm[i] / 32768));
     }
 
     const source = ctx.createBufferSource();
     source.buffer = audioBuffer;
     source.connect(ctx.destination);
 
-    const now = ctx.currentTime;
-    if (!nextPlaybackTime || nextPlaybackTime < now || nextPlaybackTime > now + 0.8) {
-      nextPlaybackTime = now + 0.045;
-    }
-
-    source.start(nextPlaybackTime);
-    nextPlaybackTime += audioBuffer.duration;
+    const startAt = Math.max(ctx.currentTime + 0.02, nextPlaybackTime || ctx.currentTime + 0.02);
+    source.start(startAt);
+    nextPlaybackTime = startAt + audioBuffer.duration;
   }
 
-  function resetPlaybackClock() {
-    nextPlaybackTime = 0;
-  }
-
-  window.firewatchOpsRadioSetVisible = async function firewatchOpsRadioSetVisible(isOpsAllowed) {
-    await setVisibleByAuth(Boolean(isOpsAllowed));
-  };
-
-  document.addEventListener("visibilitychange", () => {
-    // Neodpojovat při přepnutí aplikace/záložky. Jen uvolnit PTT, pokud právě drží.
-    if (document.hidden && pttActive) releasePtt();
-  });
-
-  document.addEventListener("DOMContentLoaded", async () => {
+  function init() {
     mount = document.getElementById("opsRadioMount");
     if (!mount) return;
-    mount.style.display = "none";
+
     render();
-    await setVisibleByAuth();
-  });
+
+    window.firewatchOpsRadioSetVisible = function (nextVisible) {
+      visible = Boolean(nextVisible);
+      mount.style.display = visible ? "" : "none";
+      if (!visible) {
+        manualCloseRequested = true;
+        closeRadio();
+      }
+    };
+  }
+
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
+  else init();
 })();

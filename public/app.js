@@ -1469,7 +1469,7 @@ async function refreshMe() {
     showEl("adminBtn", role === "admin");
     showEl("audioBtn", isOps);
     showEl("briefingBtn", isOps);
-    window.firewatchOpsRadioSetVisible?.(isOps);
+    window.firewatchOpsRadioSetVisible?.(true);
   } else {
     setModePill("PUBLIC");
     showEl("loginBtn", true);

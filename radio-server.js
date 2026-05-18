@@ -5,17 +5,25 @@ import {
   deleteSessionByTokenSha
 } from "./db.js";
 
-// FireWatch Talk v0.6
-// Soukromý týmový hlasový chat FireWatchCZ pro testování a týmovou komunikaci.
+// FireWatch Talk v0.7
+// Soukromý týmový hlasový chat FireWatchCZ.
 // Není určen pro komunikaci složek IZS ani pro řízení zásahů.
 // Přenos hlasu: server-relay PCM přes WebSocket.
+// Nově: vlastní místnosti pro přihlášené uživatele, volitelně s heslem.
 
-const DEFAULT_ROOMS = ["HLAVNÍ", "SPRÁVA", "TEST"];
 const DEFAULT_ROOM = "HLAVNÍ";
-const ADMIN_ONLY_ROOMS = new Set(["SPRÁVA"]);
+const SYSTEM_ROOMS = [
+  { room: "HLAVNÍ", label: "Hlavní", isSystem: true, adminOnly: false },
+  { room: "SPRÁVA", label: "Správa", isSystem: true, adminOnly: true },
+  { room: "TEST", label: "Test", isSystem: true, adminOnly: false }
+];
+
 const SESSION_COOKIE = process.env.SESSION_COOKIE_NAME || "FWSESS";
 const HEARTBEAT_INTERVAL_MS = 25000;
 const HEARTBEAT_GRACE_MS = 70000;
+const MAX_CUSTOM_ROOMS = Math.max(5, Number(process.env.FIREWATCH_TALK_MAX_CUSTOM_ROOMS || 50));
+const MAX_ROOM_NAME_LENGTH = 32;
+const ROOM_PASSWORD_SALT = process.env.FIREWATCH_TALK_ROOM_PASSWORD_SALT || "firewatch-talk-v07";
 
 function parseCookiesFromHeader(headerValue) {
   const out = {};
@@ -52,15 +60,12 @@ async function authFromWsRequest(req) {
 
     if (!row.is_enabled) return null;
 
-    const role = String(row.role || "public");
-    if (!["ops", "admin"].includes(role)) return null;
-
     return {
       sessionId: row.session_id,
       user: {
         id: row.user_id,
         username: row.username,
-        role
+        role: String(row.role || "public")
       }
     };
   } catch (error) {
@@ -77,59 +82,101 @@ function safeJsonParse(raw) {
   }
 }
 
-function normalizeRoom(room) {
-  const value = String(room || DEFAULT_ROOM).trim().toUpperCase();
-
-  // Zpětná kompatibilita se starými uloženými názvy v prohlížeči.
-  if (["OPS", "JEDNOTKA", "VELITEL", "TECHNICKY"].includes(value)) return DEFAULT_ROOM;
-  if (["ADMIN", "SPRAVA", "SPRÁVA"].includes(value)) return "SPRÁVA";
-  if (value === "TEST") return "TEST";
-
-  return value || DEFAULT_ROOM;
-}
-
-function roomAllowedForRole(room, role) {
-  if (ADMIN_ONLY_ROOMS.has(room)) return role === "admin";
-  return true;
-}
-
-function publicRoomsForRole(rooms, role) {
-  return rooms.filter((room) => roomAllowedForRole(room, role));
-}
-
-function firstAllowedRoom(rooms, role, preferredRoom = DEFAULT_ROOM) {
-  const normalized = normalizeRoom(preferredRoom);
-  if (rooms.includes(normalized) && roomAllowedForRole(normalized, role)) return normalized;
-
-  if (rooms.includes(DEFAULT_ROOM) && roomAllowedForRole(DEFAULT_ROOM, role)) return DEFAULT_ROOM;
-
-  return publicRoomsForRole(rooms, role)[0] || rooms[0];
-}
-
 function sendJson(ws, data) {
   if (!ws || ws.readyState !== ws.OPEN) return;
   ws.send(JSON.stringify(data));
 }
 
+function removeDiacritics(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function cleanRoomLabel(value) {
+  return String(value || "")
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, MAX_ROOM_NAME_LENGTH);
+}
+
+function normalizeRoom(value) {
+  const raw = cleanRoomLabel(value).toUpperCase();
+  const ascii = removeDiacritics(raw);
+
+  if (["OPS", "JEDNOTKA", "VELITEL", "TECHNICKY", "HLAVNI", "HLAVNÍ"].includes(ascii)) return DEFAULT_ROOM;
+  if (["ADMIN", "SPRAVA", "SPRÁVA"].includes(ascii)) return "SPRÁVA";
+  if (ascii === "TEST") return "TEST";
+
+  const normalized = raw
+    .replace(/[<>"'`\\/|?*]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return normalized || DEFAULT_ROOM;
+}
+
+function roomAllowedForRole(roomMeta, role) {
+  if (!roomMeta) return false;
+  if (roomMeta.adminOnly) return role === "admin";
+  return true;
+}
+
+function hashRoomPassword(room, password) {
+  return sha256Hex(`${ROOM_PASSWORD_SALT}:${room}:${String(password || "")}`);
+}
+
+function isStrongEnoughRoomName(room) {
+  if (!room || room.length < 2) return false;
+  if (["OPS", "IZS", "HZS", "JPO", "ZZS", "PCR", "PČR", "KOPIS", "OPIS"].includes(removeDiacritics(room).toUpperCase())) return false;
+  return true;
+}
+
+function isProtectedRoomUnlockedForClient(roomMeta, client, password) {
+  if (!roomMeta?.hasPassword) return true;
+  if (client.unlockedRooms.has(roomMeta.room)) return true;
+  if (!password) return false;
+  return hashRoomPassword(roomMeta.room, password) === roomMeta.passwordHash;
+}
+
+function publicClientName(client) {
+  return client?.name || "Uživatel";
+}
+
 export function attachOpsRadio(server, options = {}) {
   const enabled = String(process.env.RADIO_ENABLED || options.enabled || "true").toLowerCase() !== "false";
-  const rooms = Array.isArray(options.rooms) && options.rooms.length
-    ? options.rooms.map(normalizeRoom)
-    : DEFAULT_ROOMS;
+
+  const rooms = new Map();
+  const roomState = new Map();
+  const clients = new Map();
+
+  for (const room of SYSTEM_ROOMS) {
+    rooms.set(room.room, { ...room, createdAt: Date.now(), createdByUserId: null, createdByName: "FireWatch" });
+    roomState.set(room.room, { txClientId: null, txName: null });
+  }
 
   const wss = new WebSocketServer({
     server,
     path: "/ops-radio"
   });
 
-  const clients = new Map();
-  const roomState = new Map();
+  function getRoomMeta(room) {
+    return rooms.get(normalizeRoom(room));
+  }
 
-  for (const room of rooms) {
-    roomState.set(room, {
-      txClientId: null,
-      txName: null
-    });
+  function getRoomMetaListForRole(role) {
+    return [...rooms.values()].filter((roomMeta) => roomAllowedForRole(roomMeta, role));
+  }
+
+  function firstAllowedRoom(role, preferredRoom = DEFAULT_ROOM) {
+    const preferred = getRoomMeta(preferredRoom);
+    if (preferred && roomAllowedForRole(preferred, role)) return preferred.room;
+
+    const fallback = getRoomMeta(DEFAULT_ROOM);
+    if (fallback && roomAllowedForRole(fallback, role)) return fallback.room;
+
+    return getRoomMetaListForRole(role)[0]?.room || DEFAULT_ROOM;
   }
 
   function getClientsInRoom(room) {
@@ -144,40 +191,58 @@ export function attachOpsRadio(server, options = {}) {
       }));
   }
 
-  function getRoomCounts() {
-    return rooms.map((room) => ({
-      room,
-      count: [...clients.values()].filter((client) => client.room === room).length,
-      transmitting: Boolean(roomState.get(room)?.txClientId),
-      txName: roomState.get(room)?.txName || null
-    }));
+  function roomDescriptorForClient(roomMeta, client) {
+    const state = roomState.get(roomMeta.room) || { txClientId: null, txName: null };
+    return {
+      room: roomMeta.room,
+      label: roomMeta.label || roomMeta.room,
+      count: [...clients.values()].filter((item) => item.room === roomMeta.room).length,
+      transmitting: Boolean(state.txClientId),
+      txName: state.txName || null,
+      hasPassword: Boolean(roomMeta.hasPassword),
+      locked: Boolean(roomMeta.hasPassword && !client.unlockedRooms.has(roomMeta.room) && client.room !== roomMeta.room),
+      isSystem: Boolean(roomMeta.isSystem),
+      isCustom: !roomMeta.isSystem,
+      adminOnly: Boolean(roomMeta.adminOnly),
+      createdByName: roomMeta.createdByName || null,
+      createdByMe: Boolean(roomMeta.createdByUserId && String(roomMeta.createdByUserId) === String(client.userId))
+    };
+  }
+
+  function getRoomListForClient(client) {
+    return getRoomMetaListForRole(client.role)
+      .map((roomMeta) => roomDescriptorForClient(roomMeta, client));
+  }
+
+  function sendClientState(client, onlyRoom = null) {
+    const currentRoomMeta = getRoomMeta(client.room);
+    const st = roomState.get(client.room) || { txClientId: null, txName: null };
+
+    sendJson(client.ws, {
+      type: "radio_state",
+      enabled,
+      room: onlyRoom || client.room,
+      channel: onlyRoom || client.room,
+      currentRoom: client.room,
+      rooms: getRoomListForClient(client),
+      channels: getRoomListForClient(client).map((item) => item.room),
+      roomCounts: getRoomListForClient(client),
+      transmitting: Boolean(st.txClientId),
+      txClientId: st.txClientId,
+      txName: st.txName,
+      clients: currentRoomMeta ? getClientsInRoom(client.room) : []
+    });
   }
 
   function broadcastRoomState(room) {
-    const st = roomState.get(room) || { txClientId: null, txName: null };
-
     for (const client of clients.values()) {
-      const clientRooms = publicRoomsForRole(rooms, client.role);
-      const payload = {
-        type: "radio_state",
-        enabled,
-        room,
-        channel: room,
-        rooms: clientRooms,
-        channels: clientRooms,
-        roomCounts: getRoomCounts().filter((item) => clientRooms.includes(item.room)),
-        transmitting: Boolean(st.txClientId),
-        txClientId: st.txClientId,
-        txName: st.txName,
-        clients: getClientsInRoom(client.room)
-      };
-
-      if (client.room === room) sendJson(client.ws, payload);
+      if (!roomAllowedForRole(getRoomMeta(room), client.role)) continue;
+      sendClientState(client, room);
     }
   }
 
-  function broadcastAllRoomCounts() {
-    for (const room of rooms) broadcastRoomState(room);
+  function broadcastAllRoomStates() {
+    for (const room of rooms.keys()) broadcastRoomState(room);
   }
 
   function releaseTx(client, reason = "release") {
@@ -204,6 +269,20 @@ export function attachOpsRadio(server, options = {}) {
     }
   }
 
+  function moveClientsOutOfRoom(room) {
+    for (const client of clients.values()) {
+      if (client.room !== room) continue;
+      releaseTx(client, "room_deleted");
+      client.room = firstAllowedRoom(client.role, DEFAULT_ROOM);
+      client.unlockedRooms.add(client.room);
+      sendJson(client.ws, {
+        type: "room_deleted_current",
+        message: "Místnost byla odstraněna. Byl jsi přesunut do hlavní místnosti.",
+        room: client.room
+      });
+    }
+  }
+
   const heartbeat = setInterval(() => {
     const now = Date.now();
     for (const client of clients.values()) {
@@ -221,30 +300,33 @@ export function attachOpsRadio(server, options = {}) {
   wss.on("connection", async (ws, req) => {
     if (!enabled) {
       sendJson(ws, { type: "error", message: "FireWatch Talk je na serveru vypnutý." });
-      ws.close(1008, "radio disabled");
+      ws.close(1008, "talk disabled");
       return;
     }
 
     const auth = await authFromWsRequest(req);
     if (!auth?.user) {
-      sendJson(ws, { type: "auth_error", message: "FireWatch Talk je dostupný jen po přihlášení jako ops/admin." });
+      sendJson(ws, { type: "auth_error", message: "FireWatch Talk je dostupný jen pro přihlášené uživatele." });
       ws.close(1008, "unauthorized");
       return;
     }
 
     const id = crypto.randomUUID();
-    const userRooms = publicRoomsForRole(rooms, auth.user.role);
-    const initialRoom = firstAllowedRoom(rooms, auth.user.role, DEFAULT_ROOM);
+    const initialRoom = firstAllowedRoom(auth.user.role, DEFAULT_ROOM);
 
     const client = {
       id,
       ws,
+      userId: auth.user.id,
       name: auth.user.username || "Uživatel",
       role: auth.user.role,
       room: initialRoom,
+      unlockedRooms: new Set([initialRoom, DEFAULT_ROOM, "TEST"]),
       createdAt: Date.now(),
       lastSeenAt: Date.now()
     };
+
+    if (client.role === "admin") client.unlockedRooms.add("SPRÁVA");
 
     clients.set(id, client);
 
@@ -256,12 +338,13 @@ export function attachOpsRadio(server, options = {}) {
       role: client.role,
       room: client.room,
       channel: client.room,
-      rooms: userRooms,
-      channels: userRooms,
-      roomCounts: getRoomCounts().filter((item) => userRooms.includes(item.room))
+      currentRoom: client.room,
+      rooms: getRoomListForClient(client),
+      channels: getRoomListForClient(client).map((item) => item.room),
+      roomCounts: getRoomListForClient(client)
     });
 
-    broadcastAllRoomCounts();
+    broadcastAllRoomStates();
 
     ws.on("message", (message, isBinary) => {
       client.lastSeenAt = Date.now();
@@ -293,17 +376,97 @@ export function attachOpsRadio(server, options = {}) {
         return;
       }
 
+      if (data.type === "create_room") {
+        const label = cleanRoomLabel(data.name || data.label || "");
+        const nextRoom = normalizeRoom(label);
+        const password = String(data.password || "");
+
+        if (!isStrongEnoughRoomName(nextRoom)) {
+          sendJson(ws, { type: "room_create_error", message: "Zadej neutrální název místnosti alespoň 2 znaky. Nepoužívej názvy složek IZS." });
+          return;
+        }
+
+        if (rooms.has(nextRoom)) {
+          sendJson(ws, { type: "room_create_error", message: "Taková místnost už existuje." });
+          return;
+        }
+
+        const customCount = [...rooms.values()].filter((roomMeta) => !roomMeta.isSystem).length;
+        if (customCount >= MAX_CUSTOM_ROOMS) {
+          sendJson(ws, { type: "room_create_error", message: "Limit vlastních místností je vyčerpaný." });
+          return;
+        }
+
+        const roomMeta = {
+          room: nextRoom,
+          label: label || nextRoom,
+          isSystem: false,
+          adminOnly: false,
+          createdAt: Date.now(),
+          createdByUserId: client.userId,
+          createdByName: client.name,
+          hasPassword: password.length > 0,
+          passwordHash: password.length > 0 ? hashRoomPassword(nextRoom, password) : null
+        };
+
+        rooms.set(nextRoom, roomMeta);
+        roomState.set(nextRoom, { txClientId: null, txName: null });
+        client.unlockedRooms.add(nextRoom);
+
+        sendJson(ws, { type: "room_created", room: nextRoom, label: roomMeta.label, hasPassword: roomMeta.hasPassword });
+        broadcastAllRoomStates();
+        return;
+      }
+
+      if (data.type === "delete_room") {
+        const targetRoom = normalizeRoom(data.room);
+        const roomMeta = getRoomMeta(targetRoom);
+
+        if (!roomMeta || roomMeta.isSystem) {
+          sendJson(ws, { type: "error", message: "Systémovou místnost nejde odstranit." });
+          return;
+        }
+
+        const isOwner = String(roomMeta.createdByUserId) === String(client.userId);
+        if (!isOwner && client.role !== "admin") {
+          sendJson(ws, { type: "error", message: "Místnost může odstranit jen autor nebo admin." });
+          return;
+        }
+
+        moveClientsOutOfRoom(targetRoom);
+        rooms.delete(targetRoom);
+        roomState.delete(targetRoom);
+        for (const c of clients.values()) c.unlockedRooms.delete(targetRoom);
+        broadcastAllRoomStates();
+        return;
+      }
+
       if (data.type === "join_channel" || data.type === "join_room") {
         const nextRoom = normalizeRoom(data.room || data.channel);
-        if (!rooms.includes(nextRoom) || !roomAllowedForRole(nextRoom, client.role)) {
+        const roomMeta = getRoomMeta(nextRoom);
+
+        if (!roomMeta || !roomAllowedForRole(roomMeta, client.role)) {
           sendJson(ws, { type: "error", message: "Do této místnosti nemáš přístup." });
           return;
         }
+
+        if (!isProtectedRoomUnlockedForClient(roomMeta, client, data.password)) {
+          sendJson(ws, {
+            type: "room_password_required",
+            room: nextRoom,
+            label: roomMeta.label || nextRoom,
+            message: "Tato místnost je chráněná heslem."
+          });
+          return;
+        }
+
+        client.unlockedRooms.add(nextRoom);
 
         const oldRoom = client.room;
         releaseTx(client, "room_change");
         client.room = nextRoom;
 
+        sendJson(ws, { type: "room_joined", room: client.room, label: roomMeta.label || client.room });
         broadcastRoomState(oldRoom);
         broadcastRoomState(nextRoom);
         return;
@@ -325,7 +488,7 @@ export function attachOpsRadio(server, options = {}) {
         }
 
         st.txClientId = client.id;
-        st.txName = client.name;
+        st.txName = publicClientName(client);
 
         for (const other of clients.values()) {
           if (other.room === client.room) {
@@ -354,6 +517,7 @@ export function attachOpsRadio(server, options = {}) {
       const oldRoom = client.room;
       clients.delete(id);
       broadcastRoomState(oldRoom);
+      broadcastAllRoomStates();
     });
 
     ws.on("error", () => {
@@ -361,9 +525,10 @@ export function attachOpsRadio(server, options = {}) {
       const oldRoom = client.room;
       clients.delete(id);
       broadcastRoomState(oldRoom);
+      broadcastAllRoomStates();
     });
   });
 
-  console.log(`[FW TALK] WebSocket/PCM relay běží na /ops-radio | enabled=${enabled} | rooms=${rooms.join(", ")}`);
+  console.log(`[FW TALK] v0.7 WebSocket/PCM relay běží na /ops-radio | enabled=${enabled} | customRooms=true`);
   return { wss };
 }
