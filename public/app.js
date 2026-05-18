@@ -2322,12 +2322,11 @@ function toggleTvMode() {
   loadMasterMute();
   applyMasterMute();
   wireAudioUiOnce();
-wirePublicGuestUiOnce();
   syncAudioUi();
 
   // buttons
-  document.getElementById("loginBtn")?.addEventListener("click", () => openModal("login"));
-  document.getElementById("registerBtn")?.addEventListener("click", () => openModal("register"));
+  document.getElementById("loginBtn")?.addEventListener("click", () => clickElementById("loginBtn"));
+  document.getElementById("registerBtn")?.addEventListener("click", () => clickElementById("registerBtn"));
   document.getElementById("requestOpsBtn")?.addEventListener("click", requestOpsAccess);
   document.getElementById("logoutBtn")?.addEventListener("click", doLogout);
   document.getElementById("adminBtn")?.addEventListener("click", async () => {
@@ -2385,4 +2384,29 @@ wirePublicGuestUiOnce();
   await syncPublicGuestUi();
 refreshMe();
   await sendVisitPing();
+})();
+
+// FireWatchCZ guest-mode safety wiring.
+// This fallback keeps top-bar buttons working even if earlier init code changes.
+(function firewatchSafetyWireButtons() {
+  function byId(id) { return document.getElementById(id); }
+  function on(id, fn) {
+    const el = byId(id);
+    if (!el) return;
+    if (el.dataset.fwSafetyWired === "1") return;
+    el.dataset.fwSafetyWired = "1";
+    el.addEventListener("click", fn);
+  }
+
+  on("guestContinueBtn", () => {
+    localStorage.setItem(LS_GUEST_HERO_DISMISSED, "1");
+    syncPublicGuestUi?.();
+  });
+
+  on("guestLoginBtn", () => byId("loginBtn")?.click());
+  on("guestRegisterBtn", () => byId("registerBtn")?.click());
+  on("talkLockedLoginBtn", () => byId("loginBtn")?.click());
+  on("talkLockedRegisterBtn", () => byId("registerBtn")?.click());
+
+  syncPublicGuestUi?.();
 })();
