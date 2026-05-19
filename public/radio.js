@@ -1,4 +1,4 @@
-// FireWatch Talk v0.9
+// FireWatch Talk v1.7
 // Soukromý týmový hlasový chat FireWatchCZ.
 // Přenos hlasu: server-relay PCM přes WebSocket.
 // Vlastní zvuk PTT: nahraj soubor do /public/sounds/ptt-press.mp3.
@@ -9,6 +9,7 @@
   const STORAGE_STATUS = "firewatch_talk_status_v1";
   const STORAGE_DND = "firewatch_talk_dnd_v1";
   const STORAGE_FAVORITES = "firewatch_talk_favorite_rooms_v1";
+  const STORAGE_COMPACT = "firewatch_talk_compact_v1";
   const TARGET_SAMPLE_RATE = 16000;
   const PROCESSOR_BUFFER_SIZE = 2048;
   const PACKET_HEADER_SIZE = 12;
@@ -47,6 +48,7 @@
   let myStatus = localStorage.getItem(STORAGE_STATUS) || "online";
   let dndEnabled = localStorage.getItem(STORAGE_DND) === "true";
   let favoriteRooms = loadFavoriteRooms();
+  let compactMode = localStorage.getItem(STORAGE_COMPACT) === "true";
 
   function wsUrl() {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -138,6 +140,89 @@
     btn.classList.toggle("is-active", active);
     btn.title = active ? "Odebrat z oblíbených" : "Přidat do oblíbených";
   }
+
+
+  function updateCompactMode() {
+    const card = mount?.querySelector(".ops-radio-card");
+    const btn = mount?.querySelector("#fwTalkCompactMode");
+    if (!card || !btn) return;
+
+    card.classList.toggle("is-compact", compactMode);
+    btn.textContent = compactMode ? "↕ Plný režim" : "↔ Kompaktní režim";
+    btn.classList.toggle("is-active", compactMode);
+  }
+
+  function toggleCompactMode() {
+    compactMode = !compactMode;
+    localStorage.setItem(STORAGE_COMPACT, String(compactMode));
+    updateCompactMode();
+  }
+
+  function renderRoomCards() {
+    const box = mount?.querySelector("[data-room-cards]");
+    if (!box) return;
+
+    const items = [...rooms].sort((a, b) => {
+      const currentA = normalizeRoom(a.room) === room ? 0 : 1;
+      const currentB = normalizeRoom(b.room) === room ? 0 : 1;
+      if (currentA !== currentB) return currentA - currentB;
+      const favA = isFavoriteRoom(a.room) ? 0 : 1;
+      const favB = isFavoriteRoom(b.room) ? 0 : 1;
+      if (favA !== favB) return favA - favB;
+      return String(a.label || a.room).localeCompare(String(b.label || b.room), "cs");
+    }).slice(0, 10);
+
+    if (!items.length) {
+      box.innerHTML = `<div class="ops-room-card muted">Zatím žádné místnosti</div>`;
+      return;
+    }
+
+    box.innerHTML = items.map((item) => {
+      const value = normalizeRoom(item.room);
+      const active = value === room;
+      const fav = isFavoriteRoom(value) ? "⭐" : "";
+      const lock = item.locked ? "🔒" : "";
+      const tx = item.transmitting ? "🎙️" : "";
+      const count = Number.isFinite(Number(item.count)) ? Number(item.count) : 0;
+      const meta = [
+        item.isCustom ? "vlastní" : "systém",
+        item.hasPassword ? "heslo" : "bez hesla",
+        `${count} online`
+      ].join(" • ");
+
+      return `
+        <button type="button" class="ops-room-card ${active ? "is-active" : ""} ${item.transmitting ? "is-tx" : ""}" data-room-card="${escapeHtml(value)}">
+          <strong>${fav}${lock}${tx} ${escapeHtml(item.label || roomLabel(value))}</strong>
+          <span>${escapeHtml(meta)}</span>
+        </button>
+      `;
+    }).join("");
+
+    box.querySelectorAll("[data-room-card]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const value = button.getAttribute("data-room-card");
+        const meta = getRoomMeta(value);
+        if (!meta) return;
+        if (meta.locked) askRoomPasswordAndJoin(value, meta.label || value);
+        else joinRoom(value, "");
+      });
+    });
+  }
+
+  function updateTalkMetrics() {
+    const onlineEl = mount?.querySelector("[data-talk-online]");
+    const roomEl = mount?.querySelector("[data-talk-room-count]");
+    const statusEl = mount?.querySelector("[data-talk-my-status]");
+    const voiceEl = mount?.querySelector("[data-talk-voice-count]");
+    const chatEl = mount?.querySelector("[data-talk-chat-count]");
+
+    if (onlineEl) onlineEl.textContent = String(currentUsers.length || 0);
+    if (roomEl) roomEl.textContent = String(rooms.length || 0);
+    if (statusEl) statusEl.textContent = statusLabel(myStatus).replace(/^[^\s]+\s*/, "");
+    if (voiceEl) voiceEl.textContent = String(voiceMessages.length || 0);
+    if (chatEl) chatEl.textContent = String(chatMessages.length || 0);
+  }
+
 
   function toggleFavoriteRoom() {
     const value = normalizeRoom(room);
@@ -239,13 +324,24 @@
 
     mount.innerHTML = `
       <div class="ops-radio-card">
-        <div class="ops-radio-head">
+        <div class="ops-radio-head ops-radio-head-v17">
           <div>
-            <h2>FireWatch Talk <span class="ops-radio-version">v0.9</span></h2>
+            <h2>FireWatch Talk <span class="ops-radio-version">v1.7</span></h2>
             <p>Soukromý hlasový chat FireWatchCZ pro testování a týmovou komunikaci.</p>
             <p class="ops-radio-disclaimer">Není určen pro komunikaci složek IZS ani pro řízení zásahů.</p>
           </div>
-          <div class="ops-radio-live" data-radio-status data-state="idle">Odpojeno</div>
+          <div class="ops-radio-head-actions">
+            <button id="fwTalkCompactMode" class="ops-radio-small-btn" type="button">↔ Kompaktní režim</button>
+            <div class="ops-radio-live" data-radio-status data-state="idle">Odpojeno</div>
+          </div>
+        </div>
+
+        <div class="ops-talk-metrics">
+          <div><span>Online</span><b data-talk-online>0</b></div>
+          <div><span>Místnosti</span><b data-talk-room-count>0</b></div>
+          <div><span>Můj stav</span><b data-talk-my-status>online</b></div>
+          <div><span>Hlasové</span><b data-talk-voice-count>0</b></div>
+          <div><span>Chat</span><b data-talk-chat-count>0</b></div>
         </div>
 
         <div class="ops-radio-panel">
@@ -265,6 +361,8 @@
             <button class="ops-radio-connect" id="opsRadioConnect">Připojit Talk</button>
           </div>
 
+          <div class="ops-room-cards" data-room-cards></div>
+
           <div class="ops-radio-presence">
             <label>
               Můj stav
@@ -280,7 +378,7 @@
           </div>
 
           <button class="ops-radio-ptt" id="opsRadioPtt" disabled>
-            DRŽ PRO MLUVENÍ
+            🎙️ DRŽ PRO MLUVENÍ
           </button>
 
           <div class="ops-radio-quick">
@@ -310,7 +408,7 @@
 
           <div class="ops-radio-users">
             <div class="ops-radio-users-head">
-              <h3>Připojeni v místnosti</h3>
+              <h3>Online v místnosti</h3>
               <button id="fwTalkDeleteRoom" class="ops-radio-danger" type="button" hidden>Odstranit místnost</button>
             </div>
             <ul data-radio-users>
@@ -320,7 +418,7 @@
 
           <div class="ops-radio-chat">
             <div class="ops-radio-chat-head">
-              <h3>Textový chat / statusy</h3>
+              <h3>Textový chat a statusy</h3>
               <span>dočasně v paměti serveru</span>
             </div>
             <ul data-radio-chat>
@@ -334,7 +432,7 @@
 
           <div class="ops-radio-history">
             <div class="ops-radio-history-head">
-              <h3>Poslední hlasové zprávy</h3>
+              <h3>Poslední hlasové zprávy v místnosti</h3>
               <span>vždy jen poslední od každého uživatele</span>
             </div>
             <ul data-radio-history>
@@ -356,6 +454,7 @@
     `;
 
     mount.querySelector("#opsRadioConnect")?.addEventListener("click", toggleConnection);
+    mount.querySelector("#fwTalkCompactMode")?.addEventListener("click", toggleCompactMode);
     mount.querySelector("#opsRadioRoomLive")?.addEventListener("change", changeRoom);
     mount.querySelector("#fwTalkCreateRoom")?.addEventListener("click", createRoom);
     mount.querySelector("#fwTalkDeleteRoom")?.addEventListener("click", deleteCurrentRoom);
@@ -375,6 +474,8 @@
     updateAdminVisibility();
     setupPttButton();
     refreshRoomSelect();
+    updateCompactMode();
+    updateTalkMetrics();
   }
 
   function setupPttButton() {
@@ -740,6 +841,8 @@
     updateDeleteButton();
     updateFavoriteButton();
     updateAdminVisibility();
+    renderRoomCards();
+    updateTalkMetrics();
   }
 
   function updateDeleteButton() {
@@ -847,6 +950,7 @@
     if (!ul) return;
 
     currentUsers = Array.isArray(users) ? users : [];
+    updateTalkMetrics();
 
     if (!currentUsers.length) {
       ul.innerHTML = "<li>Zatím nikdo</li>";
@@ -908,6 +1012,7 @@
     })).filter((item) => item.text);
 
     renderChatMessages();
+    updateTalkMetrics();
   }
 
   function renderChatMessages() {
@@ -950,6 +1055,7 @@
     })).filter((item) => item.userId);
 
     renderVoiceMessages();
+    updateTalkMetrics();
   }
 
   function formatDuration(ms) {

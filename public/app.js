@@ -2312,10 +2312,10 @@ function syncPublicGuestUi() {
 
   if (toggleTalkBtn) {
     if (talkPanelOpen) {
-      toggleTalkBtn.textContent = "Skrýt FireWatch Talk";
+      toggleTalkBtn.textContent = "Skrýt FireWatch Talk 2.0";
       toggleTalkBtn.classList.add("active");
     } else {
-      toggleTalkBtn.textContent = "Otevřít FireWatch Talk";
+      toggleTalkBtn.textContent = "Otevřít FireWatch Talk 2.0";
       toggleTalkBtn.classList.remove("active");
     }
   }
