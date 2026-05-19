@@ -1877,8 +1877,36 @@ app.post("/api/reports/automation/run", async (req, res) => {
   }
 });
 
+
+app.get(/^\/api\/reports\/([^/]+)\/(.+)\.pdf$/, async (req, res) => {
+  try {
+    const type = decodeURIComponent(req.params[0] || "");
+    const key = decodeURIComponent(req.params[1] || "");
+
+    let row = await getArchivedReport(type, key);
+    if (!row) {
+      row = await generateArchivedReport(type, key, { force: false });
+    }
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="firewatch_report_${type}_${key}.pdf"`);
+
+    const doc = new PDFDocument({ size: "A4", layout: "portrait", margin: 40 });
+    doc.pipe(res);
+    drawReportPdf(doc, row);
+    doc.end();
+  } catch (e) {
+    console.error(e);
+    res.status(500).send("PDF report failed: " + (e?.message || e));
+  }
+});
+
 app.get("/api/reports/:type/:key", async (req, res) => {
   try {
+    if (String(req.params.key || "").endsWith(".pdf")) {
+      return res.redirect(302, `/api/reports/${encodeURIComponent(req.params.type)}/${encodeURIComponent(String(req.params.key).replace(/\.pdf$/, ""))}.pdf`);
+    }
+
     let row = await getArchivedReport(req.params.type, req.params.key);
     if (!row) {
       row = await generateArchivedReport(req.params.type, req.params.key, { force: false });
@@ -1890,25 +1918,6 @@ app.get("/api/reports/:type/:key", async (req, res) => {
   }
 });
 
-app.get("/api/reports/:type/:key.pdf", async (req, res) => {
-  try {
-    let row = await getArchivedReport(req.params.type, req.params.key);
-    if (!row) {
-      row = await generateArchivedReport(req.params.type, req.params.key, { force: false });
-    }
-
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename="firewatch_report_${req.params.type}_${req.params.key}.pdf"`);
-
-    const doc = new PDFDocument({ size: "A4", layout: "portrait", margin: 40 });
-    doc.pipe(res);
-    drawReportPdf(doc, row);
-    doc.end();
-  } catch (e) {
-    console.error(e);
-    res.status(500).send("PDF report failed");
-  }
-});
 
 
 app.get("/health", (req, res) => res.send("OK"));
