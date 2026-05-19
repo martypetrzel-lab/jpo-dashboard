@@ -43,6 +43,12 @@ export async function initDb() {
       duration_min INTEGER,
       is_closed BOOLEAN NOT NULL DEFAULT FALSE,
 
+      alarm_level INTEGER,
+      alarm_level_text TEXT,
+      is_major_event BOOLEAN NOT NULL DEFAULT FALSE,
+      major_reason TEXT,
+      status_source TEXT,
+
       lat DOUBLE PRECISION,
       lon DOUBLE PRECISION,
       geo_source TEXT,
@@ -194,7 +200,12 @@ export async function initDb() {
     ["events", "first_seen_at", "TIMESTAMPTZ"],
     ["events", "last_seen_at", "TIMESTAMPTZ"],
     ["events", "lat", "DOUBLE PRECISION"],
-    ["events", "lon", "DOUBLE PRECISION"]
+    ["events", "lon", "DOUBLE PRECISION"],
+    ["events", "alarm_level", "INTEGER"],
+    ["events", "alarm_level_text", "TEXT"],
+    ["events", "is_major_event", "BOOLEAN"],
+    ["events", "major_reason", "TEXT"],
+    ["events", "status_source", "TEXT"]
   ];
 
   for (const [t, c, typ] of adds) {
@@ -209,9 +220,10 @@ export async function initDb() {
   await pool.query(`
     UPDATE events
     SET is_closed = COALESCE(is_closed, FALSE),
+        is_major_event = COALESCE(is_major_event, FALSE),
         first_seen_at = COALESCE(first_seen_at, created_at, NOW()),
         last_seen_at = COALESCE(last_seen_at, NOW())
-    WHERE is_closed IS NULL OR first_seen_at IS NULL OR last_seen_at IS NULL;
+    WHERE is_closed IS NULL OR is_major_event IS NULL OR first_seen_at IS NULL OR last_seen_at IS NULL;
   `);
 
   // ✅ jednorázové vyčištění extrémních délek
@@ -385,7 +397,7 @@ export async function getLongestCutoffIso() {
 
 export async function getEventMeta(id) {
   const res = await pool.query(
-    `SELECT id, is_closed, first_seen_at, start_time_iso, end_time_iso, duration_min FROM events WHERE id=$1`,
+    `SELECT id, is_closed, first_seen_at, start_time_iso, end_time_iso, duration_min, alarm_level, is_major_event, status_text FROM events WHERE id=$1`,
     [id]
   );
   return res.rows[0] || null;
@@ -401,9 +413,10 @@ export async function upsertEvent(ev) {
       place_text, city_text, status_text, event_type,
       description_raw,
       start_time_iso, end_time_iso, duration_min, is_closed,
+      alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
       first_seen_at, last_seen_at
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, NOW(), NOW())
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18, NOW(), NOW())
     ON CONFLICT (id) DO UPDATE SET
       title = EXCLUDED.title,
       link = EXCLUDED.link,
@@ -417,15 +430,30 @@ export async function upsertEvent(ev) {
       description_raw = COALESCE(EXCLUDED.description_raw, events.description_raw),
 
       start_time_iso = COALESCE(EXCLUDED.start_time_iso, events.start_time_iso),
-      end_time_iso   = COALESCE(EXCLUDED.end_time_iso,   events.end_time_iso),
+      end_time_iso   = CASE
+        WHEN EXCLUDED.status_source = 'explicit_open' THEN NULL
+        ELSE COALESCE(EXCLUDED.end_time_iso, events.end_time_iso)
+      END,
 
       duration_min = CASE
+        WHEN EXCLUDED.status_source = 'explicit_open' THEN NULL
         WHEN EXCLUDED.duration_min IS NOT NULL THEN EXCLUDED.duration_min
-        WHEN events.duration_min IS NOT NULL AND events.duration_min > $14 THEN NULL
+        WHEN events.duration_min IS NOT NULL AND events.duration_min > $19 THEN NULL
         ELSE events.duration_min
       END,
 
-      is_closed      = (events.is_closed OR EXCLUDED.is_closed),
+      is_closed = CASE
+        WHEN EXCLUDED.status_source = 'explicit_open' THEN FALSE
+        WHEN EXCLUDED.status_source = 'explicit_closed' THEN TRUE
+        WHEN EXCLUDED.is_closed = TRUE THEN TRUE
+        ELSE events.is_closed
+      END,
+
+      alarm_level = COALESCE(EXCLUDED.alarm_level, events.alarm_level),
+      alarm_level_text = COALESCE(EXCLUDED.alarm_level_text, events.alarm_level_text),
+      is_major_event = (COALESCE(events.is_major_event, FALSE) OR COALESCE(EXCLUDED.is_major_event, FALSE)),
+      major_reason = COALESCE(EXCLUDED.major_reason, events.major_reason),
+      status_source = COALESCE(EXCLUDED.status_source, events.status_source),
 
       last_seen_at = NOW()
     `,
@@ -443,6 +471,11 @@ export async function upsertEvent(ev) {
       ev.endTimeIso || null,
       dur,
       !!ev.isClosed,
+      Number.isFinite(Number(ev.alarmLevel)) ? Number(ev.alarmLevel) : null,
+      ev.alarmLevelText || null,
+      !!ev.isMajorEvent,
+      ev.majorReason || null,
+      ev.statusSource || null,
       MAX_DURATION_MINUTES
     ]
   );
@@ -632,6 +665,7 @@ export async function getEventsFiltered(filters, limit = 400) {
       status_text, event_type,
       description_raw,
       start_time_iso, end_time_iso, duration_min, is_closed,
+      alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
       lat, lon,
       first_seen_at, last_seen_at, created_at
     FROM events
@@ -892,12 +926,25 @@ export async function getStatsFiltered(filters) {
   }
 
 
+  const majorSummary = await pool.query(
+    `
+    SELECT
+      COUNT(*) FILTER (WHERE is_major_event)::int AS major_count,
+      COUNT(*) FILTER (WHERE alarm_level >= 3)::int AS alarm_level_3_plus,
+      COUNT(*) FILTER (WHERE alarm_level = 4)::int AS special_alarm_level
+    FROM events
+    ${where30Sql}
+    `,
+    params30
+  );
+
   return {
     byDay: byDay.rows,
     byType: byType.rows,
     topCities: topCities.rows,
     openVsClosed: openVsClosed.rows[0] || { open: 0, closed: 0 },
     longest: longestRows,
+    majorSummary: majorSummary.rows[0] || { major_count: 0, alarm_level_3_plus: 0, special_alarm_level: 0 },
     durationCutoffIso: cutoffIso
   };
 }
@@ -1110,6 +1157,7 @@ export async function getEventsForPeriod(startIso, endExclusiveIso) {
       status_text, event_type,
       description_raw,
       start_time_iso, end_time_iso, duration_min, is_closed,
+      alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
       lat, lon,
       first_seen_at, last_seen_at, created_at
     FROM events
@@ -1128,6 +1176,7 @@ export async function getEventById(id) {
   const r = await pool.query(
     `SELECT id, title, link, pub_date, place_text, city_text, status_text, event_type,
             description_raw, start_time_iso, end_time_iso, duration_min, is_closed,
+            alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
             lat, lon, first_seen_at, last_seen_at, created_at, geo_source, geo_note, geo_updated_at
      FROM events
      WHERE id=$1
@@ -1140,6 +1189,7 @@ export async function getEventById(id) {
 export async function listEventsWithCoords(limit = 100) {
   const r = await pool.query(
     `SELECT id, title, city_text, place_text, status_text, event_type, pub_date,
+            alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
             lat, lon, geo_source, geo_note, geo_updated_at, last_seen_at
      FROM events
      WHERE lat IS NOT NULL AND lon IS NOT NULL

@@ -2556,6 +2556,112 @@ app.patch("/api/admin/users/:id", requireAdmin, async (req, res) => {
   }
 });
 
+
+// ======================
+// FireWatchCZ Web v2.2 – Významné události / stupeň poplachu
+// ======================
+
+function majorNormText(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function parseAlarmLevelFromText(...parts) {
+  const raw = parts.filter(Boolean).join(" | ");
+  const text = majorNormText(raw);
+  if (!text) return { level: null, text: null };
+
+  if (/(zvlastni|zvlastni stupen|zvlastni stupen poplachu|specialni)/i.test(text)) {
+    return { level: 4, text: "Zvláštní stupeň poplachu" };
+  }
+
+  const candidates = [
+    { level: 4, text: "IV. stupeň poplachu", patterns: [/\biv\s*\.?\s*(stupen|sp)\b/i, /\b4\s*\.?\s*(stupen|sp)\b/i, /\bctvrty\s+stupen\b/i] },
+    { level: 3, text: "III. stupeň poplachu", patterns: [/\biii\s*\.?\s*(stupen|sp)\b/i, /\b3\s*\.?\s*(stupen|sp)\b/i, /\btreti\s+stupen\b/i] },
+    { level: 2, text: "II. stupeň poplachu", patterns: [/\bii\s*\.?\s*(stupen|sp)\b/i, /\b2\s*\.?\s*(stupen|sp)\b/i, /\bdruhy\s+stupen\b/i] },
+    { level: 1, text: "I. stupeň poplachu", patterns: [/\bi\s*\.?\s*(stupen|sp)\b/i, /\b1\s*\.?\s*(stupen|sp)\b/i, /\bprvni\s+stupen\b/i] }
+  ];
+
+  // Speciálně pro tabulkové hodnoty typu "III.".
+  if (/\biii\s*\./i.test(text) && /(poplach|stupen|zasah|stav|rss|feed|okres|probih)/i.test(text)) return { level: 3, text: "III. stupeň poplachu" };
+  if (/\biv\s*\./i.test(text) && /(poplach|stupen|zasah|stav|rss|feed|okres|probih)/i.test(text)) return { level: 4, text: "IV. stupeň poplachu" };
+  if (/\bii\s*\./i.test(text) && /(poplach|stupen|zasah|stav|rss|feed|okres|probih)/i.test(text)) return { level: 2, text: "II. stupeň poplachu" };
+  if (/\bi\s*\./i.test(text) && /(poplach|stupen|zasah|stav|rss|feed|okres|probih)/i.test(text)) return { level: 1, text: "I. stupeň poplachu" };
+
+  for (const item of candidates) {
+    if (item.patterns.some((p) => p.test(text))) return { level: item.level, text: item.text };
+  }
+
+  return { level: null, text: null };
+}
+
+function analyzeStatusFromText({ statusText = "", description = "", title = "" } = {}) {
+  const text = majorNormText(`${statusText} ${description} ${title}`);
+
+  // Aktivní explicitní stav má nejvyšší prioritu.
+  if (
+    text.includes("probiha zasah") ||
+    text.includes("probíha zasah") ||
+    text.includes("probihajici zasah") ||
+    text.includes("probiha") ||
+    text.includes("probíhá")
+  ) {
+    return { isClosed: false, source: "explicit_open", label: "probíhá zásah" };
+  }
+
+  if (
+    text.includes("ukoncena") ||
+    text.includes("ukoncen") ||
+    text.includes("ukonceno") ||
+    text.includes("ukonceny") ||
+    text.includes("likvidace ukoncena")
+  ) {
+    return { isClosed: true, source: "explicit_closed", label: "ukončená" };
+  }
+
+  return { isClosed: null, source: "unknown", label: "" };
+}
+
+function analyzeMajorEvent(it = {}, desc = "") {
+  const alarm = parseAlarmLevelFromText(
+    it.alarmLevelText,
+    it.alarm_level_text,
+    it.alarmLevel,
+    it.alarm_level,
+    it.statusText,
+    it.status_text,
+    it.title,
+    it.placeText,
+    it.cityText,
+    desc
+  );
+
+  const reasons = [];
+
+  if (alarm.level >= 3) {
+    reasons.push(alarm.level >= 4 ? "Zvláštní/IV. stupeň poplachu" : "III. stupeň poplachu");
+  }
+
+  const text = majorNormText(`${it.title || ""} ${it.statusText || ""} ${desc || ""}`);
+  if (text.includes("velky rozsah") || text.includes("mimoradna udalost") || text.includes("evakuace")) {
+    reasons.push("text události naznačuje větší rozsah");
+  }
+
+  const isMajor = reasons.length > 0;
+
+  return {
+    alarmLevel: alarm.level,
+    alarmLevelText: alarm.text,
+    isMajorEvent: isMajor,
+    majorReason: reasons.join(", ") || null
+  };
+}
+
+
 // ingest (data z ESP)
 app.post("/api/ingest", requireKey, async (req, res) => {
   try {
@@ -2577,17 +2683,31 @@ app.post("/api/ingest", requireKey, async (req, res) => {
       const desc = it.descriptionRaw || it.descRaw || it.description || "";
       const times = parseTimesFromDescription(desc);
 
-// --- ESP is the only source ---
-// We must respect explicit flags from ESP, but also keep legacy parsing from description.
-const statusLower = String(it.statusText || "").toLowerCase();
-const isClosed = !!(
-  it.isClosed === true ||
-  it.is_closed === true ||
-  (statusLower.includes("ukon") && statusLower.includes("stav")) ||
-  statusLower.includes("ukončen") ||
-  statusLower.includes("ukonc") ||
-  times.isClosed
-);
+// --- Server-side status intelligence ---
+// ESP zůstává jen zdroj dat; server umí opravit stav podle textu/detailu.
+// Explicitní "probíhá zásah" má prioritu a dokáže znovu otevřít dříve mylně ukončenou událost.
+const statusAnalysis = analyzeStatusFromText({
+  statusText: it.statusText || it.status_text || "",
+  description: desc,
+  title: it.title || ""
+});
+
+let isClosed = false;
+if (statusAnalysis.source === "explicit_open") {
+  isClosed = false;
+} else if (statusAnalysis.source === "explicit_closed") {
+  isClosed = true;
+} else {
+  const statusLower = String(it.statusText || it.status_text || "").toLowerCase();
+  isClosed = !!(
+    it.isClosed === true ||
+    it.is_closed === true ||
+    (statusLower.includes("ukon") && statusLower.includes("stav")) ||
+    statusLower.includes("ukončen") ||
+    statusLower.includes("ukonc") ||
+    times.isClosed
+  );
+}
 
 // start / end timestamps (prefer payload, then parsed, then previous DB values)
 const startIso =
@@ -2626,6 +2746,8 @@ if (Number.isFinite(it.durationMin)) {
       const cityFromTitle = extractCityFromTitle(it.title);
       const districtFromDesc = extractDistrictFromDescription(desc);
 
+      const major = analyzeMajorEvent(it, desc);
+
       const cityText =
         it.cityText ||
         cityFromDesc ||
@@ -2645,7 +2767,12 @@ if (Number.isFinite(it.durationMin)) {
         startTimeIso: startIso,
         endTimeIso: endIso,
         durationMin,
-        isClosed
+        isClosed,
+        alarmLevel: major.alarmLevel,
+        alarmLevelText: major.alarmLevelText,
+        isMajorEvent: major.isMajorEvent,
+        majorReason: major.majorReason,
+        statusSource: statusAnalysis.source
       };
 
       await upsertEvent(ev);

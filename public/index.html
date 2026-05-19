@@ -36,6 +36,7 @@
       <button type="button" data-scroll-target="mapCard">Mapa</button>
       <button type="button" data-scroll-target="statsProCard">Statistiky PRO</button>
       <button type="button" data-scroll-target="regionalWeatherCard">Počasí</button>
+      <button type="button" data-scroll-target="majorEventsCard">Významné</button>
       <button type="button" data-scroll-target="watchCard">Notifikace</button>
       <button type="button" data-scroll-target="reportsArchiveCard">Reporty</button>
       <button type="button" data-scroll-target="talkLauncherCard">FireWatch Talk</button>
@@ -528,6 +529,16 @@
       <div id="reportDetail" class="reportDetail"></div>
     </section>
 
+
+    <section id="majorEventsCard" class="card majorEventsCard">
+      <div class="cardHeader">
+        <h2>Významné události</h2>
+        <div class="hint">Automatické rozpoznání stupně poplachu a větších zásahů bez úpravy ESP32</div>
+      </div>
+      <div id="majorEventsSummary" class="majorEventsSummary"></div>
+      <div id="majorEventsList" class="majorEventsList"></div>
+    </section>
+
 <section class="card tableCard">
       <div class="cardHeader">
         <h2>Poslední výjezdy</h2>
@@ -543,6 +554,7 @@
             <th>Název</th>
             <th>Město</th>
             <th>Stav</th>
+            <th>Význam</th>
             <th>Délka</th>
             <th>Odkaz</th>
           </tr>

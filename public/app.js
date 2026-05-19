@@ -843,9 +843,77 @@ function getFiltersFromUi() {
     type: document.getElementById("typeSelect").value,
     city: document.getElementById("cityInput").value.trim(),
     status: document.getElementById("statusSelect").value,
-    month: document.getElementById("monthInput")?.value || ""
+    month: document.getElementById("monthInput")?.value || "",
+    majorOnly: !!document.getElementById("majorOnlyCheck")?.checked
   };
 }
+
+
+// ==============================
+// FireWatchCZ Web v2.2 – Významné události / stupeň poplachu
+// ==============================
+
+function alarmLevelBadge(it) {
+  const level = Number(it?.alarm_level || it?.alarmLevel || 0);
+  const text = it?.alarm_level_text || it?.alarmLevelText || "";
+  if (!level && !it?.is_major_event) return "";
+
+  const label = text || (level ? `${level}. stupeň poplachu` : "významná událost");
+  const cls = level >= 4 ? "alarm-special" : level >= 3 ? "alarm-major" : level >= 2 ? "alarm-medium" : "alarm-low";
+  return `<span class="alarmBadge ${cls}">${level >= 3 ? "🚨" : "⚠️"} ${escapeHtml(label)}</span>`;
+}
+
+function majorReasonText(it) {
+  return it?.major_reason || it?.majorReason || "";
+}
+
+function statusLabelForEvent(it) {
+  if (it?.status_source === "explicit_open" || it?.statusSource === "explicit_open") return "probíhá zásah";
+  if (it?.status_source === "explicit_closed" || it?.statusSource === "explicit_closed") return "ukončená";
+  return it?.is_closed ? "ukončená" : "aktivní";
+}
+
+function isMajorEventItem(it) {
+  return !!it?.is_major_event || Number(it?.alarm_level || 0) >= 3;
+}
+
+function renderMajorEvents(items = []) {
+  const summary = document.getElementById("majorEventsSummary");
+  const list = document.getElementById("majorEventsList");
+  if (!summary || !list) return;
+
+  const major = items.filter(isMajorEventItem);
+  const level3 = items.filter(x => Number(x.alarm_level || 0) === 3).length;
+  const level4 = items.filter(x => Number(x.alarm_level || 0) >= 4).length;
+  const activeMajor = major.filter(x => !x.is_closed || x.status_source === "explicit_open").length;
+
+  summary.innerHTML = `
+    <div class="majorKpi"><span>Významné</span><b>${major.length}</b></div>
+    <div class="majorKpi alarm-major"><span>III. stupeň</span><b>${level3}</b></div>
+    <div class="majorKpi alarm-special"><span>Zvláštní / IV.</span><b>${level4}</b></div>
+    <div class="majorKpi"><span>Aktivní významné</span><b>${activeMajor}</b></div>
+  `;
+
+  if (!major.length) {
+    list.innerHTML = `<div class="muted">Zatím bez rozpoznané významné události ve vybraném přehledu.</div>`;
+    return;
+  }
+
+  list.innerHTML = major.slice(0, 8).map(it => {
+    const meta = typeMeta(it.event_type);
+    return `
+      <div class="majorEventItem ${Number(it.alarm_level || 0) >= 4 ? "alarm-special" : "alarm-major"}">
+        <div>
+          <b>${meta.emoji} ${escapeHtml(it.title || "")}</b>
+          <span>${escapeHtml(it.city_text || it.place_text || "")} • ${statusEmoji(it.is_closed)} ${escapeHtml(statusLabelForEvent(it))}</span>
+          <small>${escapeHtml(majorReasonText(it) || "významná událost")}</small>
+        </div>
+        <div>${alarmLevelBadge(it)}</div>
+      </div>
+    `;
+  }).join("");
+}
+
 
 function renderTable(items) {
   const tbody = document.getElementById("eventsTbody");
@@ -854,13 +922,15 @@ function renderTable(items) {
   for (const it of items) {
     const meta = typeMeta(it.event_type);
     const tr = document.createElement("tr");
+    if (isMajorEventItem(it)) tr.classList.add("majorEventRow");
 
     tr.innerHTML = `
       <td>${escapeHtml(formatDate(it.pub_date))}</td>
       <td title="${escapeHtml(meta.label)}">${meta.emoji}</td>
       <td>${escapeHtml(it.title)}</td>
       <td>${escapeHtml(it.city_text || it.place_text || "")}</td>
-      <td>${statusEmoji(it.is_closed)} ${it.is_closed ? "ukončená" : "aktivní"}</td>
+      <td>${statusEmoji(it.is_closed)} ${escapeHtml(statusLabelForEvent(it))}</td>
+      <td>${alarmLevelBadge(it) || ""}</td>
       <td>${escapeHtml(formatDuration(it.duration_min))}</td>
       <td><a href="${escapeHtml(it.link)}" target="_blank" rel="noopener">detail</a></td>
     `;
@@ -869,11 +939,11 @@ function renderTable(items) {
   }
 }
 
-function makeEventIcon(eventType) {
+function makeEventIcon(eventType, it = null) {
   const meta = typeMeta(eventType);
   return L.divIcon({
-    className: `fw-emoji-wrap ${meta.cls}`,
-    html: `<div class="fw-emoji">${meta.emoji}</div>`,
+    className: `fw-emoji-wrap ${meta.cls} ${isMajorEventItem(it) ? "fw-major-marker" : ""}`,
+    html: `<div class="fw-emoji">${isMajorEventItem(it) ? "🚨" : meta.emoji}</div>`,
     iconSize: [24, 24],
     iconAnchor: [12, 12]
   });
@@ -885,7 +955,7 @@ function renderMap(items) {
   const pts = [];
   for (const it of items) {
     if (!Number.isFinite(it.lat) || !Number.isFinite(it.lon)) continue;
-    const marker = L.marker([it.lat, it.lon], { icon: makeEventIcon(it.event_type) });
+    const marker = L.marker([it.lat, it.lon], { icon: makeEventIcon(it.event_type, it) });
     marker.bindPopup(`
       <b>${escapeHtml(it.title)}</b><br>
       <span style="opacity:.85">${escapeHtml(it.city_text || it.place_text || "")}</span><br>
@@ -1348,6 +1418,7 @@ async function loadAll(options = {}) {
     }
 
     renderTable(items);
+    renderMajorEvents(items);
     renderMap(items);
 
     // ✅ simulace výjezdu HZS (jen NOVÉ + AKTIVNÍ)
