@@ -2610,3 +2610,34 @@ tr.majorEventRow {
   position: relative;
   z-index: 2;
 }
+
+
+/* inline table manual edit fix */
+.tableManualEditBtn,
+.manualEditEventBtn {
+  white-space: nowrap;
+  background: rgba(47,109,246,0.16);
+  border-color: rgba(90,160,255,0.38);
+  color: #fff;
+}
+
+.tableManualEditBtn:hover,
+.manualEditEventBtn:hover {
+  background: rgba(47,109,246,0.28);
+}
+
+.tableEditHelp {
+  margin-top: 5px;
+  color: rgba(235,245,255,0.68);
+  font-size: 13px;
+}
+
+.tableEditHelp b {
+  color: #fff;
+}
+
+.tableCard table th:last-child,
+.tableCard table td:last-child {
+  text-align: right;
+  min-width: 92px;
+}

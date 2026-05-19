@@ -924,6 +924,22 @@ function renderMajorEvents(items = []) {
 }
 
 
+
+
+function bindInlineTableEditButtons() {
+  document.querySelectorAll(".tableManualEditBtn, .manualEditEventBtn").forEach((btn) => {
+    if (btn.dataset.bound === "1") return;
+    btn.dataset.bound = "1";
+    btn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const id = btn.getAttribute("data-event-id");
+      if (id) openManualEventEditor(id);
+    });
+  });
+}
+
+
 function renderTable(items) {
   const tbody = document.getElementById("eventsTbody");
   tbody.innerHTML = "";
@@ -943,7 +959,8 @@ function renderTable(items) {
       <td>${escapeHtml(formatDuration(it.duration_min))}</td>
       <td><a href="${escapeHtml(it.link)}" target="_blank" rel="noopener">detail</a></td>
       <td><button type="button" class="btn miniBtn adminOnly manualEditEventBtn" data-event-id="${escapeHtml(it.id || "")}">Upravit</button></td>
-    `;
+    
+      <td><button type="button" class="btn miniBtn tableManualEditBtn adminOnly" data-event-id="${escapeHtml(it.id || "")}">Upravit</button></td>`;
 
     tbody.appendChild(tr);
   }
@@ -951,6 +968,9 @@ function renderTable(items) {
   document.querySelectorAll(".manualEditEventBtn").forEach((btn) => {
     btn.addEventListener("click", () => openManualEventEditor(btn.getAttribute("data-event-id")));
   });
+  syncAdminVisibility?.();
+
+  bindInlineTableEditButtons();
   syncAdminVisibility?.();
 
 }
