@@ -1022,6 +1022,34 @@ Události bez souřadnic</div>
           </label>
         </div>
 
+        
+        <section class="manualCoordsBox">
+          <div class="manualCoordsHead">
+            <div>
+              <h3>Souřadnice / pozice výjezdu</h3>
+              <p>Souřadnice můžeš zadat ručně, nebo kliknout na mapu a tím vybrat přesné místo výjezdu.</p>
+            </div>
+            <button id="manualPickOnMapBtn" class="btn" type="button">Vybrat na mapě</button>
+          </div>
+
+          <div class="manualEventCoordsGrid">
+            <label>
+              Latitude
+              <input id="manualEventLat" type="number" step="0.000001" placeholder="např. 50.142000" />
+            </label>
+            <label>
+              Longitude
+              <input id="manualEventLon" type="number" step="0.000001" placeholder="např. 14.795000" />
+            </label>
+          </div>
+
+          <div class="manualCoordsActions">
+            <button id="manualClearCoordsBtn" class="btn" type="button">Smazat souřadnice</button>
+            <span id="manualCoordsHint" class="hint">Po kliknutí na „Vybrat na mapě“ se modal schová, klikni do mapy a poloha se vloží zpět do formuláře.</span>
+          </div>
+        </section>
+
+
         <div id="manualEventComputed" class="manualEventComputed"></div>
 
         <div class="modalActions">

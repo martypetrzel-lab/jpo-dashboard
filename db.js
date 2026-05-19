@@ -1398,6 +1398,12 @@ export async function getEventForManualEdit(id) {
 }
 
 export async function updateEventManualMeta(id, patch = {}) {
+  const hasCoords =
+    Number.isFinite(Number(patch.lat)) &&
+    Number.isFinite(Number(patch.lon));
+
+  const clearCoords = patch.clearCoords === true;
+
   await pool.query(
     `
     UPDATE events
@@ -1412,6 +1418,30 @@ export async function updateEventManualMeta(id, patch = {}) {
       start_time_iso = $8,
       end_time_iso = $9,
       duration_min = $10,
+      lat = CASE
+        WHEN $11::boolean = TRUE THEN NULL
+        WHEN $12::boolean = TRUE THEN $13
+        ELSE lat
+      END,
+      lon = CASE
+        WHEN $11::boolean = TRUE THEN NULL
+        WHEN $12::boolean = TRUE THEN $14
+        ELSE lon
+      END,
+      geo_source = CASE
+        WHEN $11::boolean = TRUE THEN NULL
+        WHEN $12::boolean = TRUE THEN 'manual_event_edit'
+        ELSE geo_source
+      END,
+      geo_note = CASE
+        WHEN $11::boolean = TRUE THEN NULL
+        WHEN $12::boolean = TRUE THEN 'Ručně nastaveno v editaci výjezdu'
+        ELSE geo_note
+      END,
+      geo_updated_at = CASE
+        WHEN $11::boolean = TRUE OR $12::boolean = TRUE THEN NOW()
+        ELSE geo_updated_at
+      END,
       last_seen_at = NOW()
     WHERE id = $1
     `,
@@ -1425,11 +1455,14 @@ export async function updateEventManualMeta(id, patch = {}) {
       patch.majorReason || null,
       patch.startTimeIso || null,
       patch.endTimeIso || null,
-      Number.isFinite(Number(patch.durationMin)) ? Number(patch.durationMin) : null
+      Number.isFinite(Number(patch.durationMin)) ? Number(patch.durationMin) : null,
+      clearCoords,
+      hasCoords,
+      hasCoords ? Number(patch.lat) : null,
+      hasCoords ? Number(patch.lon) : null
     ]
   );
 }
-
 
 // ---------------- OWN EVENT DETAIL / MANUAL NOTES ----------------
 export async function getEventDetailById(id) {

@@ -2775,6 +2775,89 @@ function wireCommandOverviewNav() {
 
 
 
+
+let __manualMapPickMode = false;
+let __manualMapPickMarker = null;
+
+function setManualCoords(lat, lon) {
+  const latInput = document.getElementById("manualEventLat");
+  const lonInput = document.getElementById("manualEventLon");
+  if (latInput) latInput.value = Number(lat).toFixed(6);
+  if (lonInput) lonInput.value = Number(lon).toFixed(6);
+
+  const hint = document.getElementById("manualCoordsHint");
+  if (hint) hint.textContent = `Vybraná pozice: ${Number(lat).toFixed(6)}, ${Number(lon).toFixed(6)}`;
+
+  if (map && window.L) {
+    if (__manualMapPickMarker) {
+      __manualMapPickMarker.setLatLng([Number(lat), Number(lon)]);
+    } else {
+      __manualMapPickMarker = L.marker([Number(lat), Number(lon)], {
+        title: "Ručně vybraná poloha výjezdu"
+      }).addTo(map);
+    }
+  }
+}
+
+function clearManualCoordsInputs() {
+  const latInput = document.getElementById("manualEventLat");
+  const lonInput = document.getElementById("manualEventLon");
+  if (latInput) latInput.value = "";
+  if (lonInput) lonInput.value = "";
+
+  const hint = document.getElementById("manualCoordsHint");
+  if (hint) hint.textContent = "Souřadnice budou ponechané prázdné / smažou se po uložení.";
+
+  if (__manualMapPickMarker && map) {
+    try { map.removeLayer(__manualMapPickMarker); } catch {}
+    __manualMapPickMarker = null;
+  }
+}
+
+function startManualMapPick() {
+  __manualMapPickMode = true;
+
+  const back = document.getElementById("manualEventModalBackdrop");
+  if (back) back.style.display = "none";
+
+  const restore = document.getElementById("restoreAdminPanelBtn");
+  if (restore) {
+    restore.style.display = "";
+    restore.textContent = "Zpět k úpravě výjezdu";
+  }
+
+  const hint = document.getElementById("manualCoordsHint");
+  if (hint) hint.textContent = "Režim výběru na mapě aktivní. Klikni do mapy na místo výjezdu.";
+
+  if (map) {
+    try {
+      map.getContainer().classList.add("mapPickMode");
+      map.once("click", (ev) => {
+        __manualMapPickMode = false;
+        try { map.getContainer().classList.remove("mapPickMode"); } catch {}
+        setManualCoords(ev.latlng.lat, ev.latlng.lng);
+
+        const modal = document.getElementById("manualEventModalBackdrop");
+        if (modal) modal.style.display = "flex";
+        if (restore) restore.style.display = "none";
+      });
+    } catch {}
+  } else {
+    alert("Mapa zatím není připravená.");
+    if (back) back.style.display = "flex";
+  }
+}
+
+function restoreManualModalAfterMapPick() {
+  __manualMapPickMode = false;
+  try { if (map) map.getContainer().classList.remove("mapPickMode"); } catch {}
+  const modal = document.getElementById("manualEventModalBackdrop");
+  if (modal) modal.style.display = "flex";
+  const restore = document.getElementById("restoreAdminPanelBtn");
+  if (restore) restore.style.display = "none";
+}
+
+
 // ==============================
 // FireWatchCZ Web v2.4 – ruční editace události
 // ==============================
@@ -2898,6 +2981,24 @@ async function openManualEventEditor(id) {
     document.getElementById("manualEventStart").value = toLocalDateTimeInput(ev.start_time_iso || ev.pub_date || ev.first_seen_at || ev.created_at);
     document.getElementById("manualEventEnd").value = toLocalDateTimeInput(ev.end_time_iso);
 
+    const latInput = document.getElementById("manualEventLat");
+    const lonInput = document.getElementById("manualEventLon");
+    const lat = Number(String(ev.lat ?? "").replace(",", "."));
+    const lon = Number(String(ev.lon ?? "").replace(",", "."));
+    if (latInput) latInput.value = Number.isFinite(lat) ? lat.toFixed(6) : "";
+    if (lonInput) lonInput.value = Number.isFinite(lon) ? lon.toFixed(6) : "";
+
+    if (Number.isFinite(lat) && Number.isFinite(lon)) {
+      setManualCoords(lat, lon);
+    } else {
+      const hint = document.getElementById("manualCoordsHint");
+      if (hint) hint.textContent = "Tento výjezd zatím nemá uloženou pozici. Zadej souřadnice nebo klikni na mapu.";
+      if (__manualMapPickMarker && map) {
+        try { map.removeLayer(__manualMapPickMarker); } catch {}
+        __manualMapPickMarker = null;
+      }
+    }
+
     if (status) status.textContent = "";
     syncManualEndInput();
     updateManualEventComputed();
@@ -2933,7 +3034,10 @@ async function saveManualEventEditor() {
       isMajorEvent: !!document.getElementById("manualEventIsMajor")?.checked,
       majorReason: document.getElementById("manualEventMajorReason")?.value || "",
       startTimeIso: fromLocalDateTimeInput(document.getElementById("manualEventStart")?.value || ""),
-      endTimeIso: manualStatusMode === "open" ? null : fromLocalDateTimeInput(document.getElementById("manualEventEnd")?.value || "")
+      endTimeIso: manualStatusMode === "open" ? null : fromLocalDateTimeInput(document.getElementById("manualEventEnd")?.value || ""),
+      lat: document.getElementById("manualEventLat")?.value || "",
+      lon: document.getElementById("manualEventLon")?.value || "",
+      clearCoords: !document.getElementById("manualEventLat")?.value && !document.getElementById("manualEventLon")?.value
     };
 
     const r = await fetch(`/api/admin/events/${encodeURIComponent(__manualEventCurrentId)}/manual`, {
@@ -2947,7 +3051,7 @@ async function saveManualEventEditor() {
     if (!r.ok || !j.ok) throw new Error(j.detail || j.error || "manual event save failed");
 
     if (status) status.textContent = "Uloženo. Přepočítávám přehled…";
-    await loadAll();
+    await loadAll(true);
     closeManualEventEditor();
   } catch (e) {
     if (status) status.textContent = `Nepodařilo se uložit: ${String(e.message || e)}`;
@@ -2982,6 +3086,27 @@ function wireManualEventEditorDelegated() {
       saveManualEventEditor();
       return;
     }
+
+    if (target.closest?.("#manualPickOnMapBtn")) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      startManualMapPick();
+      return;
+    }
+
+    if (target.closest?.("#manualClearCoordsBtn")) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      clearManualCoordsInputs();
+      return;
+    }
+
+    if (target.closest?.("#restoreAdminPanelBtn")) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      restoreManualModalAfterMapPick();
+      return;
+    }
   });
 
   document.addEventListener("change", (ev) => {
@@ -3005,6 +3130,9 @@ function wireManualEventEditor() {
   document.getElementById("manualEventCloseBtn")?.addEventListener("click", (ev) => { ev.preventDefault(); closeManualEventEditor(); });
   document.getElementById("manualEventCancelBtn")?.addEventListener("click", (ev) => { ev.preventDefault(); closeManualEventEditor(); });
   document.getElementById("manualEventSaveBtn")?.addEventListener("click", (ev) => { ev.preventDefault(); saveManualEventEditor(); });
+  document.getElementById("manualPickOnMapBtn")?.addEventListener("click", (ev) => { ev.preventDefault(); startManualMapPick(); });
+  document.getElementById("manualClearCoordsBtn")?.addEventListener("click", (ev) => { ev.preventDefault(); clearManualCoordsInputs(); });
+  document.getElementById("restoreAdminPanelBtn")?.addEventListener("click", (ev) => { ev.preventDefault(); restoreManualModalAfterMapPick(); });
 
   ["manualEventStatusMode", "manualEventStart", "manualEventEnd"].forEach((id) => {
     document.getElementById(id)?.addEventListener("change", updateManualEventComputed);

@@ -3062,6 +3062,27 @@ app.post("/api/admin/events/:id/manual", requireAdmin, async (req, res) => {
     const majorReason = String(req.body?.majorReason || "").trim()
       || (Number(alarmLevel || 0) >= 3 ? alarmLevelText : null);
 
+    const manualLatRaw = req.body?.lat;
+    const manualLonRaw = req.body?.lon;
+    const clearCoords = req.body?.clearCoords === true || req.body?.clearCoords === "true";
+
+    let manualLat = null;
+    let manualLon = null;
+
+    if (manualLatRaw !== "" && manualLatRaw !== null && manualLatRaw !== undefined &&
+        manualLonRaw !== "" && manualLonRaw !== null && manualLonRaw !== undefined) {
+      manualLat = Number(manualLatRaw);
+      manualLon = Number(manualLonRaw);
+
+      if (!Number.isFinite(manualLat) || !Number.isFinite(manualLon)) {
+        return res.status(400).json({ ok: false, error: "bad_coords" });
+      }
+
+      if (manualLat < 48 || manualLat > 52 || manualLon < 12 || manualLon > 19) {
+        return res.status(400).json({ ok: false, error: "coords_outside_cz" });
+      }
+    }
+
     const durationMin = computeManualDurationMin(startTimeIso, endTimeIso, isClosed);
 
     await updateEventManualMeta(req.params.id, {
@@ -3073,14 +3094,17 @@ app.post("/api/admin/events/:id/manual", requireAdmin, async (req, res) => {
       majorReason,
       startTimeIso,
       endTimeIso,
-      durationMin
+      durationMin,
+      lat: manualLat,
+      lon: manualLon,
+      clearCoords
     });
 
     await insertAudit({
       userId: req.auth?.user?.id || null,
       username: req.auth?.user?.username || null,
       action: "manual_event_edit",
-      details: `event=${req.params.id}; status=${statusText}; alarm=${alarmLevelText || "none"}; major=${isMajorEvent}; duration=${durationMin}`,
+      details: `event=${req.params.id}; status=${statusText}; alarm=${alarmLevelText || "none"}; major=${isMajorEvent}; duration=${durationMin}; coords=${manualLat},${manualLon}; clearCoords=${clearCoords}`,
       ip: getClientIp(req)
     });
 
