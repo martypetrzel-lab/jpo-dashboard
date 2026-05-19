@@ -604,15 +604,6 @@ function buildTimeWindowSql(day, params, iStart) {
   if (day === "today" || day === "yesterday") {
     const offset = day === "yesterday" ? 1 : 0;
 
-    // Důležité:
-    // Filtr dne už nebere jen události, které v daný den začaly.
-    // Bere i aktivní zásahy, které začaly dříve a do vybraného dne stále přesahují.
-    // ALE pouze významné / vyšší: alarm_level >= 2 nebo is_major_event = TRUE.
-    // Jinak by se do dneška natahovaly staré běžné události, které zůstaly v DB neukončené.
-    //
-    // Příklad:
-    // Zásah začal včera, je pořád aktivní a dnes je vybraný filtr "dnes".
-    // Web ho musí ukázat i dnes, dokud není ukončený.
     clauses.push(
       `(
         (
@@ -623,29 +614,12 @@ function buildTimeWindowSql(day, params, iStart) {
         (
           is_closed = FALSE
           AND (COALESCE(alarm_level, 0) >= 2 OR COALESCE(is_major_event, FALSE) = TRUE)
-          AND
-          (COALESCE(NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date
-          <= ((NOW() AT TIME ZONE 'Europe/Prague')::date - $${i}::int)
-          AND
-          (
-            end_time_iso IS NULL
-            OR end_time_iso = ''
-            OR (NULLIF(end_time_iso,'' )::timestamptz AT TIME ZONE 'Europe/Prague')::date
-               >= ((NOW() AT TIME ZONE 'Europe/Prague')::date - $${i}::int)
-          )
-        )
-        OR
-        (
-          is_closed = TRUE
-          AND end_time_iso IS NOT NULL
-          AND end_time_iso <> ''
           AND (COALESCE(NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date
-              <= ((NOW() AT TIME ZONE 'Europe/Prague')::date - $${i}::int)
-          AND (NULLIF(end_time_iso,'' )::timestamptz AT TIME ZONE 'Europe/Prague')::date
-              >= ((NOW() AT TIME ZONE 'Europe/Prague')::date - $${i}::int)
+              < ((NOW() AT TIME ZONE 'Europe/Prague')::date - $${i}::int)
         )
       )`
     );
+
     params.push(offset);
     i++;
   }

@@ -837,6 +837,56 @@ function buildExportQuery(filters) {
   return params.toString();
 }
 
+
+function eventLocalDateKey(value) {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "";
+  const parts = new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "Europe/Prague",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(d);
+  const y = parts.find(p => p.type === "year")?.value;
+  const m = parts.find(p => p.type === "month")?.value;
+  const day = parts.find(p => p.type === "day")?.value;
+  return y && m && day ? `${y}-${m}-${day}` : "";
+}
+
+function selectedDayDateKey(dayFilter) {
+  const now = new Date();
+  const prg = new Date(new Intl.DateTimeFormat("en-US", {
+    timeZone: "Europe/Prague",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).format(now));
+
+  const d = new Date(now);
+  if (dayFilter === "yesterday") d.setDate(d.getDate() - 1);
+
+  return eventLocalDateKey(d.toISOString());
+}
+
+function eventBelongsToSelectedDayStrict(it, dayFilter) {
+  if (!["today", "yesterday"].includes(dayFilter)) return true;
+
+  const selected = selectedDayDateKey(dayFilter);
+  const started = eventLocalDateKey(it.start_time_iso || it.pub_date || it.created_at);
+
+  if (started === selected) return true;
+
+  // Přenos do vybraného dne pouze pro stále aktivní významné/vyšší zásahy.
+  return !!(
+    !it.is_closed &&
+    started &&
+    started < selected &&
+    (Number(it.alarm_level || 0) >= 2 || !!it.is_major_event)
+  );
+}
+
+
 function getFiltersFromUi() {
   return {
     day: document.getElementById("daySelect").value,
