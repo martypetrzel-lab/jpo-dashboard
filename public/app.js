@@ -1399,6 +1399,13 @@ function exportWithFilters(kind) {
 
 
 
+
+function setReportsMessage(text, isError = false) {
+  const detail = document.getElementById("reportDetail");
+  if (!detail) return;
+  detail.innerHTML = `<div class="${isError ? "err" : "muted"}">${escapeHtml(String(text || ""))}</div>`;
+}
+
 // ==============================
 // ARCHIV ANALYTICKÝCH SOUHRNŮ
 // ==============================
@@ -2969,3 +2976,96 @@ function fwOpenRegisterDialog() {
 })();
 
 
+
+
+// -----------------------------------------------------------------------------
+// FireWatchCZ Reports Archive - safe wiring fallback
+// -----------------------------------------------------------------------------
+(function fwReportsArchiveSafeInit() {
+  function ready(fn) {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", fn, { once: true });
+    } else {
+      fn();
+    }
+  }
+
+  function byId(id) {
+    return document.getElementById(id);
+  }
+
+  function wire(id, handler) {
+    const el = byId(id);
+    if (!el) return false;
+    if (el.dataset.fwReportsWired === "1") return true;
+    el.dataset.fwReportsWired = "1";
+    el.addEventListener("click", async (ev) => {
+      ev.preventDefault();
+      try {
+        await handler(ev);
+      } catch (e) {
+        console.error("[reports] action failed:", e);
+        alert("Akce archivu souhrnů selhala: " + (e?.message || e));
+      }
+    });
+    return true;
+  }
+
+  ready(() => {
+    const typeEl = byId("reportTypeSelect");
+    const keyEl = byId("reportKeyInput");
+
+    if (!typeEl || !keyEl) return;
+
+    if (typeof defaultReportKey === "function" && !keyEl.value.trim()) {
+      keyEl.value = defaultReportKey(typeEl.value);
+    }
+
+    if (typeEl.dataset.fwReportsTypeWired !== "1") {
+      typeEl.dataset.fwReportsTypeWired = "1";
+      typeEl.addEventListener("change", () => {
+        if (typeof defaultReportKey === "function") {
+          keyEl.value = defaultReportKey(typeEl.value);
+        }
+      });
+    }
+
+    wire("generateReportBtn", async () => {
+      if (typeof generateSelectedReport === "function") {
+        await generateSelectedReport();
+      } else {
+        const type = typeEl.value;
+        const key = keyEl.value.trim();
+        const r = await fetch("/api/reports/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type, key, force: true })
+        });
+        const j = await r.json();
+        if (!r.ok || !j.ok) throw new Error(j.error || "generate failed");
+        location.reload();
+      }
+    });
+
+    wire("refreshReportsBtn", async () => {
+      if (typeof loadReportsArchive === "function") await loadReportsArchive();
+    });
+
+    wire("runReportsAutomationBtn", async () => {
+      if (typeof runReportsAutomationNow === "function") {
+        await runReportsAutomationNow();
+      } else {
+        const r = await fetch("/api/reports/automation/run", { method: "POST" });
+        const j = await r.json();
+        if (!r.ok || !j.ok) throw new Error(j.error || "automation failed");
+        location.reload();
+      }
+    });
+
+    if (typeof loadReportsArchive === "function") {
+      loadReportsArchive();
+    }
+
+    console.log("[reports] archive controls wired");
+  });
+})();
