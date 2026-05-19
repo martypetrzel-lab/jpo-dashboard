@@ -535,6 +535,11 @@
         <h2>Významné události</h2>
         <div class="hint">Automatické rozpoznání stupně poplachu a větších zásahů bez úpravy ESP32</div>
       </div>
+      <div class="majorEventsControls adminOnly" style="display:none;">
+        <button id="majorBackfillBtn" class="btn primary">Přepočítat významné události</button>
+        <button id="majorReloadBtn" class="btn">Načíst významné</button>
+        <span id="majorBackfillStatus" class="hint"></span>
+      </div>
       <div id="majorEventsSummary" class="majorEventsSummary"></div>
       <div id="majorEventsList" class="majorEventsList"></div>
     </section>

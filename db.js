@@ -1199,3 +1199,83 @@ export async function listEventsWithCoords(limit = 100) {
   );
   return r.rows || [];
 }
+
+
+// ---------------- MAJOR EVENTS BACKFILL ----------------
+export async function listEventsForMajorBackfill(limit = 5000) {
+  const lim = Math.max(1, Math.min(Number(limit || 5000), 20000));
+  const r = await pool.query(
+    `
+    SELECT
+      id, title, link, pub_date,
+      place_text, city_text, status_text, event_type,
+      description_raw,
+      start_time_iso, end_time_iso, duration_min, is_closed,
+      alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
+      first_seen_at, last_seen_at, created_at
+    FROM events
+    ORDER BY COALESCE(NULLIF(pub_date,'' )::timestamptz, created_at) DESC, created_at DESC
+    LIMIT $1
+    `,
+    [lim]
+  );
+  return r.rows || [];
+}
+
+export async function updateEventMajorAnalysis(id, patch = {}) {
+  await pool.query(
+    `
+    UPDATE events
+    SET
+      alarm_level = $2,
+      alarm_level_text = $3,
+      is_major_event = $4,
+      major_reason = $5,
+      status_source = COALESCE($6, status_source),
+      is_closed = CASE
+        WHEN $6 = 'explicit_open' THEN FALSE
+        WHEN $6 = 'explicit_closed' THEN TRUE
+        ELSE is_closed
+      END,
+      end_time_iso = CASE
+        WHEN $6 = 'explicit_open' THEN NULL
+        ELSE end_time_iso
+      END,
+      duration_min = CASE
+        WHEN $6 = 'explicit_open' THEN NULL
+        ELSE duration_min
+      END,
+      last_seen_at = last_seen_at
+    WHERE id = $1
+    `,
+    [
+      id,
+      Number.isFinite(Number(patch.alarmLevel)) ? Number(patch.alarmLevel) : null,
+      patch.alarmLevelText || null,
+      !!patch.isMajorEvent,
+      patch.majorReason || null,
+      patch.statusSource || null
+    ]
+  );
+}
+
+export async function getMajorEventsSummary(limit = 20) {
+  const lim = Math.max(1, Math.min(Number(limit || 20), 200));
+  const r = await pool.query(
+    `
+    SELECT
+      id, title, link, pub_date,
+      city_text, place_text, status_text, event_type,
+      is_closed,
+      alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
+      start_time_iso, end_time_iso, duration_min,
+      created_at, last_seen_at
+    FROM events
+    WHERE is_major_event = TRUE OR alarm_level >= 3
+    ORDER BY COALESCE(NULLIF(pub_date,'' )::timestamptz, created_at) DESC, created_at DESC
+    LIMIT $1
+    `,
+    [lim]
+  );
+  return r.rows || [];
+}

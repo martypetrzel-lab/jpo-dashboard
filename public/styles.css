@@ -2202,3 +2202,12 @@ tr.majorEventRow {
     white-space: normal;
   }
 }
+
+
+.majorEventsControls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0 12px;
+}

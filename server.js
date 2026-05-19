@@ -43,6 +43,9 @@ import {
   getDurationCutoffIso,
   getLongestCutoffIso,
   autoCloseStaleOpenEvents,
+  listEventsForMajorBackfill,
+  updateEventMajorAnalysis,
+  getMajorEventsSummary,
 
   // auth
   getUsersCount,
@@ -2809,6 +2812,116 @@ if (Number.isFinite(it.durationMin)) {
     res.status(500).json({ ok: false, error: "server error" });
   }
 });
+
+
+// ---------------- MAJOR EVENTS BACKFILL ----------------
+app.post("/api/admin/major-events/backfill", requireAdmin, async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(Number(req.body?.limit || req.query?.limit || 5000), 20000));
+    const rows = await listEventsForMajorBackfill(limit);
+
+    let scanned = 0;
+    let updated = 0;
+    let major = 0;
+    let reopened = 0;
+    let closedByText = 0;
+    const examples = [];
+
+    for (const row of rows) {
+      scanned++;
+
+      const desc = row.description_raw || "";
+      const analysis = analyzeMajorEvent({
+        alarmLevelText: row.alarm_level_text,
+        alarmLevel: row.alarm_level,
+        statusText: row.status_text,
+        title: row.title,
+        placeText: row.place_text,
+        cityText: row.city_text
+      }, desc);
+
+      const statusAnalysis = analyzeStatusFromText({
+        statusText: row.status_text || "",
+        description: desc,
+        title: row.title || ""
+      });
+
+      const statusSource = statusAnalysis.source === "unknown" ? null : statusAnalysis.source;
+
+      const patch = {
+        alarmLevel: analysis.alarmLevel,
+        alarmLevelText: analysis.alarmLevelText,
+        isMajorEvent: analysis.isMajorEvent,
+        majorReason: analysis.majorReason,
+        statusSource
+      };
+
+      const changed =
+        Number(row.alarm_level || 0) !== Number(patch.alarmLevel || 0) ||
+        String(row.alarm_level_text || "") !== String(patch.alarmLevelText || "") ||
+        Boolean(row.is_major_event) !== Boolean(patch.isMajorEvent) ||
+        String(row.major_reason || "") !== String(patch.majorReason || "") ||
+        (statusSource && String(row.status_source || "") !== String(statusSource)) ||
+        (statusSource === "explicit_open" && row.is_closed === true) ||
+        (statusSource === "explicit_closed" && row.is_closed === false);
+
+      if (!changed) continue;
+
+      await updateEventMajorAnalysis(row.id, patch);
+      updated++;
+
+      if (patch.isMajorEvent) {
+        major++;
+        if (examples.length < 10) {
+          examples.push({
+            id: row.id,
+            title: row.title,
+            city: row.city_text || row.place_text || "",
+            alarmLevel: patch.alarmLevel,
+            alarmLevelText: patch.alarmLevelText,
+            reason: patch.majorReason
+          });
+        }
+      }
+
+      if (statusSource === "explicit_open" && row.is_closed === true) reopened++;
+      if (statusSource === "explicit_closed" && row.is_closed === false) closedByText++;
+    }
+
+    await insertAudit({
+      userId: req.auth?.user?.id || null,
+      username: req.auth?.user?.username || null,
+      action: "major_events_backfill",
+      details: `scanned=${scanned}; updated=${updated}; major=${major}; reopened=${reopened}; closedByText=${closedByText}`,
+      ip: getClientIp(req)
+    });
+
+    return res.json({
+      ok: true,
+      scanned,
+      updated,
+      major,
+      reopened,
+      closedByText,
+      examples
+    });
+  } catch (e) {
+    console.error("[major-events-backfill]", e);
+    return res.status(500).json({ ok: false, error: "major_events_backfill_failed", detail: String(e?.message || e) });
+  }
+});
+
+app.get("/api/admin/major-events", requireAdmin, async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(Number(req.query?.limit || 50), 200));
+    const rows = await getMajorEventsSummary(limit);
+    return res.json({ ok: true, items: rows });
+  } catch (e) {
+    console.error("[major-events-list]", e);
+    return res.status(500).json({ ok: false, error: "major_events_list_failed", detail: String(e?.message || e) });
+  }
+});
+
 
 // ---------------- VISITS (no cookies, no identifiers; admin-only viewing) ----------------
 

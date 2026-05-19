@@ -2484,6 +2484,69 @@ function wireRegionalWeather() {
 }
 
 
+
+
+// ==============================
+// FireWatchCZ Web v2.2 – zpětný přepočet významných událostí
+// ==============================
+
+async function runMajorEventsBackfill() {
+  const btn = document.getElementById("majorBackfillBtn");
+  const status = document.getElementById("majorBackfillStatus");
+  const old = btn?.textContent || "Přepočítat významné události";
+
+  try {
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "Přepočítávám…";
+    }
+    if (status) status.textContent = "Procházím uložené události v databázi…";
+
+    const r = await fetch("/api/admin/major-events/backfill", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ limit: 10000 })
+    });
+    const j = await r.json();
+
+    if (!r.ok || !j.ok) throw new Error(j.detail || j.error || "backfill failed");
+
+    if (status) {
+      status.textContent = `Hotovo: zkontrolováno ${j.scanned}, upraveno ${j.updated}, významné ${j.major}, znovu otevřeno ${j.reopened}.`;
+    }
+
+    await loadAll();
+  } catch (e) {
+    if (status) status.textContent = `Nepodařilo se přepočítat: ${String(e.message || e)}`;
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = old;
+    }
+  }
+}
+
+async function reloadMajorEventsFromServer() {
+  const status = document.getElementById("majorBackfillStatus");
+  try {
+    if (status) status.textContent = "Načítám významné události…";
+    const r = await fetch("/api/admin/major-events?limit=50", { credentials: "include", cache: "no-store" });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.detail || j.error || "major list failed");
+    renderMajorEvents(j.items || []);
+    if (status) status.textContent = `Načteno ${Number(j.items?.length || 0)} významných událostí.`;
+  } catch (e) {
+    if (status) status.textContent = `Nepodařilo se načíst významné události: ${String(e.message || e)}`;
+  }
+}
+
+function wireMajorEventsBackfill() {
+  document.getElementById("majorBackfillBtn")?.addEventListener("click", runMajorEventsBackfill);
+  document.getElementById("majorReloadBtn")?.addEventListener("click", reloadMajorEventsFromServer);
+}
+
+
 // UI events
 document.getElementById("refreshBtn").addEventListener("click", () => { resetFilters(); loadAll(); });
 document.getElementById("applyBtn").addEventListener("click", loadAll);
@@ -2503,6 +2566,7 @@ initMap();
 initLandingPage();
 wireProfessionalLayout();
 wireRegionalWeather();
+wireMajorEventsBackfill();
 wireWatchNotifications();
 
 
