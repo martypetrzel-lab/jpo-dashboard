@@ -853,6 +853,24 @@ function getFiltersFromUi() {
 // FireWatchCZ Web v2.2 – Významné události / stupeň poplachu
 // ==============================
 
+
+function carryoverBadgeHtml(it) {
+  if (!it || it.is_closed) return "";
+  const days = Number(it.carryover_days || 0);
+  if (!it.is_carryover_active && days <= 0) return "";
+  const text = days > 1 ? `aktivní už ${days} dny` : "aktivní od včera";
+  return `<span class="carryoverBadge">⏳ ${escapeHtml(text)}</span>`;
+}
+
+function liveDurationForEvent(it) {
+  if (!it || it.is_closed) return it?.duration_min;
+  const start = it.start_time_iso || it.pub_date || it.first_seen_at || it.created_at;
+  if (!start) return it.duration_min;
+  const d = new Date(start);
+  if (Number.isNaN(d.getTime())) return it.duration_min;
+  return Math.max(0, Math.round((Date.now() - d.getTime()) / 60000));
+}
+
 function alarmLevelBadge(it) {
   const level = Number(it?.alarm_level || it?.alarmLevel || 0);
   const text = it?.alarm_level_text || it?.alarmLevelText || "";
@@ -913,7 +931,7 @@ function renderMajorEvents(items = []) {
       <div class="majorEventItem ${Number(it.alarm_level || 0) >= 4 ? "alarm-special" : "alarm-major"}">
         <div>
           <b>${meta.emoji} ${escapeHtml(it.title || "")}</b>
-          <span>${escapeHtml(it.city_text || it.place_text || "")} • ${statusEmoji(it.is_closed)} ${escapeHtml(statusLabelForEvent(it))}</span>
+          <span>${escapeHtml(it.city_text || it.place_text || "")} • ${statusEmoji(it.is_closed)} ${escapeHtml(statusLabelForEvent(it))} ${carryoverBadgeHtml(it)}</span>
           <small>${escapeHtml(majorReasonText(it) || "významná událost")}</small>
         </div>
         <div>${alarmLevelBadge(it)} <button type="button" class="btn miniBtn adminOnly majorManualEditBtn" data-event-id="${escapeHtml(it.id || "")}">Edit</button></div>
@@ -978,9 +996,9 @@ function renderTable(items) {
       <td title="${escapeHtml(meta.label)}">${meta.emoji}</td>
       <td>${escapeHtml(it.title)}</td>
       <td>${escapeHtml(it.city_text || it.place_text || "")}</td>
-      <td>${statusEmoji(it.is_closed)} ${escapeHtml(statusLabelForEvent(it))}</td>
+      <td>${statusEmoji(it.is_closed)} ${escapeHtml(statusLabelForEvent(it))} ${carryoverBadgeHtml(it)}</td>
       <td>${alarmLevelBadge(it) || ""}</td>
-      <td>${escapeHtml(formatDuration(it.duration_min))}</td>
+      <td>${escapeHtml(formatDuration(liveDurationForEvent(it)))}</td>
       <td><a href="${escapeHtml(it.link)}" target="_blank" rel="noopener">detail</a></td>
       <td>${tableEditButtonHtml(it)}</td>`;
 
@@ -2635,10 +2653,11 @@ function updateCommandOverview(items = [], stats = null) {
   const mapped = items.filter(x => Number.isFinite(Number(x.lat)) && Number.isFinite(Number(x.lon))).length;
   const major = items.filter(x => typeof isMajorEventItem === "function" ? isMajorEventItem(x) : false).length;
   const open = items.filter(x => !x.is_closed).length;
+  const carryover = items.filter(x => !x.is_closed && (x.is_carryover_active || Number(x.carryover_days || 0) > 0)).length;
 
   if (mapCount) mapCount.textContent = `${mapped}`;
   if (majorCount) majorCount.textContent = `${major}`;
-  if (status) status.innerHTML = `OK • ${items.length} záznamů • aktivní ${open} • významné ${major}`;
+  if (status) status.innerHTML = `OK • ${items.length} záznamů • aktivní ${open}${carryover ? ` • přesah ${carryover}` : ""} • významné ${major}`;
 
   if (weatherRisk && __regionalWeatherLastData?.summary?.highestRisk) {
     const z = __regionalWeatherLastData.summary.highestRisk;
@@ -3071,7 +3090,7 @@ async function openEventDetailModal(id) {
         ${eventDetailLine("Město / místo", ev.city_text || ev.place_text || "")}
         ${eventDetailLine("Typ", `${meta.emoji} ${meta.label || ev.event_type || ""}`)}
         ${eventDetailLine("Stav", statusLabelForEvent(ev))}
-        ${eventDetailLine("Délka", formatDuration(ev.duration_min))}
+        ${eventDetailLine("Délka", formatDuration(liveDurationForEvent(ev)))}
         ${eventDetailLine("Stupeň", ev.alarm_level_text || "")}
         ${eventDetailLine("Význam", ev.major_reason || (ev.is_major_event ? "významná událost" : ""))}
       `;

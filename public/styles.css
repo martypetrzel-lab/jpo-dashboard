@@ -2847,3 +2847,25 @@ tr.majorEventRow {
     grid-template-columns: 1fr;
   }
 }
+
+
+/* active carryover events */
+.carryoverBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 6px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  color: #fff6d8;
+  background: rgba(255, 170, 65, 0.14);
+  border: 1px solid rgba(255, 190, 85, 0.32);
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+tr.majorEventRow .carryoverBadge {
+  background: rgba(255, 90, 45, 0.18);
+  border-color: rgba(255, 130, 70, 0.38);
+}
