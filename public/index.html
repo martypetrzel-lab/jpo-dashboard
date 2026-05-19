@@ -300,39 +300,73 @@
 
 
     
-    <section id="commandOverviewCard" class="card commandOverviewCard">
-      <div class="commandOverviewHero">
-        <div>
-          <div class="eyebrow">FireWatchCZ přehled</div>
-          <h2>Živý přehled událostí, počasí a významných zásahů</h2>
-          <p>Hlavní informace na jednom místě bez nutnosti hned rolovat do detailních sekcí.</p>
+    <section id="commandOverviewCard" class="card commandOverviewCard v28OverviewCard">
+      <div class="v28HeroTop">
+        <div class="v28HeroCopy">
+          <div class="eyebrow">FireWatchCZ operační přehled</div>
+          <h2>Aktuální situace na jednom místě</h2>
+          <p>
+            Rychlý přehled dnešních událostí, aktivních zásahů, významných událostí,
+            mapových bodů a chybějících souřadnic bez dlouhého hledání ve stránce.
+          </p>
         </div>
-        <div class="commandOverviewStatus" id="commandOverviewStatus">
-          Načítám…
+
+        <div class="v28HeroStatus">
+          <span id="commandOverviewStatus">Načítám…</span>
+          <small id="overviewLastUpdate">poslední aktualizace —</small>
         </div>
       </div>
 
-      <div class="commandOverviewGrid">
-        <button type="button" class="commandTile" data-scroll-target="mapCard">
-          <span>🗺️ Mapa</span>
-          <b id="overviewMapCount">—</b>
-          <small>body na mapě</small>
+      <div class="v28KpiGrid">
+        <button type="button" class="v28KpiTile urgent" data-scroll-target="eventsTableCard">
+          <span>🔴 Aktivní</span>
+          <b id="overviewOpenCount">—</b>
+          <small>probíhající zásahy</small>
         </button>
-        <button type="button" class="commandTile" data-scroll-target="majorEventsCard">
+
+        <button type="button" class="v28KpiTile" data-scroll-target="eventsTableCard">
+          <span>📋 Dnes celkem</span>
+          <b id="overviewTotalCount">—</b>
+          <small>záznamů ve filtru</small>
+        </button>
+
+        <button type="button" class="v28KpiTile warning" data-scroll-target="majorEventsCard">
           <span>🚨 Významné</span>
           <b id="overviewMajorCount">—</b>
-          <small>III. stupeň a vyšší</small>
+          <small>vyšší stupeň / ruční význam</small>
         </button>
-        <button type="button" class="commandTile" data-scroll-target="regionalWeatherCard">
-          <span>🌦️ Počasí</span>
-          <b id="overviewWeatherRisk">—</b>
-          <small>regionální riziko</small>
+
+        <button type="button" class="v28KpiTile" data-scroll-target="mapCard">
+          <span>🗺️ Na mapě</span>
+          <b id="overviewMapCount">—</b>
+          <small>událostí se souřadnicemi</small>
         </button>
-        <button type="button" class="commandTile" data-scroll-target="reportsArchiveCard">
-          <span>📄 Reporty</span>
-          <b>Archiv</b>
-          <small>denní/týdenní/měsíční</small>
+
+        <button type="button" class="v28KpiTile adminOnly" data-scroll-target="manualEventQuickCard">
+          <span>📍 Bez GPS</span>
+          <b id="overviewMissingCount">—</b>
+          <small>k ručnímu doplnění</small>
         </button>
+      </div>
+
+      <div class="v28OpsStrip">
+        <div class="v28OpsMain" id="overviewPrimaryIncident">
+          <strong>Nejdelší aktivní zásah</strong>
+          <span>zatím bez dat</span>
+        </div>
+
+        <div class="v28OpsMeta">
+          <span id="overviewFilterLabel">Filtr: —</span>
+          <span id="overviewDataHealth">Stav dat: načítám…</span>
+          <span id="overviewWeatherRisk">Počasí: načítá se</span>
+        </div>
+
+        <div class="v28QuickActions">
+          <button type="button" class="btn quickJump" data-scroll-target="mapCard">Mapa</button>
+          <button type="button" class="btn quickJump" data-scroll-target="eventsTableCard">Výjezdy</button>
+          <button type="button" class="btn quickJump" data-scroll-target="regionalWeatherCard">Počasí</button>
+          <button type="button" class="btn quickJump" data-scroll-target="reportsArchiveCard">Reporty</button>
+        </div>
       </div>
     </section>
 
@@ -340,7 +374,7 @@
       <div class="talkLauncherMain">
         <div>
           <h2>FireWatch Talk</h2>
-          <p>Soukromý týmový hlasový chat s místnostmi, statusy, rychlými odpověďmi a poslední hlasovou zprávou od každého uživatele.</p>
+          <p>Rychlá týmová komunikace bokem od veřejného přehledu. Otevře se jen když ji potřebuješ.</p>
         </div>
         <button id="toggleTalkBtn" class="btn primary">Otevřít FireWatch Talk 2.0</button>
       </div>
@@ -362,7 +396,7 @@
       </div>
     </section>
 
-    <section class="card mapCard">
+    <section id="mapCard" class="card mapCard v28MapCard">
       <div class="cardHeader">
         <h2>Mapa výjezdů</h2>
         <div class="hint legend">
@@ -379,7 +413,7 @@
         Stanice, trasy i pohyb vozidel jsou pouze orientační a simulované. Nejde o reálné sledování jednotek ani o neveřejná data.
       </div>
     </section>
-<section class="card">
+<section id="dailyStatsCard" class="card chartCard v28MiniPanel">
       <div class="cardHeader">
         <h2>Statistika (30 dní)</h2>
         <div class="hint">Počet výjezdů po dnech</div>
@@ -389,7 +423,7 @@
       </div>
     </section>
 
-    <section class="card">
+    <section id="activeClosedCard" class="card activeClosedCard v28MiniPanel">
       <div class="cardHeader">
         <h2>Aktivní × ukončené</h2>
         <div class="hint">Počet (30 dní, podle filtrů)</div>
@@ -407,7 +441,7 @@
       </div>
     </section>
 
-    <section class="card">
+    <section id="cityRankCard" class="card cityRankCard v28MiniPanel">
       <div class="cardHeader">
         <h2>Žebříček měst</h2>
         <div class="hint">Top 15 (30 dní)</div>
@@ -415,7 +449,7 @@
       <div class="list" id="topCities"></div>
     </section>
 
-    <section class="card">
+    <section id="longestEventsCard" class="card longestEventsCard v28MiniPanel">
       <div class="cardHeader">
         <h2>Nejdelší zásahy</h2>
         <div class="hint">Jen kde se spočítala délka</div>
@@ -469,7 +503,9 @@
     </section>
 
 
-    <section id="regionalWeatherCard" class="card regionalWeatherCard">
+    <div id="v28WorkAreaLabel" class="v28SectionLabel"><span>Analytika a rozšířené nástroje</span><small>počasí, statistiky, reporty a admin úpravy</small></div>
+
+<section id="regionalWeatherCard" class="card regionalWeatherCard">
       <div class="cardHeader">
         <h2>Regionální počasí × události</h2>
         <div class="hint">Open‑Meteo pro zóny Středočeského kraje, dnešek a dalších 24 hodin</div>
@@ -597,7 +633,7 @@
       <div id="majorEventsList" class="majorEventsList"></div>
     </section>
 
-<section class="card tableCard">
+<section id="eventsTableCard" class="card tableCard v28EventsCard">
       <div class="cardHeader">
         <h2>Poslední výjezdy</h2><div id="tableEditHelp" class="tableEditHelp adminOnly">Admin režim: události upravíš tlačítkem <b>Upravit</b> v posledním sloupci.</div>
         <div class="hint">Tabulka (scroll na mobilu)</div>

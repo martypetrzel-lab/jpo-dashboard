@@ -3156,3 +3156,632 @@ tr.majorEventRow .carryoverBadge {
     display: grid;
   }
 }
+
+
+
+/* ==========================================================
+   FireWatchCZ Web v2.8 – visual dashboard polish
+   Pure UI layer: keeps existing API, map, filters and admin logic intact.
+   ========================================================== */
+
+:root {
+  --fw-bg0: #070b11;
+  --fw-bg1: #0b111b;
+  --fw-card: rgba(17, 24, 36, 0.78);
+  --fw-card2: rgba(22, 31, 45, 0.72);
+  --fw-line: rgba(160, 190, 230, 0.14);
+  --fw-line2: rgba(255,255,255,0.10);
+  --fw-blue: #4f8cff;
+  --fw-blue2: #7db1ff;
+  --fw-orange: #ff7a28;
+  --fw-red: #ff4968;
+  --fw-green: #58e49a;
+  --fw-text: #eef5ff;
+  --fw-muted: rgba(235,245,255,0.66);
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background:
+    radial-gradient(circle at 18% -8%, rgba(70, 126, 255, 0.22), transparent 34rem),
+    radial-gradient(circle at 85% 5%, rgba(255, 117, 38, 0.12), transparent 30rem),
+    linear-gradient(180deg, var(--fw-bg0), var(--fw-bg1) 42%, #080d14);
+  color: var(--fw-text);
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(255,255,255,0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.018) 1px, transparent 1px);
+  background-size: 46px 46px;
+  mask-image: linear-gradient(to bottom, rgba(0,0,0,.35), transparent 45%);
+  z-index: -1;
+}
+
+.fwSidebar {
+  background:
+    linear-gradient(180deg, rgba(8,13,21,0.98), rgba(8,13,21,0.92)),
+    radial-gradient(circle at 20% 0%, rgba(79,140,255,0.16), transparent 16rem);
+  border-right: 1px solid var(--fw-line);
+  box-shadow: 18px 0 60px rgba(0,0,0,0.24);
+}
+
+.fwSidebarBrand {
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--fw-line);
+}
+
+.fwLogoMark {
+  background:
+    radial-gradient(circle at 30% 20%, rgba(255,255,255,0.75), transparent 20%),
+    linear-gradient(135deg, #244dba, #ff7a28);
+  box-shadow: 0 10px 32px rgba(79,140,255,0.28);
+}
+
+.fwSidebarNav button {
+  border: 1px solid transparent;
+  border-radius: 14px;
+  transition: transform .15s ease, background .15s ease, border-color .15s ease;
+}
+
+.fwSidebarNav button:hover,
+.fwSidebarNav button.isActive {
+  transform: translateX(3px);
+  background: rgba(79,140,255,0.12);
+  border-color: rgba(125,177,255,0.22);
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 90;
+  backdrop-filter: blur(18px);
+  background: rgba(8, 12, 20, 0.78);
+  border-bottom: 1px solid var(--fw-line);
+  box-shadow: 0 18px 48px rgba(0,0,0,0.22);
+}
+
+.brand {
+  letter-spacing: -0.04em;
+}
+
+.brandCz {
+  color: var(--fw-orange);
+}
+
+.actions .btn,
+.btn,
+button.btn {
+  border-radius: 14px;
+  border-color: rgba(125,177,255,0.22);
+  background: rgba(17, 28, 46, 0.78);
+  transition: transform .16s ease, border-color .16s ease, background .16s ease, box-shadow .16s ease;
+}
+
+.actions .btn:hover,
+.btn:hover,
+button.btn:hover {
+  transform: translateY(-1px);
+  border-color: rgba(125,177,255,0.44);
+  background: rgba(38, 61, 98, 0.78);
+  box-shadow: 0 10px 24px rgba(0,0,0,0.18);
+}
+
+.btn.primary {
+  background: linear-gradient(135deg, rgba(47,109,246,0.78), rgba(23,67,160,0.78));
+  border-color: rgba(125,177,255,0.42);
+}
+
+.pill,
+.pillMode {
+  border-radius: 999px;
+  border: 1px solid rgba(120, 255, 180, 0.23);
+  background: rgba(38, 190, 105, 0.10);
+}
+
+.filters {
+  position: sticky;
+  top: 70px;
+  z-index: 75;
+  backdrop-filter: blur(16px);
+  background: rgba(8, 12, 20, 0.70);
+  border-bottom: 1px solid var(--fw-line);
+  box-shadow: 0 14px 34px rgba(0,0,0,0.18);
+}
+
+.filters select,
+.filters input,
+.reportControls input,
+.reportControls select,
+.statsProControls select,
+.regionalWeatherControls select,
+.regionalWeatherControls input {
+  border-radius: 15px !important;
+  border: 1px solid rgba(160,190,230,0.16) !important;
+  background: rgba(255,255,255,0.055) !important;
+  color: var(--fw-text) !important;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(340px, .85fr);
+  gap: 14px;
+  align-items: start;
+  padding: 14px;
+}
+
+.card {
+  border: 1px solid var(--fw-line);
+  border-radius: 22px;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.045), rgba(255,255,255,0.022)),
+    var(--fw-card);
+  box-shadow:
+    0 18px 55px rgba(0,0,0,0.22),
+    inset 0 1px 0 rgba(255,255,255,0.05);
+  overflow: hidden;
+}
+
+.cardHeader {
+  align-items: start;
+  gap: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.055);
+}
+
+.cardHeader h2 {
+  letter-spacing: -0.04em;
+}
+
+.cardHeader .hint {
+  color: var(--fw-muted);
+}
+
+/* Landing is now a compact intro, not a large block before the real dashboard */
+.landingPage,
+.publicGuestHero {
+  margin: 10px 14px 0;
+  border-radius: 24px;
+  border: 1px solid rgba(160,190,230,0.12);
+  background: rgba(9, 15, 24, 0.52);
+  overflow: hidden;
+}
+
+.landingPage .landingHero,
+.publicGuestHero {
+  padding: 14px;
+}
+
+.landingHero h1 {
+  max-width: 1050px;
+  font-size: clamp(24px, 3vw, 46px);
+  letter-spacing: -0.055em;
+}
+
+.landingHero p {
+  max-width: 900px;
+  color: var(--fw-muted);
+}
+
+/* New v2.8 overview */
+.v28OverviewCard {
+  grid-column: 1 / -1;
+  padding: 0;
+  background:
+    radial-gradient(circle at 0% 0%, rgba(79,140,255,0.20), transparent 36rem),
+    radial-gradient(circle at 100% 0%, rgba(255,122,40,0.16), transparent 34rem),
+    linear-gradient(180deg, rgba(20, 32, 50, 0.92), rgba(13, 20, 31, 0.84));
+}
+
+.v28HeroTop {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 18px;
+  align-items: center;
+  padding: 20px;
+  border-bottom: 1px solid rgba(255,255,255,0.07);
+}
+
+.v28HeroCopy .eyebrow {
+  color: var(--fw-blue2);
+  font-weight: 950;
+  text-transform: uppercase;
+  letter-spacing: .10em;
+  font-size: 11px;
+  margin-bottom: 7px;
+}
+
+.v28HeroCopy h2 {
+  margin: 0;
+  font-size: clamp(25px, 3vw, 42px);
+  letter-spacing: -0.06em;
+  line-height: 1.06;
+}
+
+.v28HeroCopy p {
+  margin: 9px 0 0;
+  max-width: 850px;
+  color: var(--fw-muted);
+  line-height: 1.45;
+}
+
+.v28HeroStatus {
+  display: grid;
+  justify-items: end;
+  gap: 6px;
+  min-width: 230px;
+}
+
+.v28HeroStatus span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 38px;
+  padding: 8px 13px;
+  border-radius: 999px;
+  border: 1px solid rgba(88,228,154,0.24);
+  background: rgba(88,228,154,0.10);
+  color: #ddffe9;
+  font-weight: 950;
+}
+
+.v28HeroStatus small {
+  color: rgba(235,245,255,0.58);
+}
+
+.v28KpiGrid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(140px, 1fr));
+  gap: 10px;
+  padding: 14px 20px;
+}
+
+.v28KpiTile {
+  text-align: left;
+  min-height: 116px;
+  border-radius: 20px;
+  padding: 14px;
+  border: 1px solid rgba(255,255,255,0.09);
+  color: var(--fw-text);
+  background:
+    radial-gradient(circle at 90% 0%, rgba(125,177,255,0.16), transparent 56%),
+    rgba(255,255,255,0.045);
+  cursor: pointer;
+}
+
+.v28KpiTile:hover {
+  transform: translateY(-2px);
+  border-color: rgba(125,177,255,0.38);
+  background:
+    radial-gradient(circle at 90% 0%, rgba(125,177,255,0.26), transparent 56%),
+    rgba(255,255,255,0.065);
+}
+
+.v28KpiTile.urgent {
+  border-color: rgba(255,73,104,0.26);
+  background:
+    radial-gradient(circle at 90% 0%, rgba(255,73,104,0.20), transparent 56%),
+    rgba(255,255,255,0.045);
+}
+
+.v28KpiTile.warning {
+  border-color: rgba(255,160,72,0.26);
+  background:
+    radial-gradient(circle at 90% 0%, rgba(255,160,72,0.20), transparent 56%),
+    rgba(255,255,255,0.045);
+}
+
+.v28KpiTile span,
+.v28KpiTile small {
+  display: block;
+}
+
+.v28KpiTile span {
+  color: rgba(235,245,255,0.70);
+  font-weight: 900;
+}
+
+.v28KpiTile b {
+  display: block;
+  margin: 10px 0 4px;
+  font-size: clamp(28px, 3vw, 42px);
+  letter-spacing: -0.06em;
+  line-height: 1;
+}
+
+.v28KpiTile small {
+  color: rgba(235,245,255,0.56);
+}
+
+.v28OpsStrip {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(280px, .8fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 14px 20px 20px;
+}
+
+.v28OpsMain {
+  min-height: 72px;
+  display: grid;
+  align-content: center;
+  gap: 5px;
+  padding: 12px 14px;
+  border-radius: 18px;
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(255,255,255,0.04);
+}
+
+.v28OpsMain strong {
+  font-size: 16px;
+}
+
+.v28OpsMain span,
+.v28OpsMeta span {
+  color: rgba(235,245,255,0.66);
+}
+
+.v28OpsMeta {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.v28OpsMeta .ok {
+  color: #bfffd8;
+}
+
+.v28OpsMeta .warn {
+  color: #ffe1a6;
+}
+
+.v28QuickActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* Layout: make it feel like dashboard panels, not a long list */
+.talkLauncherCard,
+.opsRadioCardShell,
+.publicLockedCard,
+.watchCard,
+.regionalWeatherCard,
+.statsProCard,
+.reportsArchiveCard,
+.manualEventQuickCard,
+.majorEventsCard,
+.v28EventsCard {
+  grid-column: 1 / -1;
+}
+
+.v28MapCard {
+  grid-column: 1 / -1;
+  padding: 0;
+}
+
+.v28MapCard .cardHeader,
+.v28MapCard .mapDisclaimer {
+  padding-left: 14px;
+  padding-right: 14px;
+}
+
+#map {
+  min-height: clamp(390px, 46vh, 620px);
+  border-top: 1px solid rgba(255,255,255,0.055);
+  border-bottom: 1px solid rgba(255,255,255,0.055);
+}
+
+.v28MiniPanel {
+  min-height: 280px;
+}
+
+#dailyStatsCard {
+  grid-column: 1 / 2;
+}
+
+#activeClosedCard {
+  grid-column: 2 / 3;
+}
+
+#cityRankCard {
+  grid-column: 1 / 2;
+}
+
+#longestEventsCard {
+  grid-column: 2 / 3;
+}
+
+.v28SectionLabel {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 4px 0;
+  color: var(--fw-muted);
+}
+
+.v28SectionLabel span {
+  color: var(--fw-text);
+  font-weight: 950;
+  font-size: 18px;
+  letter-spacing: -0.04em;
+}
+
+.v28SectionLabel small {
+  color: rgba(235,245,255,0.52);
+}
+
+/* Talk launcher as compact utility, not a huge panel */
+.talkLauncherCard {
+  background:
+    linear-gradient(135deg, rgba(29,54,97,0.60), rgba(18,26,40,0.80)),
+    var(--fw-card);
+}
+
+.talkLauncherMain {
+  align-items: center;
+}
+
+.talkLauncherMain h2 {
+  letter-spacing: -0.04em;
+}
+
+/* Weather/stat/report panels */
+.regionalWeatherCard,
+.statsProCard,
+.reportsArchiveCard,
+.majorEventsCard,
+.manualEventQuickCard {
+  background:
+    radial-gradient(circle at 100% 0%, rgba(79,140,255,0.10), transparent 25rem),
+    var(--fw-card);
+}
+
+/* Table polish */
+.v28EventsCard {
+  padding-bottom: 4px;
+}
+
+.tableWrap {
+  border-radius: 18px;
+  border: 1px solid rgba(255,255,255,0.065);
+  background: rgba(0,0,0,0.10);
+}
+
+.tableCard table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.tableCard thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: rgba(13, 20, 31, 0.96);
+  color: rgba(235,245,255,0.68);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: .045em;
+}
+
+.tableCard tbody tr {
+  transition: background .14s ease, transform .14s ease;
+}
+
+.tableCard tbody tr:hover {
+  background: rgba(79,140,255,0.075);
+}
+
+.tableCard tbody tr.majorEventRow {
+  background:
+    linear-gradient(90deg, rgba(255,90,55,0.14), transparent 42%),
+    rgba(255,255,255,0.02);
+}
+
+.tableCard tbody tr.majorEventRow:hover {
+  background:
+    linear-gradient(90deg, rgba(255,90,55,0.20), transparent 46%),
+    rgba(79,140,255,0.08);
+}
+
+.tableManualEditBtn {
+  min-width: 82px;
+}
+
+.alarmBadge,
+.carryoverBadge {
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06);
+}
+
+/* Admin/modals also get the same visual language */
+.modal,
+.modalBackdrop .modal {
+  border-radius: 24px !important;
+  border: 1px solid rgba(160,190,230,0.18) !important;
+  background:
+    radial-gradient(circle at 0% 0%, rgba(79,140,255,0.13), transparent 28rem),
+    rgba(12, 18, 29, 0.96) !important;
+  box-shadow: 0 30px 95px rgba(0,0,0,0.48) !important;
+}
+
+.manualEventInfo,
+.eventDetailHeader {
+  background: rgba(79,140,255,0.10) !important;
+  border-color: rgba(125,177,255,0.26) !important;
+}
+
+.manualCoordsBox {
+  background:
+    radial-gradient(circle at 100% 0%, rgba(80,180,255,0.15), transparent 24rem),
+    rgba(80,180,255,0.055) !important;
+}
+
+/* Mobile / narrower layouts */
+@media (max-width: 1180px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+
+  #dailyStatsCard,
+  #activeClosedCard,
+  #cityRankCard,
+  #longestEventsCard {
+    grid-column: 1 / -1;
+  }
+
+  .v28KpiGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .v28OpsStrip,
+  .v28HeroTop {
+    grid-template-columns: 1fr;
+  }
+
+  .v28HeroStatus {
+    justify-items: start;
+  }
+
+  .v28QuickActions {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 760px) {
+  .filters {
+    position: static;
+  }
+
+  .grid {
+    padding: 10px;
+  }
+
+  .v28KpiGrid {
+    grid-template-columns: 1fr;
+    padding: 10px;
+  }
+
+  .v28HeroTop,
+  .v28OpsStrip {
+    padding: 14px;
+  }
+
+  #map {
+    min-height: 360px;
+  }
+
+  .landingPage,
+  .publicGuestHero {
+    margin-left: 10px;
+    margin-right: 10px;
+  }
+}

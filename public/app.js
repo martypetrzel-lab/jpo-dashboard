@@ -2741,29 +2741,89 @@ function wireMajorEventsBackfill() {
 
 function updateCommandOverview(items = [], stats = null) {
   const status = document.getElementById("commandOverviewStatus");
+  const lastUpdate = document.getElementById("overviewLastUpdate");
   const mapCount = document.getElementById("overviewMapCount");
   const majorCount = document.getElementById("overviewMajorCount");
+  const openCount = document.getElementById("overviewOpenCount");
+  const totalCount = document.getElementById("overviewTotalCount");
+  const missingCount = document.getElementById("overviewMissingCount");
   const weatherRisk = document.getElementById("overviewWeatherRisk");
+  const primary = document.getElementById("overviewPrimaryIncident");
+  const filterLabel = document.getElementById("overviewFilterLabel");
+  const dataHealth = document.getElementById("overviewDataHealth");
 
-  const mapped = items.filter(x => Number.isFinite(Number(x.lat)) && Number.isFinite(Number(x.lon))).length;
-  const major = items.filter(x => typeof isMajorEventItem === "function" ? isMajorEventItem(x) : false).length;
-  const open = items.filter(x => !x.is_closed).length;
-  const carryover = items.filter(x => isImportantCarryoverEvent(x) && (x.is_carryover_active || Number(x.carryover_days || 0) > 0)).length;
+  const safeItems = Array.isArray(items) ? items : [];
+  const mapped = safeItems.filter(x => typeof hasValidCoords === "function" ? hasValidCoords(x) : (Number.isFinite(Number(x.lat)) && Number.isFinite(Number(x.lon)))).length;
+  const missing = Math.max(0, safeItems.length - mapped);
+  const major = safeItems.filter(x => typeof isMajorEventItem === "function" ? isMajorEventItem(x) : false).length;
+  const open = safeItems.filter(x => !x.is_closed).length;
+  const closed = safeItems.filter(x => !!x.is_closed).length;
+  const carryover = safeItems.filter(x => typeof isImportantCarryoverEvent === "function" && isImportantCarryoverEvent(x) && (x.is_carryover_active || Number(x.carryover_days || 0) > 0)).length;
 
   if (mapCount) mapCount.textContent = `${mapped}`;
   if (majorCount) majorCount.textContent = `${major}`;
-  if (status) status.innerHTML = `OK • ${items.length} záznamů • aktivní ${open}${carryover ? ` • přesah ${carryover}` : ""} • významné ${major}`;
+  if (openCount) openCount.textContent = `${open}`;
+  if (totalCount) totalCount.textContent = `${safeItems.length}`;
+  if (missingCount) missingCount.textContent = `${missing}`;
+
+  if (status) {
+    const state = open > 0 ? "AKTIVNÍ PROVOZ" : "KLIDOVÝ PŘEHLED";
+    status.textContent = `${state} • ${safeItems.length} záznamů`;
+  }
+
+  if (lastUpdate) {
+    try {
+      lastUpdate.textContent = `aktualizováno ${new Intl.DateTimeFormat("cs-CZ", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date())}`;
+    } catch {
+      lastUpdate.textContent = "aktualizováno nyní";
+    }
+  }
+
+  if (filterLabel) {
+    const f = typeof getFiltersFromUi === "function" ? getFiltersFromUi() : {};
+    const dayMap = { today: "dnes", yesterday: "včera", all: "vše" };
+    const statusMap = { all: "vše", open: "aktivní", closed: "ukončené" };
+    filterLabel.textContent = `Filtr: ${dayMap[f.day] || f.day || "—"} • ${f.type || "vše"} • ${statusMap[f.status] || f.status || "vše"}${f.city ? ` • ${f.city}` : ""}`;
+  }
+
+  if (dataHealth) {
+    if (safeItems.length === 0) {
+      dataHealth.textContent = "Stav dat: bez záznamů pro filtr";
+      dataHealth.className = "warn";
+    } else if (missing > 0) {
+      dataHealth.textContent = `Stav dat: ${missing} bez GPS`;
+      dataHealth.className = "warn";
+    } else {
+      dataHealth.textContent = "Stav dat: GPS kompletní";
+      dataHealth.className = "ok";
+    }
+  }
+
+  if (primary) {
+    const openSorted = safeItems
+      .filter(x => !x.is_closed)
+      .map(x => ({ ...x, __duration: typeof liveDurationForEvent === "function" ? Number(liveDurationForEvent(x) || 0) : Number(x.duration_min || 0) }))
+      .sort((a, b) => b.__duration - a.__duration);
+
+    if (openSorted.length) {
+      const it = openSorted[0];
+      const meta = typeof typeMeta === "function" ? typeMeta(it.event_type) : { emoji: "•" };
+      primary.innerHTML = `<strong>${meta.emoji || "•"} ${escapeHtml(it.title || "Aktivní zásah")}</strong><span>${escapeHtml(it.city_text || it.place_text || "")} • ${escapeHtml(formatDuration(it.__duration))}${carryover ? ` • přesah ${carryover}` : ""}</span>`;
+    } else {
+      primary.innerHTML = `<strong>✅ Bez aktivního zásahu</strong><span>${closed} ukončených v aktuálním filtru</span>`;
+    }
+  }
 
   if (weatherRisk && __regionalWeatherLastData?.summary?.highestRisk) {
     const z = __regionalWeatherLastData.summary.highestRisk;
-    weatherRisk.textContent = `${z.zoneName || "—"}`;
+    weatherRisk.textContent = `Počasí: ${z.zoneName || "bez zvýšeného rizika"}`;
   } else if (weatherRisk) {
-    weatherRisk.textContent = "načítá se";
+    weatherRisk.textContent = "Počasí: načítá se";
   }
 }
 
 function wireCommandOverviewNav() {
-  document.querySelectorAll(".commandTile[data-scroll-target]").forEach((btn) => {
+  document.querySelectorAll(".commandTile[data-scroll-target], .v28KpiTile[data-scroll-target], .quickJump[data-scroll-target], .fwSidebarNav [data-scroll-target]").forEach((btn) => {
     btn.addEventListener("click", () => {
       const id = btn.getAttribute("data-scroll-target");
       const el = id ? document.getElementById(id) : null;
