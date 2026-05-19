@@ -1096,16 +1096,46 @@ export async function decideOpsRequest({ requestId, adminUserId, approve }) {
   }
 }
 
-export async function getEventsMissingCoords(limit = 50) {
+export async function getEventsMissingCoords(limit = 50, day = "today") {
+  const lim = Math.max(1, Math.min(Number(limit || 50), 200));
+  const dayFilter = String(day || "today").toLowerCase();
+
+  const params = [];
+  const where = [`(lat IS NULL OR lon IS NULL)`];
+
+  if (dayFilter === "today" || dayFilter === "yesterday") {
+    const offset = dayFilter === "yesterday" ? 1 : 0;
+    params.push(offset);
+    where.push(
+      `(COALESCE(NULLIF(start_time_iso,'' )::timestamptz, NULLIF(pub_date,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date
+       = ((NOW() AT TIME ZONE 'Europe/Prague')::date - $${params.length}::int)`
+    );
+  } else if (/^\d{4}-\d{2}-\d{2}$/.test(dayFilter)) {
+    params.push(dayFilter);
+    where.push(
+      `(COALESCE(NULLIF(start_time_iso,'' )::timestamptz, NULLIF(pub_date,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date
+       = $${params.length}::date`
+    );
+  } else if (dayFilter !== "all") {
+    // bezpečný default: admin nástroj má být denní, ne historický.
+    where.push(
+      `(COALESCE(NULLIF(start_time_iso,'' )::timestamptz, NULLIF(pub_date,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date
+       = (NOW() AT TIME ZONE 'Europe/Prague')::date`
+    );
+  }
+
+  params.push(lim);
+
   const r = await pool.query(
     `SELECT id, title, city_text, place_text, status_text, description_raw,
             pub_date, is_closed, start_time_iso, end_time_iso,
             first_seen_at, last_seen_at, geo_source, geo_note, geo_updated_at
      FROM events
-     WHERE (lat IS NULL OR lon IS NULL)
-     ORDER BY last_seen_at DESC
-     LIMIT $1`,
-    [limit]
+     WHERE ${where.join(" AND ")}
+     ORDER BY COALESCE(NULLIF(start_time_iso,'' )::timestamptz, NULLIF(pub_date,'' )::timestamptz, created_at) DESC,
+              last_seen_at DESC
+     LIMIT $${params.length}`,
+    params
   );
   return r.rows || [];
 }

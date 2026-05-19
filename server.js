@@ -2375,7 +2375,7 @@ app.get("/api/admin/events-with-coords", requireAdmin, async (req, res) => {
 app.post("/api/admin/geocode-missing", requireAdmin, async (req, res) => {
   try {
     const limit = Math.max(1, Math.min(30, Number(req.body?.limit || req.query?.limit || 10)));
-    const rows = await getEventsMissingCoords(limit);
+    const rows = await getEventsMissingCoords(limit, req.query?.day || req.body?.day || "today");
 
     let checked = 0;
     let fixed = 0;
@@ -2443,8 +2443,9 @@ app.post("/api/admin/geocode-missing", requireAdmin, async (req, res) => {
 app.get("/api/admin/events-missing-coords", requireAdmin, async (req, res) => {
   try {
     const limit = Math.max(1, Math.min(200, Number(req.query?.limit || 50)));
-    const rows = await getEventsMissingCoords(limit);
-    return res.json({ ok: true, rows });
+    const day = String(req.query?.day || "today");
+    const rows = await getEventsMissingCoords(limit, day);
+    return res.json({ ok: true, rows, day });
   } catch (e) {
     console.error(e);
     return res.status(500).json({ ok: false, error: "server_error" });

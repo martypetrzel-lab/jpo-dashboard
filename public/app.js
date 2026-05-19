@@ -4405,7 +4405,7 @@ async function loadMissingCoords() {
 
       tbody.appendChild(tr);
     }
-    if (info) info.textContent = rows.length ? `Nalezeno ${rows.length} událostí bez souřadnic.` : "Žádné události bez souřadnic.";
+    if (info) info.textContent = rows.length ? `Nalezeno ${rows.length} událostí bez souřadnic pro vybraný den.` : "Pro vybraný den nejsou žádné události bez souřadnic.";
   } catch (e) {
     if (info) info.textContent = "Chyba načítání.";
     tbody.innerHTML = "";
@@ -4424,12 +4424,14 @@ async function autoGeocodeMissingCoords() {
       btn.textContent = "Doplňuji…";
     }
 
-    msg("coordsMsg", "Zkouším automaticky dohledat souřadnice pro prvních 10 chybějících událostí…", true);
+    const day = document.getElementById("daySelect")?.value || "today";
 
-    const r = await apiFetch("/api/admin/geocode-missing?limit=10", {
+    msg("coordsMsg", `Zkouším automaticky dohledat souřadnice pro prvních 10 chybějících událostí ve vybraném dni (${day})…`, true);
+
+    const r = await apiFetch(`/api/admin/geocode-missing?limit=10&day=${encodeURIComponent(day)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ limit: 10 })
+      body: JSON.stringify({ limit: 10, day })
     });
 
     const j = await r.json();
