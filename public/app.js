@@ -2654,6 +2654,58 @@ async function autoGeocodeMissingCoords() {
 }
 
 
+
+
+async function loadGeoSuggestionsForSelected() {
+  const id = document.getElementById("coordsEventId")?.value?.trim();
+  const box = document.getElementById("geoSuggestionsBox");
+  if (!id) {
+    msg("coordsMsg", "Nejprve vyber událost bez souřadnic.", false);
+    return;
+  }
+  if (box) box.innerHTML = `<div class="hint">Načítám návrhy GPS…</div>`;
+
+  try {
+    const r = await apiFetch(`/api/admin/geocode-suggestions/${encodeURIComponent(id)}`);
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || "suggestions failed");
+
+    const suggestions = j.suggestions || [];
+    if (!suggestions.length) {
+      if (box) box.innerHTML = `<div class="hint">Žádný návrh GPS se nepodařilo najít. Zkus vybrat bod ručně v mapě.</div>`;
+      return;
+    }
+
+    if (box) {
+      box.innerHTML = suggestions.map((s, idx) => `
+        <button class="geoSuggestionItem" data-lat="${escapeHtml(String(s.lat))}" data-lon="${escapeHtml(String(s.lon))}" data-source="${escapeHtml(s.source || "suggestion")}" data-note="${escapeHtml(s.query || "")}">
+          <span>
+            <b>Návrh ${idx + 1}</b>
+            <small>${escapeHtml(s.label || s.query || "")}</small>
+            <small>${escapeHtml(s.source || "suggestion")} • jistota ${Number(s.confidence || 0)} %</small>
+          </span>
+          <span>${Number(s.lat).toFixed(5)}, ${Number(s.lon).toFixed(5)}</span>
+        </button>
+      `).join("");
+
+      box.querySelectorAll(".geoSuggestionItem").forEach(btn => {
+        btn.addEventListener("click", () => {
+          document.getElementById("coordsLat").value = btn.dataset.lat || "";
+          document.getElementById("coordsLon").value = btn.dataset.lon || "";
+          msg("coordsMsg", `Návrh vložen do polí. Potvrď tlačítkem Uložit.`, true);
+          try {
+            map?.setView([Number(btn.dataset.lat), Number(btn.dataset.lon)], 13);
+          } catch {}
+        });
+      });
+    }
+  } catch (e) {
+    if (box) box.innerHTML = "";
+    msg("coordsMsg", `Návrhy GPS se nepodařilo načíst: ${String(e.message || e)}`, false);
+  }
+}
+
+
 async function saveCoordsForSelected() {
   const id = document.getElementById("coordsEventId")?.value?.trim();
   const lat = Number(document.getElementById("coordsLat")?.value);
@@ -2704,6 +2756,7 @@ function wireMissingCoordsUiOnce() {
     setPickMode(true);
   });
   document.getElementById("saveCoordsBtn")?.addEventListener("click", saveCoordsForSelected);
+  document.getElementById("loadGeoSuggestionsBtn")?.addEventListener("click", loadGeoSuggestionsForSelected);
   document.getElementById("clearCoordsBtn")?.addEventListener("click", clearCoordsForSelected);
 }
 

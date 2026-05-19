@@ -1077,3 +1077,39 @@ body.isGuestMode #registerBtn {
     width: 100%;
   }
 }
+
+
+/* FireWatchCZ v1.4 – Geolocation 2.0 */
+.geoSuggestionsBox {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.geoSuggestionItem {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  text-align: left;
+  padding: 10px 12px;
+  border: 1px solid rgba(90,160,255,0.22);
+  border-radius: 14px;
+  background: rgba(90,160,255,0.075);
+  color: #fff;
+  cursor: pointer;
+}
+
+.geoSuggestionItem:hover {
+  border-color: rgba(90,160,255,0.50);
+  background: rgba(90,160,255,0.13);
+}
+
+.geoSuggestionItem span {
+  display: grid;
+  gap: 2px;
+}
+
+.geoSuggestionItem small {
+  color: rgba(235,245,255,0.66);
+}

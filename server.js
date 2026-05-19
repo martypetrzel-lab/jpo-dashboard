@@ -65,6 +65,8 @@ import {
   listPendingOpsRequests,
   decideOpsRequest,
   getEventsMissingCoords,
+  getEventById,
+  listEventsWithCoords,
   upsertArchivedReport,
   listArchivedReports,
   getArchivedReport,
@@ -545,6 +547,84 @@ function buildGeocodeQueriesForEvent(ev, districtFromDesc = "") {
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+
+// FireWatchCZ v1.4 – extra local aliases for problematic / frequent locations.
+// Coordinates are approximate village/town centers. They are used only as fallback.
+const FIREWATCH_EXTRA_LOCAL_COORDS = {
+  "nehvizdy": [50.1306, 14.7296],
+  "jirny": [50.1159, 14.6971],
+  "horni pocernice": [50.1127, 14.6103],
+  "praha vychod": [50.1073, 14.7250],
+  "praha zapad": [49.9833, 14.3333],
+  "lysa nad labem": [50.2014, 14.8328],
+  "sadská": [50.1354, 14.9863],
+  "sadska": [50.1354, 14.9863],
+  "kostelec nad cernymi lesy": [49.9940, 14.8592],
+  "kostelec nad černými lesy": [49.9940, 14.8592],
+  "mukoruby": [49.9510, 15.1741],
+  "velvary": [50.2817, 14.2362],
+  "buštěhrad": [50.1560, 14.1884],
+  "bustehrad": [50.1560, 14.1884],
+  "velke prilepy": [50.1605, 14.3155],
+  "velké přílepy": [50.1605, 14.3155],
+  "klecany": [50.1760, 14.4115],
+  "odolená voda": [50.2334, 14.4108],
+  "odolena voda": [50.2334, 14.4108],
+  "veltrusy": [50.2703, 14.3286],
+  "tisice": [50.2695, 14.5546],
+  "tišice": [50.2695, 14.5546],
+  "lazne tousen": [50.1697, 14.7149],
+  "lázně toušeň": [50.1697, 14.7149],
+  "zelenec": [50.1324, 14.6607],
+  "svémyslice": [50.1512, 14.6493],
+  "svemyslice": [50.1512, 14.6493],
+  "poděbrady": [50.1424, 15.1188],
+  "podebrady": [50.1424, 15.1188],
+  "kutna hora": [49.9484, 15.2682],
+  "kutná hora": [49.9484, 15.2682],
+  "milovice": [50.2259, 14.8886],
+  "nove dvory": [49.9700, 15.3318],
+  "nové dvory": [49.9700, 15.3318],
+  "kralupy nad vltavou": [50.2411, 14.3115]
+};
+
+if (typeof LOCAL_PLACE_COORDS !== "undefined") {
+  for (const [k, v] of Object.entries(FIREWATCH_EXTRA_LOCAL_COORDS)) {
+    LOCAL_PLACE_COORDS.set(normalizePlaceKey(k), v);
+  }
+}
+
+function buildGeocodeSuggestionsForEvent(ev, max = 8) {
+  const district = extractDistrictFromDescription(ev?.descriptionRaw || ev?.description_raw || "");
+  const queries = buildGeocodeQueriesForEvent(ev, district);
+  const local = [];
+
+  for (const q of queries) {
+    const g = localGeocode(q);
+    if (g) {
+      local.push({
+        lat: g.lat,
+        lon: g.lon,
+        source: g.source || "local",
+        query: q,
+        confidence: g.source === "local" ? 95 : 86,
+        label: normalizePlaceQuery(q)
+      });
+    }
+  }
+
+  const dedup = [];
+  const seen = new Set();
+  for (const s of local) {
+    const key = `${Number(s.lat).toFixed(5)},${Number(s.lon).toFixed(5)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    dedup.push(s);
+  }
+
+  return dedup.slice(0, max);
 }
 
 async function geocodePlace(placeText) {
@@ -1356,6 +1436,93 @@ app.post("/api/admin/ops-requests/:id/reject", requireAdmin, async (req, res) =>
 });
 
 
+
+app.get("/api/admin/geocode-suggestions/:id", requireAdmin, async (req, res) => {
+  try {
+    const ev = await getEventById(req.params.id);
+    if (!ev) return res.status(404).json({ ok: false, error: "not_found" });
+
+    const wrapped = {
+      id: ev.id,
+      title: ev.title,
+      placeText: ev.place_text,
+      cityText: ev.city_text,
+      descriptionRaw: ev.description_raw
+    };
+
+    const localSuggestions = buildGeocodeSuggestionsForEvent(wrapped, 10);
+    const remoteSuggestions = [];
+    const queries = buildGeocodeQueriesForEvent(wrapped).slice(0, 4);
+
+    for (const q of queries) {
+      const g = await geocodePlace(q);
+      if (g) {
+        remoteSuggestions.push({
+          lat: g.lat,
+          lon: g.lon,
+          source: g.source || (g.cached ? "cache" : "nominatim"),
+          query: q,
+          confidence: g.source === "cache" ? 88 : 78,
+          label: q
+        });
+      }
+    }
+
+    const out = [];
+    const seen = new Set();
+    for (const s of [...localSuggestions, ...remoteSuggestions]) {
+      const key = `${Number(s.lat).toFixed(5)},${Number(s.lon).toFixed(5)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(s);
+    }
+
+    return res.json({ ok: true, event: ev, suggestions: out.slice(0, 10) });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ ok: false, error: "suggestions_failed" });
+  }
+});
+
+app.post("/api/admin/events/:id/coords", requireAdmin, async (req, res) => {
+  try {
+    const lat = Number(req.body?.lat);
+    const lon = Number(req.body?.lon);
+    const source = String(req.body?.source || "manual").slice(0, 80);
+    const note = String(req.body?.note || "").slice(0, 500);
+
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      return res.status(400).json({ ok: false, error: "bad_coords" });
+    }
+    if (lat < 48 || lat > 52 || lon < 12 || lon > 19) {
+      return res.status(400).json({ ok: false, error: "coords_outside_cz" });
+    }
+
+    await updateEventCoords(req.params.id, lat, lon, source, note);
+    await insertAudit({
+      actor_user_id: req.auth.user.id,
+      action: "event_coords_updated",
+      detail: JSON.stringify({ id: req.params.id, lat, lon, source, note })
+    }).catch(() => {});
+
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ ok: false, error: "coords_update_failed" });
+  }
+});
+
+app.get("/api/admin/events-with-coords", requireAdmin, async (req, res) => {
+  try {
+    const rows = await listEventsWithCoords(Number(req.query.limit || 100));
+    return res.json({ ok: true, items: rows });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ ok: false, error: "coords_list_failed" });
+  }
+});
+
+
 app.post("/api/admin/geocode-missing", requireAdmin, async (req, res) => {
   try {
     const limit = Math.max(1, Math.min(30, Number(req.body?.limit || req.query?.limit || 10)));
@@ -1392,7 +1559,7 @@ app.post("/api/admin/geocode-missing", requireAdmin, async (req, res) => {
       }
 
       if (hit) {
-        await updateEventCoords(row.id, hit.lat, hit.lon);
+        await updateEventCoords(row.id, hit.lat, hit.lon, hit.source || "auto", usedQuery);
         fixed++;
         results.push({
           id: row.id,

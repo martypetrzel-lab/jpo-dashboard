@@ -45,6 +45,9 @@ export async function initDb() {
 
       lat DOUBLE PRECISION,
       lon DOUBLE PRECISION,
+      geo_source TEXT,
+      geo_note TEXT,
+      geo_updated_at TIMESTAMPTZ,
 
       first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       last_seen_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -155,7 +158,18 @@ export async function initDb() {
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_log_ts ON audit_log(ts DESC);`);
 
-  // ✅ od kdy počítat "nejdelší zásahy" a ukládat nové délky (nezasahuje do historie)
+  
+  if (!(await colExists("events", "geo_source"))) {
+    await pool.query(`ALTER TABLE events ADD COLUMN geo_source TEXT`);
+  }
+  if (!(await colExists("events", "geo_note"))) {
+    await pool.query(`ALTER TABLE events ADD COLUMN geo_note TEXT`);
+  }
+  if (!(await colExists("events", "geo_updated_at"))) {
+    await pool.query(`ALTER TABLE events ADD COLUMN geo_updated_at TIMESTAMPTZ`);
+  }
+
+// ✅ od kdy počítat "nejdelší zásahy" a ukládat nové délky (nezasahuje do historie)
   await pool.query(`
     INSERT INTO app_settings (key, value)
     VALUES ('duration_cutoff_iso', NOW()::text)
@@ -434,12 +448,20 @@ export async function upsertEvent(ev) {
   );
 }
 
-export async function updateEventCoords(id, lat, lon) {
-  await pool.query(`UPDATE events SET lat=$2, lon=$3 WHERE id=$1`, [id, lat, lon]);
+export async function updateEventCoords(id, lat, lon, source = "manual", note = "") {
+  await pool.query(
+    `UPDATE events
+     SET lat=$2, lon=$3, geo_source=$4, geo_note=$5, geo_updated_at=NOW()
+     WHERE id=$1`,
+    [id, lat, lon, source, note]
+  );
 }
 
 export async function clearEventCoords(id) {
-  await pool.query(`UPDATE events SET lat=NULL, lon=NULL WHERE id=$1`, [id]);
+  await pool.query(
+    `UPDATE events SET lat=NULL, lon=NULL, geo_source=NULL, geo_note=NULL, geo_updated_at=NOW() WHERE id=$1`,
+    [id]
+  );
 }
 
 export async function updateEventDuration(id, durationMin) {
@@ -983,7 +1005,9 @@ export async function decideOpsRequest({ requestId, adminUserId, approve }) {
 
 export async function getEventsMissingCoords(limit = 50) {
   const r = await pool.query(
-    `SELECT id, title, city_text, place_text, status_text, pub_date, is_closed, start_time_iso, end_time_iso, first_seen_at, last_seen_at
+    `SELECT id, title, city_text, place_text, status_text, description_raw,
+            pub_date, is_closed, start_time_iso, end_time_iso,
+            first_seen_at, last_seen_at, geo_source, geo_note, geo_updated_at
      FROM events
      WHERE (lat IS NULL OR lon IS NULL)
      ORDER BY last_seen_at DESC
@@ -1096,5 +1120,32 @@ export async function getEventsForPeriod(startIso, endExclusiveIso) {
     [startIso, endExclusiveIso]
   );
 
+  return r.rows || [];
+}
+
+
+export async function getEventById(id) {
+  const r = await pool.query(
+    `SELECT id, title, link, pub_date, place_text, city_text, status_text, event_type,
+            description_raw, start_time_iso, end_time_iso, duration_min, is_closed,
+            lat, lon, first_seen_at, last_seen_at, created_at, geo_source, geo_note, geo_updated_at
+     FROM events
+     WHERE id=$1
+     LIMIT 1`,
+    [id]
+  );
+  return r.rows[0] || null;
+}
+
+export async function listEventsWithCoords(limit = 100) {
+  const r = await pool.query(
+    `SELECT id, title, city_text, place_text, status_text, event_type, pub_date,
+            lat, lon, geo_source, geo_note, geo_updated_at, last_seen_at
+     FROM events
+     WHERE lat IS NOT NULL AND lon IS NOT NULL
+     ORDER BY COALESCE(geo_updated_at, last_seen_at) DESC
+     LIMIT $1`,
+    [Math.max(1, Math.min(Number(limit || 100), 500))]
+  );
   return r.rows || [];
 }
