@@ -1490,3 +1490,264 @@ body.isGuestMode #registerBtn {
     grid-template-columns: 1fr;
   }
 }
+
+
+/* ==============================
+   FireWatchCZ Web v2.0 – Professional Layout
+   ============================== */
+:root {
+  --fw-sidebar-w: 258px;
+  --fw-bg-main: #070b12;
+  --fw-bg-panel: rgba(17, 24, 36, 0.92);
+  --fw-border: rgba(255,255,255,0.10);
+  --fw-blue: #2f6df6;
+  --fw-orange: #ff7a2f;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background:
+    radial-gradient(circle at top left, rgba(47,109,246,0.08), transparent 32rem),
+    radial-gradient(circle at bottom right, rgba(255,122,47,0.07), transparent 30rem),
+    var(--fw-bg-main) !important;
+}
+
+.fwAppShell {
+  margin-left: var(--fw-sidebar-w);
+  min-height: 100vh;
+  transition: margin-left .18s ease;
+}
+
+.fwSidebar {
+  position: fixed;
+  inset: 0 auto 0 0;
+  z-index: 9000;
+  width: var(--fw-sidebar-w);
+  box-sizing: border-box;
+  padding: 16px;
+  border-right: 1px solid var(--fw-border);
+  background:
+    linear-gradient(180deg, rgba(11, 17, 28, 0.98), rgba(8, 12, 18, 0.98));
+  color: #fff;
+  box-shadow: 18px 0 80px rgba(0,0,0,0.28);
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  gap: 18px;
+}
+
+.fwSidebarBrand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 10px 8px 14px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+
+.fwLogoMark {
+  width: 42px;
+  height: 42px;
+  border-radius: 16px;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-weight: 1000;
+  letter-spacing: -0.04em;
+  background:
+    radial-gradient(circle at 35% 20%, rgba(255,255,255,0.35), transparent 30%),
+    linear-gradient(135deg, var(--fw-blue), var(--fw-orange));
+  box-shadow: 0 12px 34px rgba(47,109,246,0.22);
+}
+
+.fwSidebarBrand strong {
+  display: block;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.fwSidebarBrand strong span {
+  color: var(--fw-orange);
+}
+
+.fwSidebarBrand small {
+  display: block;
+  margin-top: 4px;
+  color: rgba(235,245,255,0.58);
+}
+
+.fwSidebarNav {
+  display: grid;
+  align-content: start;
+  gap: 7px;
+}
+
+.fwSidebarNav button {
+  width: 100%;
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  text-align: left;
+  border: 1px solid transparent;
+  border-radius: 14px;
+  padding: 0 12px;
+  color: rgba(235,245,255,0.78);
+  background: transparent;
+  cursor: pointer;
+  font-weight: 850;
+}
+
+.fwSidebarNav button:hover,
+.fwSidebarNav button.is-active {
+  color: #fff;
+  border-color: rgba(90,160,255,0.25);
+  background: rgba(90,160,255,0.105);
+}
+
+.fwSidebarFooter {
+  padding: 12px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 16px;
+  background: rgba(255,255,255,0.035);
+}
+
+.fwSidebarFooter span,
+.fwSidebarFooter small {
+  display: block;
+}
+
+.fwSidebarFooter span {
+  font-weight: 900;
+  color: #fff;
+}
+
+.fwSidebarFooter small {
+  margin-top: 4px;
+  color: rgba(235,245,255,0.55);
+}
+
+.mobileSidebarToggle {
+  display: none;
+  position: fixed;
+  left: 12px;
+  bottom: 14px;
+  z-index: 9100;
+  border: 1px solid rgba(90,160,255,0.35);
+  border-radius: 999px;
+  padding: 11px 14px;
+  color: #fff;
+  background: rgba(19, 30, 49, 0.96);
+  font-weight: 900;
+  box-shadow: 0 12px 38px rgba(0,0,0,0.38);
+}
+
+.fwVersionPill {
+  display: inline-flex;
+  margin-top: 7px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(90,160,255,0.24);
+  color: rgba(220,235,255,0.86);
+  background: rgba(90,160,255,0.08);
+  font-size: 11px;
+  font-weight: 900;
+}
+
+/* Profesionálnější topbar */
+header {
+  position: sticky;
+  top: 0;
+  z-index: 7000;
+  backdrop-filter: blur(14px);
+  background: rgba(7, 11, 18, 0.86) !important;
+  border-bottom: 1px solid rgba(255,255,255,0.09) !important;
+}
+
+/* Větší, vzdušnější karty */
+.card,
+.mapCard,
+#statsProCard,
+#watchCard,
+#reportsArchiveCard,
+#talkLauncherCard {
+  border-radius: 22px !important;
+  border-color: rgba(255,255,255,0.105) !important;
+  background: rgba(17, 24, 36, 0.78) !important;
+  box-shadow: 0 16px 46px rgba(0,0,0,0.20);
+}
+
+/* Lepší optické oddělení sekcí */
+section[id] {
+  scroll-margin-top: 94px;
+}
+
+#landingPage {
+  scroll-margin-top: 90px;
+}
+
+/* Form prvky sjednoceně */
+button,
+.btn,
+select,
+input {
+  transition: transform .12s ease, border-color .12s ease, background-color .12s ease, opacity .12s ease;
+}
+
+button:hover,
+.btn:hover {
+  transform: translateY(-1px);
+}
+
+/* Desktop: více prostoru mapě a statistikám */
+@media (min-width: 1400px) {
+  .fwAppShell main,
+  .fwAppShell .content,
+  .fwAppShell > section,
+  .fwAppShell > main {
+    max-width: none;
+  }
+}
+
+@media (max-width: 1050px) {
+  .fwAppShell {
+    margin-left: 0;
+  }
+
+  .fwSidebar {
+    transform: translateX(-105%);
+    transition: transform .18s ease;
+  }
+
+  body.fwSidebarOpen .fwSidebar {
+    transform: translateX(0);
+  }
+
+  .mobileSidebarToggle {
+    display: inline-flex;
+  }
+
+  body.fwSidebarOpen::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 8990;
+    background: rgba(0,0,0,0.48);
+    backdrop-filter: blur(2px);
+  }
+
+  body.fwSidebarOpen .fwSidebar {
+    z-index: 9001;
+  }
+}
+
+@media print {
+  .fwSidebar,
+  .mobileSidebarToggle {
+    display: none !important;
+  }
+
+  .fwAppShell {
+    margin-left: 0 !important;
+  }
+}

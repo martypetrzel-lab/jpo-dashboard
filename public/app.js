@@ -2087,6 +2087,78 @@ function wireWatchNotifications() {
 }
 
 
+
+
+// ==============================
+// FireWatchCZ Web v2.0 – Professional layout
+// ==============================
+
+function wireProfessionalLayout() {
+  const sidebar = document.getElementById("fwSidebar");
+  const toggle = document.getElementById("mobileSidebarToggle");
+
+  function closeMobileSidebar() {
+    document.body.classList.remove("fwSidebarOpen");
+  }
+
+  toggle?.addEventListener("click", () => {
+    document.body.classList.toggle("fwSidebarOpen");
+  });
+
+  document.querySelectorAll("[data-scroll-target]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const id = btn.getAttribute("data-scroll-target");
+      if (!id) return;
+
+      if (id === "adminBtn") {
+        document.getElementById("adminBtn")?.click();
+        closeMobileSidebar();
+        return;
+      }
+
+      const el = document.getElementById(id);
+      if (!el) {
+        closeMobileSidebar();
+        return;
+      }
+
+      if (id === "talkLauncherCard" && !document.body.classList.contains("isTalkOpen")) {
+        document.getElementById("toggleTalkBtn")?.click();
+      }
+
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+      closeMobileSidebar();
+    });
+  });
+
+  // Zvýraznění sidebar položek podle aktuální pozice
+  const buttons = [...document.querySelectorAll(".fwSidebarNav [data-scroll-target]")];
+  const targets = buttons
+    .map(btn => ({ btn, el: document.getElementById(btn.getAttribute("data-scroll-target")) }))
+    .filter(x => x.el);
+
+  if ("IntersectionObserver" in window && targets.length) {
+    const observer = new IntersectionObserver((entries) => {
+      const visible = entries
+        .filter(e => e.isIntersecting)
+        .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+
+      if (!visible) return;
+
+      buttons.forEach(b => b.classList.remove("is-active"));
+      const active = targets.find(x => x.el === visible.target);
+      active?.btn?.classList.add("is-active");
+    }, {
+      root: null,
+      threshold: [0.18, 0.35, 0.55],
+      rootMargin: "-15% 0px -65% 0px"
+    });
+
+    targets.forEach(x => observer.observe(x.el));
+  }
+}
+
+
 // UI events
 document.getElementById("refreshBtn").addEventListener("click", () => { resetFilters(); loadAll(); });
 document.getElementById("applyBtn").addEventListener("click", loadAll);
@@ -2104,6 +2176,7 @@ window.addEventListener("orientationchange", () => safeInvalidateMap());
 
 initMap();
 initLandingPage();
+wireProfessionalLayout();
 wireWatchNotifications();
 
 

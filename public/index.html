@@ -19,7 +19,37 @@
 </head>
 <body>
 
-  <header class="topbar">
+  <button id="mobileSidebarToggle" class="mobileSidebarToggle" type="button">☰ Menu</button>
+
+  <aside id="fwSidebar" class="fwSidebar">
+    <div class="fwSidebarBrand">
+      <div class="fwLogoMark">FW</div>
+      <div>
+        <strong>FireWatch <span>CZ</span></strong>
+        <small>operační přehled</small>
+      </div>
+    </div>
+
+    <nav class="fwSidebarNav" aria-label="FireWatch navigace">
+      <button type="button" data-scroll-target="landingPage">Úvod</button>
+      <button type="button" data-scroll-target="publicGuestHero">Veřejný režim</button>
+      <button type="button" data-scroll-target="mapCard">Mapa</button>
+      <button type="button" data-scroll-target="statsProCard">Statistiky PRO</button>
+      <button type="button" data-scroll-target="watchCard">Notifikace</button>
+      <button type="button" data-scroll-target="reportsArchiveCard">Reporty</button>
+      <button type="button" data-scroll-target="talkLauncherCard">FireWatch Talk</button>
+      <button type="button" data-scroll-target="adminBtn">Admin</button>
+    </nav>
+
+    <div class="fwSidebarFooter">
+      <span>v2.0 layout</span>
+      <small>Neoficiální analytický projekt</small>
+    </div>
+  </aside>
+
+
+  <div class="fwAppShell">
+<header class="topbar">
     <div class="title">
       <h1 class="brand">
         <span class="brandMain">FireWatch</span>
@@ -804,6 +834,8 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script src="app.js"></script>
   <script src="radio.js"></script>
-  <button id="restoreAdminPanelBtn" class="restoreAdminPanelBtn" style="display:none;">Zpět do adminu</button>
+  
+</div>
+<button id="restoreAdminPanelBtn" class="restoreAdminPanelBtn" style="display:none;">Zpět do adminu</button>
 </body>
 </html>
