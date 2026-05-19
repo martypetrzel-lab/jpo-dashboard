@@ -38,6 +38,7 @@
       <button type="button" data-scroll-target="statsProCard">Statistiky PRO</button>
       <button type="button" data-scroll-target="regionalWeatherCard">Počasí</button>
       <button type="button" data-scroll-target="majorEventsCard">Významné</button>
+      <button type="button" class="adminOnlyNav" data-scroll-target="manualEventQuickCard" style="display:none;">Ruční úpravy</button>
       <button type="button" data-scroll-target="watchCard">Notifikace</button>
       <button type="button" data-scroll-target="reportsArchiveCard">Reporty</button>
       <button type="button" data-scroll-target="talkLauncherCard">FireWatch Talk</button>
@@ -568,7 +569,21 @@
     </section>
 
 
-    <section id="majorEventsCard" class="card majorEventsCard">
+    
+    <section id="manualEventQuickCard" class="card manualEventQuickCard adminOnly">
+      <div class="cardHeader">
+        <h2>Ruční úprava události</h2>
+        <div class="hint">Admin nástroj pro ruční nastavení stavu, stupně poplachu a délky zásahu</div>
+      </div>
+      <div class="manualQuickControls">
+        <button id="manualQuickLoadBtn" class="btn primary" type="button">Načíst poslední události k úpravě</button>
+        <input id="manualQuickSearch" type="text" placeholder="Filtrovat název / město…" />
+        <span id="manualQuickStatus" class="hint"></span>
+      </div>
+      <div id="manualQuickList" class="manualQuickList"></div>
+    </section>
+
+<section id="majorEventsCard" class="card majorEventsCard">
       <div class="cardHeader">
         <h2>Významné události</h2>
         <div class="hint">Automatické rozpoznání stupně poplachu a větších zásahů bez úpravy ESP32</div>
@@ -806,6 +821,20 @@
             <span id="adminMajorBackfillStatus" class="hint"></span>
           </div>
         </section>
+
+        <section class="adminSection manualEditAdminBox">
+          <div class="sectionHead">
+            <div>
+              <h3>Ruční úprava zásahu</h3>
+              <p>Vyber událost a ručně nastav, zda probíhá, je ukončená, stupeň poplachu a časy pro přepočet délky.</p>
+            </div>
+          </div>
+          <div class="majorEventsControls">
+            <button id="adminManualQuickLoadBtn" class="btn primary" type="button">Načíst události k úpravě</button>
+            <span class="hint">Po načtení klikni u události na „Upravit“.</span>
+          </div>
+        </section>
+
 
 Události bez souřadnic</div>
           <div class="hint">Doplnění souřadnic ručně nebo kliknutím do mapy. Projeví se všude (mapa, simulace, export, statistiky).</div>

@@ -2476,3 +2476,110 @@ tr.majorEventRow {
     grid-template-columns: 1fr;
   }
 }
+
+
+/* ==============================
+   FireWatchCZ v2.4 visible manual edit layout polish
+   ============================== */
+.manualEventQuickCard {
+  grid-column: 1 / -1;
+  border-color: rgba(255,170,80,0.22) !important;
+  background:
+    radial-gradient(circle at top right, rgba(255,130,50,0.10), transparent 38rem),
+    rgba(17, 24, 36, 0.82) !important;
+}
+
+.manualQuickControls {
+  display: grid;
+  grid-template-columns: auto minmax(220px, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  margin: 10px 0 12px;
+}
+
+.manualQuickControls input {
+  min-height: 40px;
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 12px;
+  background: rgba(255,255,255,0.06);
+  color: #fff;
+  padding: 8px 10px;
+}
+
+.manualQuickList {
+  display: grid;
+  gap: 8px;
+}
+
+.manualQuickItem {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 11px 12px;
+  border-radius: 16px;
+  border: 1px solid rgba(255,255,255,0.09);
+  background: rgba(255,255,255,0.04);
+}
+
+.manualQuickItem.is-major {
+  border-color: rgba(255,120,45,0.32);
+  background: rgba(255,120,45,0.09);
+}
+
+.manualQuickItem b,
+.manualQuickItem span,
+.manualQuickItem small {
+  display: block;
+}
+
+.manualQuickItem span {
+  margin-top: 3px;
+  color: rgba(235,245,255,0.70);
+}
+
+.manualQuickItem small {
+  margin-top: 3px;
+  color: rgba(235,245,255,0.58);
+}
+
+.manualEditAdminBox {
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid rgba(255,170,80,0.22);
+  border-radius: 18px;
+  background: rgba(255,130,50,0.06);
+}
+
+/* výraznější první obrazovka */
+.commandOverviewCard {
+  border-color: rgba(90,160,255,0.22) !important;
+  background:
+    radial-gradient(circle at 15% 0%, rgba(90,160,255,0.16), transparent 34rem),
+    radial-gradient(circle at 95% 10%, rgba(255,122,47,0.11), transparent 28rem),
+    rgba(17, 24, 36, 0.86) !important;
+}
+
+.commandTile {
+  position: relative;
+  overflow: hidden;
+}
+
+.commandTile::after {
+  content: "";
+  position: absolute;
+  inset: auto -20% -35% 40%;
+  height: 75px;
+  transform: rotate(-10deg);
+  background: rgba(255,255,255,0.045);
+}
+
+@media (max-width: 760px) {
+  .manualQuickControls {
+    grid-template-columns: 1fr;
+  }
+
+  .manualQuickItem {
+    grid-template-columns: 1fr;
+  }
+}

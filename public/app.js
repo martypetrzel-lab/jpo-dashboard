@@ -877,6 +877,14 @@ function isMajorEventItem(it) {
   return !!it?.is_major_event || Number(it?.alarm_level || 0) >= 3;
 }
 
+
+function bindMajorManualButtons() {
+  document.querySelectorAll(".majorManualEditBtn").forEach((btn) => {
+    btn.addEventListener("click", () => openManualEventEditor(btn.getAttribute("data-event-id")));
+  });
+  syncAdminVisibility?.();
+}
+
 function renderMajorEvents(items = []) {
   const summary = document.getElementById("majorEventsSummary");
   const list = document.getElementById("majorEventsList");
@@ -908,10 +916,11 @@ function renderMajorEvents(items = []) {
           <span>${escapeHtml(it.city_text || it.place_text || "")} • ${statusEmoji(it.is_closed)} ${escapeHtml(statusLabelForEvent(it))}</span>
           <small>${escapeHtml(majorReasonText(it) || "významná událost")}</small>
         </div>
-        <div>${alarmLevelBadge(it)}</div>
+        <div>${alarmLevelBadge(it)} <button type="button" class="btn miniBtn adminOnly majorManualEditBtn" data-event-id="${escapeHtml(it.id || "")}">Edit</button></div>
       </div>
     `;
   }).join("");
+  bindMajorManualButtons();
 }
 
 
@@ -933,10 +942,17 @@ function renderTable(items) {
       <td>${alarmLevelBadge(it) || ""}</td>
       <td>${escapeHtml(formatDuration(it.duration_min))}</td>
       <td><a href="${escapeHtml(it.link)}" target="_blank" rel="noopener">detail</a></td>
+      <td><button type="button" class="btn miniBtn adminOnly manualEditEventBtn" data-event-id="${escapeHtml(it.id || "")}">Upravit</button></td>
     `;
 
     tbody.appendChild(tr);
   }
+
+  document.querySelectorAll(".manualEditEventBtn").forEach((btn) => {
+    btn.addEventListener("click", () => openManualEventEditor(btn.getAttribute("data-event-id")));
+  });
+  syncAdminVisibility?.();
+
 }
 
 function makeEventIcon(eventType, it = null) {
@@ -1410,6 +1426,8 @@ async function loadAll(options = {}) {
     // snapshot pro audio souhrn
     latestItemsSnapshot = items;
     latestStatsSnapshot = statsJson;
+    window.latestItemsSnapshot = items;
+    window.latestStatsSnapshot = statsJson;
 
     if (items.length > 0) {
       lastGoodItemsSnapshot = items;
@@ -1419,6 +1437,7 @@ async function loadAll(options = {}) {
 
     renderTable(items);
     renderMajorEvents(items);
+    updateCommandOverview(items, statsJson);
     renderMap(items);
 
     // ✅ simulace výjezdu HZS (jen NOVÉ + AKTIVNÍ)
@@ -2260,6 +2279,7 @@ function formatRegionalWeatherDay(day) {
 
 function renderRegionalWeather(data) {
   __regionalWeatherLastData = data;
+  updateCommandOverview(window.latestItemsSnapshot || [], window.latestStatsSnapshot || null);
 
   const summaryBox = document.getElementById("regionalWeatherSummary");
   const highlightsBox = document.getElementById("regionalWeatherHighlights");
@@ -2350,11 +2370,11 @@ function renderRegionalWeather(data) {
   }
 
   if (detailBox && zones.length && !detailBox.innerHTML.trim()) {
-    renderRegionalWeatherDetail(zones[0]);
+    renderRegionalWeatherDetail(zones[0], { scroll: false });
   }
 }
 
-function renderRegionalWeatherDetail(zone) {
+function renderRegionalWeatherDetail(zone, opts = {}) {
   const box = document.getElementById("regionalWeatherDetail");
   if (!box || !zone) return;
 
@@ -2441,7 +2461,7 @@ function renderRegionalWeatherDetail(zone) {
     </div>
   `;
 
-  try { box.scrollIntoView({ behavior: "smooth", block: "nearest" }); } catch {}
+  if (opts.scroll !== false) { try { box.scrollIntoView({ behavior: "smooth", block: "nearest" }); } catch {} }
 }
 
 async function loadRegionalWeather() {
@@ -2557,6 +2577,326 @@ function wireMajorEventsBackfill() {
 }
 
 
+
+
+// ==============================
+// FireWatchCZ v2.3 – přehlednější hlavní stránka
+// ==============================
+
+function updateCommandOverview(items = [], stats = null) {
+  const status = document.getElementById("commandOverviewStatus");
+  const mapCount = document.getElementById("overviewMapCount");
+  const majorCount = document.getElementById("overviewMajorCount");
+  const weatherRisk = document.getElementById("overviewWeatherRisk");
+
+  const mapped = items.filter(x => Number.isFinite(Number(x.lat)) && Number.isFinite(Number(x.lon))).length;
+  const major = items.filter(x => typeof isMajorEventItem === "function" ? isMajorEventItem(x) : false).length;
+  const open = items.filter(x => !x.is_closed).length;
+
+  if (mapCount) mapCount.textContent = `${mapped}`;
+  if (majorCount) majorCount.textContent = `${major}`;
+  if (status) status.innerHTML = `OK • ${items.length} záznamů • aktivní ${open} • významné ${major}`;
+
+  if (weatherRisk && __regionalWeatherLastData?.summary?.highestRisk) {
+    const z = __regionalWeatherLastData.summary.highestRisk;
+    weatherRisk.textContent = `${z.zoneName || "—"}`;
+  } else if (weatherRisk) {
+    weatherRisk.textContent = "načítá se";
+  }
+}
+
+function wireCommandOverviewNav() {
+  document.querySelectorAll(".commandTile[data-scroll-target]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const id = btn.getAttribute("data-scroll-target");
+      const el = id ? document.getElementById(id) : null;
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  });
+}
+
+
+
+
+// ==============================
+// FireWatchCZ Web v2.4 – ruční editace události
+// ==============================
+
+let __manualEventCurrentId = null;
+
+function toLocalDateTimeInput(value) {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function fromLocalDateTimeInput(value) {
+  if (!value) return null;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString();
+}
+
+function updateManualEventComputed() {
+  const box = document.getElementById("manualEventComputed");
+  if (!box) return;
+
+  const mode = document.getElementById("manualEventStatusMode")?.value || "auto";
+  const startValue = document.getElementById("manualEventStart")?.value || "";
+  const endValue = document.getElementById("manualEventEnd")?.value || "";
+
+  const start = startValue ? new Date(startValue) : null;
+  const end = endValue ? new Date(endValue) : null;
+
+  if (!start || Number.isNaN(start.getTime())) {
+    box.textContent = "Délka se spočítá po zadání začátku zásahu.";
+    return;
+  }
+
+  if (mode === "open") {
+    const minutes = Math.max(0, Math.round((new Date() - start) / 60000));
+    box.textContent = `Průběžná délka aktivního zásahu: ${formatDuration(minutes)}. Konec zůstane prázdný.`;
+    return;
+  }
+
+  if (mode === "closed") {
+    if (!end || Number.isNaN(end.getTime())) {
+      box.textContent = "U ukončeného zásahu zadej konec, nebo se při uložení použije aktuální čas.";
+      return;
+    }
+    if (end < start) {
+      box.textContent = "Pozor: konec zásahu je před začátkem.";
+      return;
+    }
+    const minutes = Math.max(0, Math.round((end - start) / 60000));
+    box.textContent = `Nová délka zásahu: ${formatDuration(minutes)}.`;
+    return;
+  }
+
+  box.textContent = "Při režimu automatika zůstane stav podle aktuálních dat, ručně se uloží hlavně stupeň a významnost.";
+}
+
+async function openManualEventEditor(id) {
+  if (!id) return;
+  __manualEventCurrentId = id;
+
+  const back = document.getElementById("manualEventModalBackdrop");
+  const status = document.getElementById("manualEventStatus");
+  const info = document.getElementById("manualEventInfo");
+
+  try {
+    if (back) back.style.display = "flex";
+    if (status) status.textContent = "Načítám událost…";
+
+    const r = await fetch(`/api/admin/events/${encodeURIComponent(id)}/manual`, {
+      credentials: "include",
+      cache: "no-store"
+    });
+    const j = await r.json();
+
+    if (!r.ok || !j.ok) throw new Error(j.detail || j.error || "manual event load failed");
+
+    const ev = j.event;
+
+    if (info) {
+      info.innerHTML = `
+        <b>${escapeHtml(ev.title || "")}</b>
+        <span>${escapeHtml(ev.city_text || ev.place_text || "")} • ${escapeHtml(ev.status_text || "")}</span>
+        <small>ID: ${escapeHtml(ev.id || "")}</small>
+      `;
+    }
+
+    const mode = ev.status_source === "manual"
+      ? (ev.is_closed ? "closed" : "open")
+      : "auto";
+
+    document.getElementById("manualEventStatusMode").value = mode;
+    document.getElementById("manualEventAlarmLevel").value = ev.alarm_level ? String(ev.alarm_level) : "";
+    document.getElementById("manualEventIsMajor").checked = !!ev.is_major_event;
+    document.getElementById("manualEventMajorReason").value = ev.major_reason || "";
+    document.getElementById("manualEventStart").value = toLocalDateTimeInput(ev.start_time_iso || ev.pub_date || ev.first_seen_at || ev.created_at);
+    document.getElementById("manualEventEnd").value = toLocalDateTimeInput(ev.end_time_iso);
+
+    if (status) status.textContent = "";
+    updateManualEventComputed();
+  } catch (e) {
+    if (status) status.textContent = `Nepodařilo se načíst událost: ${String(e.message || e)}`;
+  }
+}
+
+function closeManualEventEditor() {
+  const back = document.getElementById("manualEventModalBackdrop");
+  if (back) back.style.display = "none";
+  __manualEventCurrentId = null;
+}
+
+async function saveManualEventEditor() {
+  if (!__manualEventCurrentId) return;
+
+  const status = document.getElementById("manualEventStatus");
+  const btn = document.getElementById("manualEventSaveBtn");
+  const old = btn?.textContent || "Uložit a přepočítat";
+
+  try {
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "Ukládám…";
+    }
+    if (status) status.textContent = "Ukládám ruční úpravu…";
+
+    const payload = {
+      statusMode: document.getElementById("manualEventStatusMode")?.value || "auto",
+      alarmLevel: document.getElementById("manualEventAlarmLevel")?.value || "",
+      isMajorEvent: !!document.getElementById("manualEventIsMajor")?.checked,
+      majorReason: document.getElementById("manualEventMajorReason")?.value || "",
+      startTimeIso: fromLocalDateTimeInput(document.getElementById("manualEventStart")?.value || ""),
+      endTimeIso: fromLocalDateTimeInput(document.getElementById("manualEventEnd")?.value || "")
+    };
+
+    const r = await fetch(`/api/admin/events/${encodeURIComponent(__manualEventCurrentId)}/manual`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(payload)
+    });
+    const j = await r.json();
+
+    if (!r.ok || !j.ok) throw new Error(j.detail || j.error || "manual event save failed");
+
+    if (status) status.textContent = "Uloženo. Přepočítávám přehled…";
+    await loadAll();
+    closeManualEventEditor();
+  } catch (e) {
+    if (status) status.textContent = `Nepodařilo se uložit: ${String(e.message || e)}`;
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = old;
+    }
+  }
+}
+
+function wireManualEventEditor() {
+  document.getElementById("manualEventCloseBtn")?.addEventListener("click", closeManualEventEditor);
+  document.getElementById("manualEventCancelBtn")?.addEventListener("click", closeManualEventEditor);
+  document.getElementById("manualEventSaveBtn")?.addEventListener("click", saveManualEventEditor);
+
+  ["manualEventStatusMode", "manualEventStart", "manualEventEnd"].forEach((id) => {
+    document.getElementById(id)?.addEventListener("change", updateManualEventComputed);
+    document.getElementById(id)?.addEventListener("input", updateManualEventComputed);
+  });
+
+  document.getElementById("manualEventAlarmLevel")?.addEventListener("change", () => {
+    const level = Number(document.getElementById("manualEventAlarmLevel")?.value || 0);
+    const isMajor = document.getElementById("manualEventIsMajor");
+    const reason = document.getElementById("manualEventMajorReason");
+    if (isMajor && level >= 3) isMajor.checked = true;
+    if (reason && level >= 3 && !reason.value.trim()) {
+      reason.value = level >= 4 ? "IV. / zvláštní stupeň poplachu" : "III. stupeň poplachu";
+    }
+  });
+}
+
+
+
+
+// ==============================
+// FireWatchCZ v2.4 fix – viditelný admin seznam pro ruční úpravy
+// ==============================
+
+let __manualQuickItems = [];
+
+function renderManualQuickList(items = __manualQuickItems) {
+  const list = document.getElementById("manualQuickList");
+  const status = document.getElementById("manualQuickStatus");
+  if (!list) return;
+
+  const q = String(document.getElementById("manualQuickSearch")?.value || "").toLowerCase().trim();
+  const filtered = items.filter((it) => {
+    if (!q) return true;
+    return `${it.title || ""} ${it.city_text || ""} ${it.place_text || ""} ${it.status_text || ""}`.toLowerCase().includes(q);
+  });
+
+  if (status) status.textContent = `${filtered.length} / ${items.length} událostí`;
+
+  if (!filtered.length) {
+    list.innerHTML = `<div class="muted">Žádná událost pro zadaný filtr.</div>`;
+    return;
+  }
+
+  list.innerHTML = filtered.slice(0, 80).map((it) => {
+    const meta = typeMeta(it.event_type);
+    const alarm = alarmLevelBadge(it);
+    return `
+      <div class="manualQuickItem ${isMajorEventItem(it) ? "is-major" : ""}">
+        <div>
+          <b>${meta.emoji} ${escapeHtml(it.title || "")}</b>
+          <span>${escapeHtml(it.city_text || it.place_text || "")} • ${statusEmoji(it.is_closed)} ${escapeHtml(statusLabelForEvent(it))}</span>
+          <small>${escapeHtml(formatDate(it.pub_date))} ${alarm ? " • " : ""}${alarm}</small>
+        </div>
+        <button type="button" class="btn primary miniBtn manualQuickEditBtn" data-event-id="${escapeHtml(it.id || "")}">Upravit stav / stupeň</button>
+      </div>
+    `;
+  }).join("");
+
+  list.querySelectorAll(".manualQuickEditBtn").forEach((btn) => {
+    btn.addEventListener("click", () => openManualEventEditor(btn.getAttribute("data-event-id")));
+  });
+}
+
+async function loadManualQuickEvents() {
+  const btns = [
+    document.getElementById("manualQuickLoadBtn"),
+    document.getElementById("adminManualQuickLoadBtn")
+  ].filter(Boolean);
+  const old = btns.map((b) => b.textContent);
+  const status = document.getElementById("manualQuickStatus");
+
+  try {
+    btns.forEach((b) => {
+      b.disabled = true;
+      b.textContent = "Načítám…";
+    });
+    if (status) status.textContent = "Načítám poslední události…";
+
+    // Použijeme aktuální veřejný endpoint s limitem; admin edit je stále chráněný vlastním endpointem.
+    const params = new URLSearchParams({
+      day: "all",
+      type: "all",
+      status: "all",
+      limit: "300",
+      _: String(Date.now())
+    });
+
+    const r = await fetch(`/api/events?${params.toString()}`, { credentials: "include", cache: "no-store" });
+    const j = await r.json();
+
+    if (!r.ok || !j.ok) throw new Error(j.detail || j.error || "events load failed");
+
+    __manualQuickItems = Array.isArray(j.items) ? j.items : [];
+    renderManualQuickList(__manualQuickItems);
+
+    const card = document.getElementById("manualEventQuickCard");
+    if (card) card.scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (e) {
+    if (status) status.textContent = `Nepodařilo se načíst: ${String(e.message || e)}`;
+  } finally {
+    btns.forEach((b, i) => {
+      b.disabled = false;
+      b.textContent = old[i] || "Načíst";
+    });
+  }
+}
+
+function wireManualQuickEditList() {
+  document.getElementById("manualQuickLoadBtn")?.addEventListener("click", loadManualQuickEvents);
+  document.getElementById("adminManualQuickLoadBtn")?.addEventListener("click", loadManualQuickEvents);
+  document.getElementById("manualQuickSearch")?.addEventListener("input", () => renderManualQuickList());
+}
+
+
 // UI events
 document.getElementById("refreshBtn").addEventListener("click", () => { resetFilters(); loadAll(); });
 document.getElementById("applyBtn").addEventListener("click", loadAll);
@@ -2575,6 +2915,9 @@ window.addEventListener("orientationchange", () => safeInvalidateMap());
 initMap();
 initLandingPage();
 wireProfessionalLayout();
+wireCommandOverviewNav();
+wireManualEventEditor();
+wireManualQuickEditList();
 wireRegionalWeather();
 wireMajorEventsBackfill();
 wireWatchNotifications();
@@ -2866,6 +3209,7 @@ async function refreshMe() {
 }
 
 function openModal(which) {
+  syncAdminVisibility?.();
   if (which === "admin" && !isCurrentUserAdmin()) {
     alert("Admin panel je dostupný pouze pro uživatele s rolí admin.");
     return;
