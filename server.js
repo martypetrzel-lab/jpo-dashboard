@@ -986,78 +986,209 @@ async function runArchivedReportsAutomation(reason = "interval") {
   }
 }
 
+
+function formatReportDateCs(value) {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value || "");
+  return d.toLocaleDateString("cs-CZ", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    timeZone: "Europe/Prague"
+  });
+}
+
+function formatReportDateTimeCs(value) {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value || "");
+  return d.toLocaleString("cs-CZ", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "Europe/Prague"
+  });
+}
+
+function drawPdfTableRows(doc, rows, columns, startY, opts = {}) {
+  let y = startY;
+  const rowH = opts.rowHeight || 18;
+  const pageBottom = doc.page.height - doc.page.margins.bottom;
+
+  doc.fontSize(8).fillColor("#555");
+  columns.forEach(c => doc.text(c.label, c.x, y, { width: c.w, continued: false }));
+  y += 13;
+  doc.moveTo(doc.page.margins.left, y - 3).lineTo(doc.page.width - doc.page.margins.right, y - 3).strokeColor("#ddd").lineWidth(0.5).stroke();
+
+  doc.fontSize(8).fillColor("#222");
+
+  for (const row of rows) {
+    if (y + rowH > pageBottom) {
+      doc.addPage();
+      y = doc.page.margins.top;
+      doc.fontSize(8).fillColor("#555");
+      columns.forEach(c => doc.text(c.label, c.x, y, { width: c.w, continued: false }));
+      y += 13;
+      doc.moveTo(doc.page.margins.left, y - 3).lineTo(doc.page.width - doc.page.margins.right, y - 3).strokeColor("#ddd").lineWidth(0.5).stroke();
+      doc.fontSize(8).fillColor("#222");
+    }
+
+    columns.forEach(c => {
+      const txt = typeof c.value === "function" ? c.value(row) : row[c.value];
+      doc.text(String(txt ?? ""), c.x, y, { width: c.w, height: rowH - 2, ellipsis: true });
+    });
+
+    y += rowH;
+  }
+
+  doc.y = y + 4;
+}
+
 function drawReportPdf(doc, row) {
   const report = reportJson(row);
   const data = report.data || {};
+  const left = doc.page.margins.left;
+  const right = doc.page.width - doc.page.margins.right;
+  const usableW = right - left;
 
   tryApplyPdfFont(doc);
 
-  doc.fontSize(20).fillColor("#111").text("FireWatch CZ", { align: "left" });
-  doc.moveDown(0.2);
-  doc.fontSize(16).fillColor("#111").text(report.title || "Analytický souhrn");
-  doc.moveDown(0.2);
-  doc.fontSize(10).fillColor("#444").text(`Období: ${report.period_start} – ${report.period_end}`);
-  doc.text(`Vytvořeno: ${new Date(report.created_at || Date.now()).toLocaleString("cs-CZ")}`);
-  doc.moveDown(0.6);
+  // Header
+  doc.fontSize(22).fillColor("#111").text("FireWatch CZ", left, 42, { width: usableW });
+  doc.fontSize(15).fillColor("#111").text(report.title || "Analytický souhrn", left, 70, { width: usableW });
 
-  doc.fontSize(11).fillColor("#111").text(data.summary || "");
-  doc.moveDown(0.8);
+  const periodText = report.period_start === report.period_end
+    ? formatReportDateCs(report.period_start)
+    : `${formatReportDateCs(report.period_start)} – ${formatReportDateCs(report.period_end)}`;
 
+  doc.fontSize(9).fillColor("#555").text(`Období: ${periodText}`, left, 96, { width: usableW });
+  doc.text(`Vytvořeno: ${formatReportDateTimeCs(report.created_at || Date.now())}`, left, 110, { width: usableW });
+
+  doc.moveTo(left, 130).lineTo(right, 130).strokeColor("#ddd").lineWidth(0.8).stroke();
+  doc.y = 144;
+
+  // Summary
+  doc.fontSize(10).fillColor("#111").text(data.summary || "", left, doc.y, {
+    width: usableW,
+    lineGap: 2
+  });
+  doc.moveDown(0.9);
+
+  // KPI cards - fixed width, no overflow
+  const gap = 10;
+  const cardCount = 4;
+  const cardW = (usableW - gap * (cardCount - 1)) / cardCount;
+  const cardH = 48;
   const y0 = doc.y;
-  const cardW = 170;
+
   const cards = [
     ["Celkem", report.total_events],
     ["Aktivní", report.open_count],
     ["Ukončené", report.closed_count],
     ["Bez GPS", report.missing_coords_count]
   ];
+
   cards.forEach((c, idx) => {
-    const x = 40 + idx * (cardW + 10);
-    doc.roundedRect(x, y0, cardW, 48, 8).strokeColor("#bbb").lineWidth(0.8).stroke();
-    doc.fontSize(9).fillColor("#555").text(c[0], x + 10, y0 + 8, { width: cardW - 20 });
-    doc.fontSize(17).fillColor("#111").text(String(c[1]), x + 10, y0 + 23, { width: cardW - 20 });
+    const x = left + idx * (cardW + gap);
+    doc.roundedRect(x, y0, cardW, cardH, 7).strokeColor("#c8c8c8").lineWidth(0.8).stroke();
+    doc.fontSize(8).fillColor("#666").text(c[0], x + 9, y0 + 8, { width: cardW - 18 });
+    doc.fontSize(17).fillColor("#111").text(String(c[1] ?? 0), x + 9, y0 + 23, { width: cardW - 18 });
   });
-  doc.y = y0 + 64;
+
+  doc.y = y0 + cardH + 18;
 
   const section = (title) => {
-    doc.moveDown(0.5);
-    doc.fontSize(14).fillColor("#111").text(title);
+    if (doc.y > doc.page.height - doc.page.margins.bottom - 80) doc.addPage();
+    doc.moveDown(0.2);
+    doc.fontSize(13).fillColor("#111").text(title, left, doc.y, { width: usableW });
     doc.moveDown(0.25);
   };
 
-  const line = (txt) => {
-    doc.fontSize(9).fillColor("#222").text(txt, { continued: false });
-  };
+  // Type stats + Top cities side by side
+  const halfGap = 16;
+  const halfW = (usableW - halfGap) / 2;
+  let ySection = doc.y;
 
   section("Rozdělení podle typů");
-  (data.type_stats || []).slice(0, 12).forEach((x, i) => {
-    line(`${i + 1}. ${x.name}: ${x.count} (${x.percent} %) — aktivní ${x.active}, ukončené ${x.closed}`);
-  });
+  ySection = doc.y;
+  drawPdfTableRows(
+    doc,
+    (data.type_stats || []).slice(0, 12),
+    [
+      { label: "Typ", x: left, w: halfW - 95, value: "name" },
+      { label: "Počet", x: left + halfW - 90, w: 34, value: "count" },
+      { label: "%", x: left + halfW - 52, w: 38, value: "percent" }
+    ],
+    ySection,
+    { rowHeight: 16 }
+  );
+  const yAfterTypes = doc.y;
 
-  section("TOP města / lokality");
-  (data.top_cities || []).slice(0, 15).forEach((x, i) => {
-    line(`${i + 1}. ${x.name}: ${x.count} (${x.percent} %)`);
-  });
+  doc.y = ySection - 20;
+  doc.fontSize(13).fillColor("#111").text("TOP města / lokality", left + halfW + halfGap, doc.y, { width: halfW });
+  drawPdfTableRows(
+    doc,
+    (data.top_cities || []).slice(0, 12),
+    [
+      { label: "Město", x: left + halfW + halfGap, w: halfW - 62, value: "name" },
+      { label: "Počet", x: right - 50, w: 48, value: "count" }
+    ],
+    ySection,
+    { rowHeight: 16 }
+  );
+  doc.y = Math.max(yAfterTypes, doc.y) + 8;
 
   section("Nejvytíženější dny");
-  (data.busiest_days || []).slice(0, 10).forEach((x, i) => {
-    line(`${i + 1}. ${x.day}: ${x.count}`);
-  });
-
-  if (doc.y > 450) doc.addPage();
+  drawPdfTableRows(
+    doc,
+    (data.busiest_days || []).slice(0, 10),
+    [
+      { label: "Datum", x: left, w: 140, value: (x) => formatReportDateCs(x.day) },
+      { label: "Počet událostí", x: left + 150, w: 120, value: "count" }
+    ],
+    doc.y,
+    { rowHeight: 16 }
+  );
 
   section("Nejdelší zásahy");
-  (data.longest || []).slice(0, 15).forEach((x, i) => {
-    line(`${i + 1}. ${x.date} • ${x.type} • ${x.city} • ${x.duration_text || formatMinutesLong(x.duration_min)} • ${x.title}`);
-  });
+  drawPdfTableRows(
+    doc,
+    (data.longest || []).slice(0, 15),
+    [
+      { label: "Datum", x: left, w: 65, value: (x) => formatReportDateCs(x.date) },
+      { label: "Délka", x: left + 70, w: 55, value: "duration_text" },
+      { label: "Typ", x: left + 130, w: 95, value: "type" },
+      { label: "Město", x: left + 230, w: 85, value: "city" },
+      { label: "Název", x: left + 320, w: usableW - 320, value: "title" }
+    ],
+    doc.y,
+    { rowHeight: 24 }
+  );
 
   section("Významné / otevřené události");
-  (data.important_events || []).slice(0, 15).forEach((x, i) => {
-    line(`${i + 1}. ${x.date} • ${x.type} • ${x.city} • ${x.is_closed ? "ukončené" : "aktivní"} • ${x.title}`);
-  });
+  drawPdfTableRows(
+    doc,
+    (data.important_events || []).slice(0, 15),
+    [
+      { label: "Datum", x: left, w: 65, value: (x) => formatReportDateCs(x.date) },
+      { label: "Stav", x: left + 70, w: 60, value: (x) => x.is_closed ? "ukončené" : "aktivní" },
+      { label: "Typ", x: left + 135, w: 95, value: "type" },
+      { label: "Město", x: left + 235, w: 85, value: "city" },
+      { label: "Název", x: left + 325, w: usableW - 325, value: "title" }
+    ],
+    doc.y,
+    { rowHeight: 24 }
+  );
 
-  doc.moveDown(1);
-  doc.fontSize(8).fillColor("#666").text("FireWatch CZ není oficiální systém HZS/JPO/IZS. Údaje jsou orientační a analytické.");
+  // Footer
+  const footer = "FireWatch CZ není oficiální systém HZS/JPO/IZS. Údaje jsou orientační a analytické.";
+  const pageRange = doc.bufferedPageRange();
+  for (let i = pageRange.start; i < pageRange.start + pageRange.count; i++) {
+    doc.switchToPage(i);
+    doc.fontSize(7).fillColor("#777").text(footer, left, doc.page.height - 35, { width: usableW, align: "center" });
+    doc.text(`Strana ${i + 1 - pageRange.start} / ${pageRange.count}`, left, doc.page.height - 24, { width: usableW, align: "center" });
+  }
 }
 
 // ---------------- STATIC ----------------
@@ -1891,7 +2022,7 @@ app.get(/^\/api\/reports\/([^/]+)\/(.+)\.pdf$/, async (req, res) => {
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `attachment; filename="firewatch_report_${type}_${key}.pdf"`);
 
-    const doc = new PDFDocument({ size: "A4", layout: "portrait", margin: 40 });
+    const doc = new PDFDocument({ size: "A4", layout: "portrait", margin: 40, bufferPages: true });
     doc.pipe(res);
     drawReportPdf(doc, row);
     doc.end();
