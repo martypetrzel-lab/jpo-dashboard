@@ -593,7 +593,19 @@
           <span class="hint" id="missingCoordsInfo">—</span>
         </div>
 
-        <div class="tableWrap" role="region" aria-label="Události bez souřadnic" tabindex="0" style="margin-top:8px;">
+        <div id="coordsEditorCard" class="coordsEditorCard" style="display:none;">
+          <div>
+            <div class="hint">Vybraná událost</div>
+            <div id="coordsSelectedTitle" class="coordsSelectedTitle">—</div>
+            <div id="coordsSelectedMeta" class="coordsSelectedMeta">—</div>
+          </div>
+          <div class="coordsEditorActions">
+            <button id="minimizeAdminForMapBtn" class="btn">Minimalizovat panel a vybrat v mapě</button>
+            <button id="scrollToCoordsEditorBtn" class="btn">Přejít na souřadnice</button>
+          </div>
+        </div>
+
+        <div class="tableWrap missingCoordsWrap" role="region" aria-label="Události bez souřadnic" tabindex="0" style="margin-top:8px;">
           <table>
             <thead>
               <tr>
@@ -696,5 +708,6 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script src="app.js"></script>
   <script src="radio.js"></script>
+  <button id="restoreAdminPanelBtn" class="restoreAdminPanelBtn" style="display:none;">Zpět do adminu</button>
 </body>
 </html>

@@ -2559,6 +2559,62 @@ function setPickMode(on) {
   else stopPickMode(true);
 }
 
+
+function showCoordsEditorForEvent(ev) {
+  const card = document.getElementById("coordsEditorCard");
+  const title = document.getElementById("coordsSelectedTitle");
+  const meta = document.getElementById("coordsSelectedMeta");
+
+  if (card) card.style.display = "";
+  if (title) title.textContent = ev?.title || ev?.id || "Vybraná událost";
+  if (meta) {
+    const city = ev?.city_text || ev?.place_text || "bez města";
+    const status = ev?.status_text || (ev?.is_closed ? "ukončená" : "aktivní");
+    meta.textContent = `${ev?.id || ""} • ${city} • ${status}`;
+  }
+
+  document.getElementById("coordsEventId").value = String(ev?.id || "");
+  document.getElementById("coordsLat").value = "";
+  document.getElementById("coordsLon").value = "";
+
+  setPickMode(false);
+  msg("coordsMsg", `Vybrána událost: ${ev?.id || ""}. Můžeš zadat GPS, načíst návrhy nebo vybrat bod v mapě.`, true);
+
+  try { card?.scrollIntoView({ behavior: "smooth", block: "center" }); } catch {}
+}
+
+function minimizeAdminForMapPick() {
+  const back = document.getElementById("modalBackdrop");
+  const admin = document.getElementById("adminModal");
+  const restore = document.getElementById("restoreAdminPanelBtn");
+
+  if (!document.getElementById("coordsEventId")?.value?.trim()) {
+    msg("coordsMsg", "Nejdřív vyber událost.", false);
+    return;
+  }
+
+  if (back) back.style.display = "none";
+  if (admin) admin.style.display = "none";
+  if (restore) restore.style.display = "";
+
+  setPickMode(true);
+  msg("coordsMsg", "Klikni do mapy na místo události. Potom se vrať tlačítkem „Zpět do adminu“.", true);
+}
+
+function restoreAdminPanelAfterMapPick() {
+  const back = document.getElementById("modalBackdrop");
+  const admin = document.getElementById("adminModal");
+  const restore = document.getElementById("restoreAdminPanelBtn");
+
+  if (back) back.style.display = "";
+  if (admin) admin.style.display = "";
+  if (restore) restore.style.display = "none";
+
+  try {
+    document.getElementById("coordsEditorCard")?.scrollIntoView({ behavior: "smooth", block: "center" });
+  } catch {}
+}
+
 async function loadMissingCoords() {
   if (!currentUser || currentUser.role !== "admin") return;
   const tbody = document.getElementById("missingCoordsTbody");
@@ -2596,11 +2652,7 @@ async function loadMissingCoords() {
       pickBtn.className = "btn";
       pickBtn.textContent = "Vybrat / edit";
       pickBtn.addEventListener("click", () => {
-        document.getElementById("coordsEventId").value = String(ev.id);
-        document.getElementById("coordsLat").value = "";
-        document.getElementById("coordsLon").value = "";
-        setPickMode(false);
-        msg("coordsMsg", `Vybrána událost: ${ev.id}`, true);
+        showCoordsEditorForEvent(ev);
         // posuň mapu aspoň na Středočeský kraj, ať se kliká pohodlně
         try { map?.setView([49.9, 15.0], 9); } catch {}
       });
@@ -2757,6 +2809,9 @@ function wireMissingCoordsUiOnce() {
   });
   document.getElementById("saveCoordsBtn")?.addEventListener("click", saveCoordsForSelected);
   document.getElementById("loadGeoSuggestionsBtn")?.addEventListener("click", loadGeoSuggestionsForSelected);
+  document.getElementById("minimizeAdminForMapBtn")?.addEventListener("click", minimizeAdminForMapPick);
+  document.getElementById("scrollToCoordsEditorBtn")?.addEventListener("click", () => document.getElementById("coordsEventId")?.scrollIntoView({ behavior: "smooth", block: "center" }));
+  document.getElementById("restoreAdminPanelBtn")?.addEventListener("click", restoreAdminPanelAfterMapPick);
   document.getElementById("clearCoordsBtn")?.addEventListener("click", clearCoordsForSelected);
 }
 
