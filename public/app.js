@@ -941,6 +941,22 @@ function bindInlineTableEditButtons() {
 
 
 
+
+function eventDetailButtonHtml(it) {
+  const id = escapeHtml(it?.id || "");
+  if (!id) return "";
+  return `<button type="button" class="linkBtn eventDetailBtn" data-event-id="${id}">detail</button>`;
+}
+
+function detailDateText(value) {
+  if (!value) return "—";
+  try { return formatDate(value); } catch { return String(value); }
+}
+
+function eventDetailLine(label, value) {
+  return `<div class="eventDetailLine"><span>${escapeHtml(label)}</span><b>${escapeHtml(value || "—")}</b></div>`;
+}
+
 function tableEditButtonHtml(it) {
   if (!isCurrentUserAdmin || !isCurrentUserAdmin()) return "";
   const id = escapeHtml(it?.id || "");
@@ -3002,6 +3018,180 @@ function wireManualQuickEditList() {
 }
 
 
+
+
+// ==============================
+// FireWatchCZ v2.5 – vlastní detail události a poznámky
+// ==============================
+
+let __eventDetailCurrentId = null;
+let __eventDetailCurrentEvent = null;
+
+async function openEventDetailModal(id) {
+  if (!id) return;
+  __eventDetailCurrentId = id;
+
+  const back = document.getElementById("eventDetailModalBackdrop");
+  const status = document.getElementById("eventDetailStatus");
+  const header = document.getElementById("eventDetailHeader");
+  const summary = document.getElementById("eventDetailSummary");
+  const publicText = document.getElementById("eventDetailPublicText");
+
+  try {
+    if (back) back.style.display = "flex";
+    if (status) status.textContent = "Načítám detail…";
+    if (header) header.innerHTML = "";
+    if (summary) summary.innerHTML = "";
+    if (publicText) publicText.innerHTML = `<div class="muted">Načítám…</div>`;
+
+    const r = await fetch(`/api/events/${encodeURIComponent(id)}/detail`, {
+      credentials: "include",
+      cache: "no-store"
+    });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.detail || j.error || "detail load failed");
+
+    const ev = j.event;
+    __eventDetailCurrentEvent = ev;
+
+    const meta = typeMeta(ev.event_type);
+    if (header) {
+      header.innerHTML = `
+        <div>
+          <h3>${meta.emoji} ${escapeHtml(ev.title || "")}</h3>
+          <p>${escapeHtml(ev.city_text || ev.place_text || "")} • ${statusEmoji(ev.is_closed)} ${escapeHtml(statusLabelForEvent(ev))}</p>
+        </div>
+        <div>${alarmLevelBadge(ev)}</div>
+      `;
+    }
+
+    if (summary) {
+      summary.innerHTML = `
+        ${eventDetailLine("Čas", detailDateText(ev.pub_date || ev.start_time_iso || ev.created_at))}
+        ${eventDetailLine("Město / místo", ev.city_text || ev.place_text || "")}
+        ${eventDetailLine("Typ", `${meta.emoji} ${meta.label || ev.event_type || ""}`)}
+        ${eventDetailLine("Stav", statusLabelForEvent(ev))}
+        ${eventDetailLine("Délka", formatDuration(ev.duration_min))}
+        ${eventDetailLine("Stupeň", ev.alarm_level_text || "")}
+        ${eventDetailLine("Význam", ev.major_reason || (ev.is_major_event ? "významná událost" : ""))}
+      `;
+    }
+
+    const savedText = ev.manual_detail_text || "";
+    const savedSource = ev.manual_detail_source || "";
+    if (publicText) {
+      publicText.innerHTML = savedText
+        ? `<div class="manualPublicText">${escapeHtml(savedText).replace(/\n/g, "<br>")}</div>${savedSource ? `<div class="manualPublicSource">Zdroj/poznámka: ${escapeHtml(savedSource)}</div>` : ""}${ev.manual_detail_updated_at ? `<div class="manualPublicUpdated">Upraveno: ${escapeHtml(detailDateText(ev.manual_detail_updated_at))}</div>` : ""}`
+        : `<div class="muted">Zatím není uložený vlastní detail. Admin ho může doplnit z veřejně dostupných informací.</div>`;
+    }
+
+    const textInput = document.getElementById("eventDetailTextInput");
+    const sourceInput = document.getElementById("eventDetailSourceInput");
+    if (textInput) textInput.value = savedText;
+    if (sourceInput) sourceInput.value = savedSource;
+
+    const sourceLink = document.getElementById("eventDetailSourceLink");
+    if (sourceLink && ev.link) {
+      sourceLink.href = ev.link;
+      sourceLink.style.display = "";
+    } else if (sourceLink) {
+      sourceLink.removeAttribute("href");
+      sourceLink.style.display = "none";
+    }
+
+    syncAdminVisibility?.();
+    if (status) status.textContent = "";
+  } catch (e) {
+    if (publicText) publicText.innerHTML = `<div class="err">Detail se nepodařilo načíst: ${escapeHtml(String(e.message || e))}</div>`;
+    if (status) status.textContent = "";
+  }
+}
+
+function closeEventDetailModal() {
+  const back = document.getElementById("eventDetailModalBackdrop");
+  if (back) back.style.display = "none";
+  __eventDetailCurrentId = null;
+  __eventDetailCurrentEvent = null;
+}
+
+async function saveEventDetailText() {
+  if (!__eventDetailCurrentId) return;
+
+  const btn = document.getElementById("eventDetailSaveBtn");
+  const status = document.getElementById("eventDetailStatus");
+  const old = btn?.textContent || "Uložit detail";
+
+  try {
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "Ukládám…";
+    }
+    if (status) status.textContent = "Ukládám vlastní detail…";
+
+    const payload = {
+      manualDetailText: document.getElementById("eventDetailTextInput")?.value || "",
+      manualDetailSource: document.getElementById("eventDetailSourceInput")?.value || ""
+    };
+
+    const r = await fetch(`/api/admin/events/${encodeURIComponent(__eventDetailCurrentId)}/detail`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(payload)
+    });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.detail || j.error || "detail save failed");
+
+    if (status) status.textContent = "Uloženo.";
+    await openEventDetailModal(__eventDetailCurrentId);
+    await loadAll();
+  } catch (e) {
+    if (status) status.textContent = `Nepodařilo se uložit: ${String(e.message || e)}`;
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = old;
+    }
+  }
+}
+
+function wireEventDetailModal() {
+  if (window.__eventDetailModalBound) return;
+  window.__eventDetailModalBound = true;
+
+  document.addEventListener("click", (ev) => {
+    const detailBtn = ev.target?.closest?.(".eventDetailBtn");
+    if (detailBtn) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      openEventDetailModal(detailBtn.getAttribute("data-event-id"));
+      return;
+    }
+
+    if (ev.target?.closest?.("#eventDetailCloseBtn") || ev.target?.closest?.("#eventDetailCancelBtn")) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      closeEventDetailModal();
+      return;
+    }
+
+    if (ev.target?.closest?.("#eventDetailSaveBtn")) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      saveEventDetailText();
+      return;
+    }
+
+    if (ev.target?.closest?.("#eventDetailEditEventBtn")) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (__eventDetailCurrentId) openManualEventEditor(__eventDetailCurrentId);
+      return;
+    }
+  });
+}
+
+
 // UI events
 document.getElementById("refreshBtn").addEventListener("click", () => { resetFilters(); loadAll(); });
 document.getElementById("applyBtn").addEventListener("click", loadAll);
@@ -3022,6 +3212,7 @@ initLandingPage();
 wireProfessionalLayout();
 wireCommandOverviewNav();
 wireManualEventEditor();
+wireEventDetailModal();
 wireManualQuickEditList();
 wireRegionalWeather();
 wireMajorEventsBackfill();

@@ -48,6 +48,9 @@ export async function initDb() {
       is_major_event BOOLEAN NOT NULL DEFAULT FALSE,
       major_reason TEXT,
       status_source TEXT,
+      manual_detail_text TEXT,
+      manual_detail_source TEXT,
+      manual_detail_updated_at TIMESTAMPTZ,
 
       lat DOUBLE PRECISION,
       lon DOUBLE PRECISION,
@@ -205,7 +208,10 @@ export async function initDb() {
     ["events", "alarm_level_text", "TEXT"],
     ["events", "is_major_event", "BOOLEAN"],
     ["events", "major_reason", "TEXT"],
-    ["events", "status_source", "TEXT"]
+    ["events", "status_source", "TEXT"],
+    ["events", "manual_detail_text", "TEXT"],
+    ["events", "manual_detail_source", "TEXT"],
+    ["events", "manual_detail_updated_at", "TIMESTAMPTZ"]
   ];
 
   for (const [t, c, typ] of adds) {
@@ -666,6 +672,7 @@ export async function getEventsFiltered(filters, limit = 400) {
       description_raw,
       start_time_iso, end_time_iso, duration_min, is_closed,
       alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
+      manual_detail_text, manual_detail_source, manual_detail_updated_at,
       lat, lon,
       first_seen_at, last_seen_at, created_at
     FROM events
@@ -1158,6 +1165,7 @@ export async function getEventsForPeriod(startIso, endExclusiveIso) {
       description_raw,
       start_time_iso, end_time_iso, duration_min, is_closed,
       alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
+      manual_detail_text, manual_detail_source, manual_detail_updated_at,
       lat, lon,
       first_seen_at, last_seen_at, created_at
     FROM events
@@ -1177,6 +1185,7 @@ export async function getEventById(id) {
     `SELECT id, title, link, pub_date, place_text, city_text, status_text, event_type,
             description_raw, start_time_iso, end_time_iso, duration_min, is_closed,
             alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
+            manual_detail_text, manual_detail_source, manual_detail_updated_at,
             lat, lon, first_seen_at, last_seen_at, created_at, geo_source, geo_note, geo_updated_at
      FROM events
      WHERE id=$1
@@ -1190,6 +1199,7 @@ export async function listEventsWithCoords(limit = 100) {
   const r = await pool.query(
     `SELECT id, title, city_text, place_text, status_text, event_type, pub_date,
             alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
+            manual_detail_text, manual_detail_source, manual_detail_updated_at,
             lat, lon, geo_source, geo_note, geo_updated_at, last_seen_at
      FROM events
      WHERE lat IS NOT NULL AND lon IS NOT NULL
@@ -1291,6 +1301,7 @@ export async function getEventForManualEdit(id) {
       description_raw,
       start_time_iso, end_time_iso, duration_min, is_closed,
       alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
+      manual_detail_text, manual_detail_source, manual_detail_updated_at,
       lat, lon,
       first_seen_at, last_seen_at, created_at
     FROM events
@@ -1332,4 +1343,55 @@ export async function updateEventManualMeta(id, patch = {}) {
       Number.isFinite(Number(patch.durationMin)) ? Number(patch.durationMin) : null
     ]
   );
+}
+
+
+// ---------------- OWN EVENT DETAIL / MANUAL NOTES ----------------
+export async function getEventDetailById(id) {
+  const r = await pool.query(
+    `
+    SELECT
+      id, title, link, pub_date,
+      place_text, city_text, status_text, event_type,
+      description_raw,
+      start_time_iso, end_time_iso, duration_min, is_closed,
+      alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
+      manual_detail_text, manual_detail_source, manual_detail_updated_at,
+      lat, lon,
+      first_seen_at, last_seen_at, created_at
+    FROM events
+    WHERE id = $1
+    `,
+    [id]
+  );
+  return r.rows?.[0] || null;
+}
+
+export async function updateEventManualDetail(id, patch = {}) {
+  const r = await pool.query(
+    `
+    UPDATE events
+    SET
+      manual_detail_text = $2,
+      manual_detail_source = $3,
+      manual_detail_updated_at = NOW(),
+      last_seen_at = last_seen_at
+    WHERE id = $1
+    RETURNING
+      id, title, link, pub_date,
+      place_text, city_text, status_text, event_type,
+      description_raw,
+      start_time_iso, end_time_iso, duration_min, is_closed,
+      alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
+      manual_detail_text, manual_detail_source, manual_detail_updated_at,
+      lat, lon,
+      first_seen_at, last_seen_at, created_at
+    `,
+    [
+      id,
+      String(patch.manualDetailText || "").trim() || null,
+      String(patch.manualDetailSource || "").trim() || null
+    ]
+  );
+  return r.rows?.[0] || null;
 }

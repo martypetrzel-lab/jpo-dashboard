@@ -1033,5 +1033,55 @@ Události bez souřadnic</div>
     </div>
   </div>
 
+
+  <div id="eventDetailModalBackdrop" class="modalBackdrop" style="display:none;">
+    <div class="modal eventDetailModal">
+      <div class="modalHead">
+        <div>
+          <h2>Detail události</h2>
+          <p id="eventDetailSubtitle">Vlastní FireWatch detail bez závislosti na původní stránce.</p>
+        </div>
+        <button id="eventDetailCloseBtn" class="iconBtn" type="button">×</button>
+      </div>
+
+      <div class="eventDetailBody">
+        <div id="eventDetailHeader" class="eventDetailHeader"></div>
+
+        <div class="eventDetailGrid">
+          <div class="eventDetailPanel">
+            <h3>Souhrn</h3>
+            <div id="eventDetailSummary"></div>
+          </div>
+
+          <div class="eventDetailPanel">
+            <h3>Vlastní poznámka / veřejně dostupné informace</h3>
+            <div id="eventDetailPublicText" class="eventDetailPublicText"></div>
+
+            <div id="eventDetailAdminEditor" class="eventDetailAdminEditor adminOnly">
+              <label>
+                Text detailu
+                <textarea id="eventDetailTextInput" rows="8" placeholder="Sem si můžeš zapsat vlastní veřejně dohledané informace k události…"></textarea>
+              </label>
+              <label>
+                Zdroj / poznámka ke zdroji
+                <input id="eventDetailSourceInput" type="text" placeholder="např. veřejný článek, obecní info, vlastní ověřená poznámka…" />
+              </label>
+              <div class="modalActions">
+                <button id="eventDetailSaveBtn" class="btn primary" type="button">Uložit detail</button>
+                <button id="eventDetailEditEventBtn" class="btn" type="button">Upravit stav / stupeň</button>
+                <span id="eventDetailStatus" class="hint"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="eventDetailFooter">
+          <a id="eventDetailSourceLink" href="#" target="_blank" rel="noopener" style="display:none;">Původní zdroj</a>
+          <button id="eventDetailCancelBtn" class="btn" type="button">Zavřít</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
 </body>
 </html>

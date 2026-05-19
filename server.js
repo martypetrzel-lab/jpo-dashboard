@@ -48,6 +48,8 @@ import {
   getMajorEventsSummary,
   getEventForManualEdit,
   updateEventManualMeta,
+  getEventDetailById,
+  updateEventManualDetail,
 
   // auth
   getUsersCount,
@@ -2982,6 +2984,44 @@ app.get("/api/admin/major-events", requireAdmin, async (req, res) => {
   }
 });
 
+
+
+
+// ---------------- OWN EVENT DETAIL / MANUAL NOTES ----------------
+app.get("/api/events/:id/detail", async (req, res) => {
+  try {
+    const row = await getEventDetailById(req.params.id);
+    if (!row) return res.status(404).json({ ok: false, error: "event_not_found" });
+    return res.json({ ok: true, event: row });
+  } catch (e) {
+    console.error("[event-detail-get]", e);
+    return res.status(500).json({ ok: false, error: "event_detail_get_failed", detail: String(e?.message || e) });
+  }
+});
+
+app.post("/api/admin/events/:id/detail", requireAdmin, async (req, res) => {
+  try {
+    const updated = await updateEventManualDetail(req.params.id, {
+      manualDetailText: req.body?.manualDetailText || "",
+      manualDetailSource: req.body?.manualDetailSource || ""
+    });
+
+    if (!updated) return res.status(404).json({ ok: false, error: "event_not_found" });
+
+    await insertAudit({
+      userId: req.auth?.user?.id || null,
+      username: req.auth?.user?.username || null,
+      action: "manual_event_detail_update",
+      details: `event=${req.params.id}; detailLength=${String(req.body?.manualDetailText || "").length}`,
+      ip: getClientIp(req)
+    });
+
+    return res.json({ ok: true, event: updated });
+  } catch (e) {
+    console.error("[event-detail-save]", e);
+    return res.status(500).json({ ok: false, error: "event_detail_save_failed", detail: String(e?.message || e) });
+  }
+});
 
 
 // ---------------- MANUAL EVENT EDIT ----------------
