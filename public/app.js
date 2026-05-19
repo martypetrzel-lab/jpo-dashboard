@@ -1746,6 +1746,17 @@ async function loadStatsPro() {
   const preset = document.getElementById("statsProPreset")?.value || "month";
   const btn = document.getElementById("loadStatsProBtn");
   const old = btn?.textContent || "Načíst PRO statistiky";
+  const summary = document.getElementById("statsProSummary");
+  const typeBox = document.getElementById("statsProTypeTrend");
+  const cityBox = document.getElementById("statsProCityGrowth");
+  const hoursBox = document.getElementById("statsProHours");
+  const heatBox = document.getElementById("statsProHeatmap");
+
+  if (summary) summary.innerHTML = `<div class="statsProLoading">Načítám PRO statistiky…</div>`;
+  if (typeBox) typeBox.innerHTML = `<div class="muted">Načítám…</div>`;
+  if (cityBox) cityBox.innerHTML = `<div class="muted">Načítám…</div>`;
+  if (hoursBox) hoursBox.innerHTML = `<div class="muted">Načítám…</div>`;
+  if (heatBox) heatBox.innerHTML = `<div class="muted">Načítám…</div>`;
 
   try {
     if (btn) {
@@ -1776,9 +1787,7 @@ function wireStatsPro() {
 }
 
 // UI events
-document.getElementById("refreshBtn").addEventListener("click", () => { resetFilters(); loadAll();
-wireStatsPro();
-wireReportsArchive(); });
+document.getElementById("refreshBtn").addEventListener("click", () => { resetFilters(); loadAll(); });
 document.getElementById("applyBtn").addEventListener("click", loadAll);
 document.getElementById("resetBtn").addEventListener("click", () => { resetFilters(); loadAll(); });
 document.getElementById("exportCsvBtn").addEventListener("click", () => exportWithFilters("csv"));
@@ -1794,6 +1803,30 @@ window.addEventListener("orientationchange", () => safeInvalidateMap());
 
 initMap();
 initLandingPage();
+
+
+
+// FireWatchCZ v1.5 fix – safe initialization for Statistiky PRO
+(function fwStatsProSafeInit() {
+  function start() {
+    const card = document.getElementById("statsProCard");
+    if (!card || typeof wireStatsPro !== "function") return;
+
+    if (card.dataset.fwStatsProWired === "1") {
+      if (typeof loadStatsPro === "function") loadStatsPro();
+      return;
+    }
+
+    card.dataset.fwStatsProWired = "1";
+    wireStatsPro();
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", start, { once: true });
+  } else {
+    start();
+  }
+})();
 
 // HZS stanice toggle (statická vrstva)
 hzsStationsToggleEl = document.getElementById("hzsStationsToggle");

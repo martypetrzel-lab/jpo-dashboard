@@ -1381,3 +1381,13 @@ body.isGuestMode #registerBtn {
     grid-template-columns: repeat(24, 26px);
   }
 }
+
+
+.statsProLoading {
+  grid-column: 1 / -1;
+  padding: 12px;
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 14px;
+  color: rgba(235,245,255,0.72);
+  background: rgba(255,255,255,0.04);
+}

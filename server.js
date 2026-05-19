@@ -2324,8 +2324,8 @@ app.get("/api/stats/pro", async (req, res) => {
     const payload = buildStatsProPayload({ preset: chosen, currentRows, previousRows, range });
     res.json({ ok: true, stats: payload });
   } catch (e) {
-    console.error(e);
-    res.status(500).json({ ok: false, error: "stats_pro_failed" });
+    console.error("[stats-pro]", e);
+    res.status(500).json({ ok: false, error: "stats_pro_failed", detail: String(e?.message || e) });
   }
 });
 
