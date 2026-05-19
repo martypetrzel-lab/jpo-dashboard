@@ -992,14 +992,7 @@ function renderTable(items) {
     if (isMajorEventItem(it)) tr.classList.add("majorEventRow");
 
     tr.innerHTML = `
-      <td>${escapeHtml(formatDate(it.pub_date))}</td>
-      <td title="${escapeHtml(meta.label)}">${meta.emoji}</td>
-      <td>${escapeHtml(it.title)}</td>
-      <td>${escapeHtml(it.city_text || it.place_text || "")}</td>
-      <td>${statusEmoji(it.is_closed)} ${escapeHtml(statusLabelForEvent(it))} ${carryoverBadgeHtml(it)}</td>
-      <td>${alarmLevelBadge(it) || ""}</td>
-      <td>${escapeHtml(formatDuration(liveDurationForEvent(it)))}</td>
-      <td><a href="${escapeHtml(it.link)}" target="_blank" rel="noopener">detail</a></td>
+      <td>${eventDetailButtonHtml(it)}</td>
       <td>${tableEditButtonHtml(it)}</td>`;
 
     tbody.appendChild(tr);
@@ -3174,6 +3167,22 @@ async function saveEventDetailText() {
   }
 }
 
+function findEventIdFromDetailRow(el) {
+  const direct = el?.getAttribute?.("data-event-id");
+  if (direct) return direct;
+
+  const tr = el?.closest?.("tr");
+  if (!tr) return null;
+
+  const editBtn = tr.querySelector?.(".tableManualEditBtn, .manualEditEventBtn");
+  if (editBtn?.getAttribute("data-event-id")) return editBtn.getAttribute("data-event-id");
+
+  const allRows = Array.from(document.querySelectorAll("#eventsTbody tr"));
+  const idx = allRows.indexOf(tr);
+  const items = window.latestItemsSnapshot || [];
+  return idx >= 0 && items[idx]?.id ? items[idx].id : null;
+}
+
 function wireEventDetailModal() {
   if (window.__eventDetailModalBound) return;
   window.__eventDetailModalBound = true;
@@ -3186,6 +3195,16 @@ function wireEventDetailModal() {
       openEventDetailModal(detailBtn.getAttribute("data-event-id"));
       return;
     }
+
+    const oldDetailAnchor = ev.target?.closest?.("a");
+    if (oldDetailAnchor && oldDetailAnchor.textContent?.trim()?.toLowerCase() === "detail" && oldDetailAnchor.closest?.("#eventsTbody")) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const id = findEventIdFromDetailRow(oldDetailAnchor);
+      if (id) openEventDetailModal(id);
+      return;
+    }
+
 
     if (ev.target?.closest?.("#eventDetailCloseBtn") || ev.target?.closest?.("#eventDetailCancelBtn")) {
       ev.preventDefault();
@@ -3209,6 +3228,8 @@ function wireEventDetailModal() {
     }
   });
 }
+
+
 
 
 // UI events

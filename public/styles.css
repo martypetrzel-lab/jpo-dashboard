@@ -2869,3 +2869,152 @@ tr.majorEventRow .carryoverBadge {
   background: rgba(255, 90, 45, 0.18);
   border-color: rgba(255, 130, 70, 0.38);
 }
+
+
+/* own event detail click fixed */
+.linkBtn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: #d9e8ff;
+  text-decoration: underline;
+  cursor: pointer;
+  font-weight: 850;
+  padding: 0;
+}
+
+.linkBtn:hover {
+  color: #ffffff;
+}
+
+.eventDetailModal {
+  width: min(980px, calc(100vw - 28px));
+  max-width: 980px;
+}
+
+.eventDetailBody {
+  display: grid;
+  gap: 14px;
+}
+
+.eventDetailHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: start;
+  padding: 13px;
+  border-radius: 18px;
+  border: 1px solid rgba(90,160,255,0.24);
+  background: rgba(90,160,255,0.08);
+}
+
+.eventDetailHeader h3 {
+  margin: 0 0 4px;
+  font-size: 20px;
+}
+
+.eventDetailHeader p {
+  margin: 0;
+  color: rgba(235,245,255,0.70);
+}
+
+.eventDetailGrid {
+  display: grid;
+  grid-template-columns: minmax(250px, .85fr) minmax(0, 1.4fr);
+  gap: 12px;
+}
+
+.eventDetailPanel {
+  padding: 13px;
+  border-radius: 18px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.035);
+}
+
+.eventDetailPanel h3 {
+  margin: 0 0 10px;
+}
+
+.eventDetailLine {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.07);
+}
+
+.eventDetailLine span {
+  color: rgba(235,245,255,0.58);
+}
+
+.eventDetailLine b {
+  font-weight: 850;
+}
+
+.eventDetailPublicText {
+  min-height: 90px;
+}
+
+.manualPublicText {
+  white-space: normal;
+  line-height: 1.55;
+  color: rgba(245,250,255,0.92);
+}
+
+.manualPublicSource,
+.manualPublicUpdated {
+  margin-top: 8px;
+  color: rgba(235,245,255,0.58);
+  font-size: 13px;
+}
+
+.eventDetailAdminEditor {
+  margin-top: 12px;
+  display: grid;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255,255,255,0.08);
+}
+
+.eventDetailAdminEditor label {
+  display: grid;
+  gap: 6px;
+  font-weight: 850;
+  color: rgba(235,245,255,0.78);
+}
+
+.eventDetailAdminEditor textarea,
+.eventDetailAdminEditor input {
+  width: 100%;
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 12px;
+  background: rgba(255,255,255,0.06);
+  color: #fff;
+  padding: 10px;
+  resize: vertical;
+}
+
+.eventDetailFooter {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+}
+
+.eventDetailFooter a {
+  margin-right: auto;
+}
+
+@media (max-width: 850px) {
+  .eventDetailGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .eventDetailHeader {
+    flex-direction: column;
+  }
+
+  .eventDetailLine {
+    grid-template-columns: 1fr;
+  }
+}
