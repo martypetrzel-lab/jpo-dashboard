@@ -1185,3 +1185,199 @@ body.isGuestMode #registerBtn {
     width: 100%;
   }
 }
+
+
+/* ==============================
+   FireWatchCZ Web v1.5 – Statistiky PRO
+   ============================== */
+.statsProCard {
+  grid-column: 1 / -1;
+}
+
+.statsProControls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 10px 0 14px;
+}
+
+.statsProControls select {
+  min-height: 38px;
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 12px;
+  background: rgba(255,255,255,0.06);
+  color: #fff;
+  padding: 8px 10px;
+}
+
+.statsProSummary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.statsProKpi {
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 16px;
+  padding: 13px;
+  background: rgba(255,255,255,0.045);
+}
+
+.statsProKpi span,
+.statsProKpi small {
+  display: block;
+  color: rgba(235,245,255,0.68);
+}
+
+.statsProKpi b {
+  display: block;
+  margin: 4px 0;
+  font-size: 28px;
+  color: #fff;
+}
+
+.statsProKpi.up {
+  border-color: rgba(255, 174, 80, 0.26);
+  background: rgba(255, 140, 50, 0.08);
+}
+
+.statsProKpi.down {
+  border-color: rgba(80, 210, 130, 0.24);
+  background: rgba(60, 180, 120, 0.08);
+}
+
+.statsProGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.statsProPanel {
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 18px;
+  padding: 12px;
+  background: rgba(255,255,255,0.035);
+}
+
+.cardHeader.compact {
+  margin-bottom: 8px;
+}
+
+.cardHeader.compact h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.statsProList {
+  display: grid;
+  gap: 7px;
+}
+
+.statsProRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 58px 90px;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 9px;
+  border-radius: 12px;
+  background: rgba(255,255,255,0.045);
+}
+
+.statsProRow span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.statsProRow b {
+  text-align: right;
+}
+
+.statsProRow em {
+  text-align: right;
+  font-style: normal;
+  color: rgba(235,245,255,0.75);
+}
+
+.statsProRow em.up {
+  color: #ffcf8d;
+}
+
+.statsProRow em.down {
+  color: #8ff0b4;
+}
+
+.hourBars {
+  height: 210px;
+  display: grid;
+  grid-template-columns: repeat(24, minmax(18px, 1fr));
+  gap: 4px;
+  align-items: end;
+  padding-top: 10px;
+}
+
+.hourBar {
+  height: 190px;
+  display: grid;
+  grid-template-rows: 18px 1fr 18px;
+  gap: 3px;
+  align-items: end;
+  text-align: center;
+  color: rgba(235,245,255,0.68);
+  font-size: 10px;
+}
+
+.hourBar i {
+  display: block;
+  width: 100%;
+  border-radius: 8px 8px 3px 3px;
+  background: linear-gradient(180deg, rgba(90,160,255,0.95), rgba(90,160,255,0.30));
+}
+
+.hourBar b {
+  font-size: 10px;
+  color: rgba(235,245,255,0.85);
+}
+
+.statsHeatmap {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(42px, 1fr));
+  gap: 7px;
+}
+
+.heatCell {
+  min-height: 42px;
+  border-radius: 12px;
+  padding: 6px;
+  display: grid;
+  align-content: space-between;
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(255,255,255,0.035);
+}
+
+.heatCell span {
+  color: rgba(235,245,255,0.65);
+  font-size: 11px;
+}
+
+.heatCell b {
+  font-size: 16px;
+}
+
+.heatCell.level1 { background: rgba(60, 180, 120, 0.08); }
+.heatCell.level2 { background: rgba(90, 160, 255, 0.11); }
+.heatCell.level3 { background: rgba(255, 205, 90, 0.13); }
+.heatCell.level4 { background: rgba(255, 135, 70, 0.16); }
+.heatCell.level5 { background: rgba(255, 70, 70, 0.20); }
+
+@media (max-width: 980px) {
+  .statsProGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .hourBars {
+    overflow-x: auto;
+    grid-template-columns: repeat(24, 26px);
+  }
+}

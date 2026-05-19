@@ -1634,8 +1634,150 @@ function initLandingPage() {
 }
 
 
+
+
+// ==============================
+// FireWatchCZ Web v1.5 – Statistiky PRO
+// ==============================
+
+function signText(n) {
+  const num = Number(n || 0);
+  if (num > 0) return `+${num}`;
+  return String(num);
+}
+
+function signClass(n) {
+  const num = Number(n || 0);
+  if (num > 0) return "up";
+  if (num < 0) return "down";
+  return "same";
+}
+
+function formatHour(hour) {
+  return `${String(hour).padStart(2, "0")}:00`;
+}
+
+function renderStatsPro(stats) {
+  const summary = document.getElementById("statsProSummary");
+  const typeBox = document.getElementById("statsProTypeTrend");
+  const cityBox = document.getElementById("statsProCityGrowth");
+  const hoursBox = document.getElementById("statsProHours");
+  const heatBox = document.getElementById("statsProHeatmap");
+
+  if (summary) {
+    summary.innerHTML = `
+      <div class="statsProKpi">
+        <span>Aktuální období</span>
+        <b>${Number(stats.current?.total || 0)}</b>
+        <small>${escapeHtml(stats.current?.start || "")} – ${escapeHtml(stats.current?.end || "")}</small>
+      </div>
+      <div class="statsProKpi">
+        <span>Předchozí období</span>
+        <b>${Number(stats.previous?.total || 0)}</b>
+        <small>${escapeHtml(stats.previous?.start || "")} – ${escapeHtml(stats.previous?.end || "")}</small>
+      </div>
+      <div class="statsProKpi ${signClass(stats.comparison?.diff)}">
+        <span>Rozdíl</span>
+        <b>${signText(stats.comparison?.diff || 0)}</b>
+        <small>${Number(stats.comparison?.diffPercent || 0)} %</small>
+      </div>
+      <div class="statsProKpi">
+        <span>Aktivní / ukončené</span>
+        <b>${Number(stats.current?.open || 0)} / ${Number(stats.current?.closed || 0)}</b>
+        <small>Bez GPS: ${Number(stats.current?.missingCoords || 0)}</small>
+      </div>
+      <div class="statsProKpi">
+        <span>Nejaktivnější hodina</span>
+        <b>${formatHour(stats.busiestHour?.hour || 0)}</b>
+        <small>${Number(stats.busiestHour?.count || 0)} událostí</small>
+      </div>
+    `;
+  }
+
+  if (typeBox) {
+    const rows = stats.typeTrend || [];
+    typeBox.innerHTML = rows.length ? rows.map(x => `
+      <div class="statsProRow">
+        <span>${escapeHtml(x.name)}</span>
+        <b>${Number(x.current || 0)}</b>
+        <em class="${signClass(x.diff)}">${signText(x.diff)} / ${Number(x.percent || 0)} %</em>
+      </div>
+    `).join("") : `<div class="muted">Bez dat</div>`;
+  }
+
+  if (cityBox) {
+    const rows = stats.cityGrowth || [];
+    cityBox.innerHTML = rows.length ? rows.map(x => `
+      <div class="statsProRow">
+        <span>${escapeHtml(x.name)}</span>
+        <b>${Number(x.current || 0)}</b>
+        <em class="${signClass(x.diff)}">${signText(x.diff)}</em>
+      </div>
+    `).join("") : `<div class="muted">Bez dat</div>`;
+  }
+
+  if (hoursBox) {
+    const rows = stats.hourStats || [];
+    const max = Math.max(1, ...rows.map(x => Number(x.count || 0)));
+    hoursBox.innerHTML = rows.map(x => `
+      <div class="hourBar" title="${formatHour(x.hour)} – ${Number(x.count || 0)} událostí">
+        <span>${String(x.hour).padStart(2, "0")}</span>
+        <i style="height:${Math.max(4, Math.round((Number(x.count || 0) / max) * 92))}%"></i>
+        <b>${Number(x.count || 0)}</b>
+      </div>
+    `).join("");
+  }
+
+  if (heatBox) {
+    const rows = stats.heatmap || [];
+    const max = Math.max(1, ...rows.map(x => Number(x.count || 0)));
+    heatBox.innerHTML = rows.map(x => {
+      const count = Number(x.count || 0);
+      const level = count <= 0 ? 0 : Math.max(1, Math.ceil((count / max) * 5));
+      return `<div class="heatCell level${level}" title="${escapeHtml(x.day)} – ${count} událostí">
+        <span>${escapeHtml(String(x.day || "").slice(8, 10))}</span>
+        <b>${count}</b>
+      </div>`;
+    }).join("");
+  }
+}
+
+async function loadStatsPro() {
+  const preset = document.getElementById("statsProPreset")?.value || "month";
+  const btn = document.getElementById("loadStatsProBtn");
+  const old = btn?.textContent || "Načíst PRO statistiky";
+
+  try {
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "Načítám…";
+    }
+
+    const r = await fetch(`/api/stats/pro?preset=${encodeURIComponent(preset)}&_=${Date.now()}`, { cache: "no-store" });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || "stats pro failed");
+
+    renderStatsPro(j.stats);
+  } catch (e) {
+    const summary = document.getElementById("statsProSummary");
+    if (summary) summary.innerHTML = `<div class="err">Statistiky PRO se nepodařilo načíst: ${escapeHtml(String(e.message || e))}</div>`;
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = old;
+    }
+  }
+}
+
+function wireStatsPro() {
+  document.getElementById("loadStatsProBtn")?.addEventListener("click", loadStatsPro);
+  document.getElementById("statsProPreset")?.addEventListener("change", loadStatsPro);
+  loadStatsPro();
+}
+
 // UI events
 document.getElementById("refreshBtn").addEventListener("click", () => { resetFilters(); loadAll();
+wireStatsPro();
 wireReportsArchive(); });
 document.getElementById("applyBtn").addEventListener("click", loadAll);
 document.getElementById("resetBtn").addEventListener("click", () => { resetFilters(); loadAll(); });

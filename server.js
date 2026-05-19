@@ -1271,6 +1271,175 @@ function drawReportPdf(doc, row) {
   }
 }
 
+
+// ======================
+// FireWatchCZ Web v1.5 – Statistiky PRO
+// ======================
+
+function startOfMonthUtc(date = new Date()) {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1));
+}
+
+function addMonthsUtc(date, months) {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + months, 1));
+}
+
+function startOfWeekUtc(date = new Date()) {
+  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  const day = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() - day + 1);
+  return d;
+}
+
+function addDaysUtc(date, days) {
+  const d = new Date(date);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d;
+}
+
+function periodPresetRange(preset) {
+  const now = new Date();
+  const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+
+  if (preset === "week") {
+    const currentStart = startOfWeekUtc(today);
+    const currentEnd = addDaysUtc(currentStart, 7);
+    const previousStart = addDaysUtc(currentStart, -7);
+    const previousEnd = currentStart;
+    return { currentStart, currentEnd, previousStart, previousEnd, label: "tento týden vs minulý týden" };
+  }
+
+  if (preset === "lastMonth") {
+    const currentStart = addMonthsUtc(startOfMonthUtc(today), -1);
+    const currentEnd = startOfMonthUtc(today);
+    const previousStart = addMonthsUtc(currentStart, -1);
+    const previousEnd = currentStart;
+    return { currentStart, currentEnd, previousStart, previousEnd, label: "minulý měsíc vs předchozí měsíc" };
+  }
+
+  const currentStart = startOfMonthUtc(today);
+  const currentEnd = addMonthsUtc(currentStart, 1);
+  const previousStart = addMonthsUtc(currentStart, -1);
+  const previousEnd = currentStart;
+  return { currentStart, currentEnd, previousStart, previousEnd, label: "tento měsíc vs minulý měsíc" };
+}
+
+function dateOnlyIso(value) {
+  return new Date(value).toISOString().slice(0, 10);
+}
+
+function hourFromEvent(ev) {
+  const d = new Date(ev.pub_date || ev.created_at || ev.first_seen_at || Date.now());
+  if (Number.isNaN(d.getTime())) return 0;
+  return d.getHours();
+}
+
+function typeNameForStats(ev) {
+  return typeLabel(ev.event_type || "other");
+}
+
+function cityNameForStats(ev) {
+  return String(ev.city_text || ev.place_text || "Neznámé místo").trim() || "Neznámé místo";
+}
+
+function countBy(items, fn) {
+  const map = new Map();
+  for (const item of items) {
+    const key = fn(item);
+    map.set(key, (map.get(key) || 0) + 1);
+  }
+  return map;
+}
+
+function mapToSortedList(map, limit = 20) {
+  return [...map.entries()]
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count || String(a.name).localeCompare(String(b.name), "cs"))
+    .slice(0, limit);
+}
+
+function compareCounts(currentMap, previousMap, limit = 20) {
+  const names = new Set([...currentMap.keys(), ...previousMap.keys()]);
+  return [...names].map(name => {
+    const current = currentMap.get(name) || 0;
+    const previous = previousMap.get(name) || 0;
+    const diff = current - previous;
+    const percent = previous > 0 ? Math.round((diff / previous) * 1000) / 10 : (current > 0 ? 100 : 0);
+    return { name, current, previous, diff, percent };
+  }).sort((a, b) => b.diff - a.diff || b.current - a.current).slice(0, limit);
+}
+
+function buildHourStats(items) {
+  const arr = Array.from({ length: 24 }, (_, hour) => ({ hour, count: 0 }));
+  for (const ev of items) arr[hourFromEvent(ev)].count++;
+  return arr;
+}
+
+function buildHeatmap(items, start, end) {
+  const dayMap = countBy(items, ev => dateOnlyIso(ev.pub_date || ev.created_at || ev.first_seen_at || start));
+  const out = [];
+  let d = new Date(start);
+  while (d < end) {
+    const day = dateOnlyIso(d);
+    out.push({ day, count: dayMap.get(day) || 0 });
+    d = addDaysUtc(d, 1);
+  }
+  return out;
+}
+
+function buildStatsProPayload({ preset, currentRows, previousRows, range }) {
+  const currentTotal = currentRows.length;
+  const previousTotal = previousRows.length;
+  const diff = currentTotal - previousTotal;
+  const diffPercent = previousTotal > 0 ? Math.round((diff / previousTotal) * 1000) / 10 : (currentTotal > 0 ? 100 : 0);
+
+  const currentTypes = countBy(currentRows, typeNameForStats);
+  const previousTypes = countBy(previousRows, typeNameForStats);
+
+  const currentCities = countBy(currentRows, cityNameForStats);
+  const previousCities = countBy(previousRows, cityNameForStats);
+
+  const open = currentRows.filter(r => !r.is_closed).length;
+  const closed = currentRows.filter(r => !!r.is_closed).length;
+  const missingCoords = currentRows.filter(r => r.lat == null || r.lon == null).length;
+
+  const hourStats = buildHourStats(currentRows);
+  const busiestHour = [...hourStats].sort((a, b) => b.count - a.count)[0] || { hour: 0, count: 0 };
+
+  const busiestDays = mapToSortedList(countBy(currentRows, ev => dateOnlyIso(ev.pub_date || ev.created_at || ev.first_seen_at)), 10)
+    .map(x => ({ day: x.name, count: x.count }));
+
+  return {
+    preset,
+    label: range.label,
+    current: {
+      start: dateOnlyIso(range.currentStart),
+      end: dateOnlyIso(addDaysUtc(range.currentEnd, -1)),
+      total: currentTotal,
+      open,
+      closed,
+      missingCoords
+    },
+    previous: {
+      start: dateOnlyIso(range.previousStart),
+      end: dateOnlyIso(addDaysUtc(range.previousEnd, -1)),
+      total: previousTotal
+    },
+    comparison: {
+      diff,
+      diffPercent
+    },
+    typeTrend: compareCounts(currentTypes, previousTypes, 12),
+    cityGrowth: compareCounts(currentCities, previousCities, 15),
+    topTypes: mapToSortedList(currentTypes, 12),
+    topCities: mapToSortedList(currentCities, 15),
+    hourStats,
+    busiestHour,
+    busiestDays,
+    heatmap: buildHeatmap(currentRows, range.currentStart, range.currentEnd)
+  };
+}
+
 // ---------------- STATIC ----------------
 app.use(express.static(path.join(__dirname, "public")));
 
@@ -2139,6 +2308,28 @@ app.post("/api/admin/fix-geocode", requireKey, async (req, res) => {
 
 
 // Archived reports API
+
+app.get("/api/stats/pro", async (req, res) => {
+  try {
+    const preset = String(req.query.preset || "month").trim();
+    const allowed = new Set(["month", "lastMonth", "week"]);
+    const chosen = allowed.has(preset) ? preset : "month";
+    const range = periodPresetRange(chosen);
+
+    const [currentRows, previousRows] = await Promise.all([
+      getEventsForPeriod(dateOnlyIso(range.currentStart), dateOnlyIso(range.currentEnd)),
+      getEventsForPeriod(dateOnlyIso(range.previousStart), dateOnlyIso(range.previousEnd))
+    ]);
+
+    const payload = buildStatsProPayload({ preset: chosen, currentRows, previousRows, range });
+    res.json({ ok: true, stats: payload });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok: false, error: "stats_pro_failed" });
+  }
+});
+
+
 app.get("/api/reports", async (req, res) => {
   try {
     const type = String(req.query.type || "").trim();

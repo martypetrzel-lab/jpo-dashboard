@@ -353,7 +353,60 @@
     </section>
 
     
-    <section id="reportsArchiveCard" class="card reportsArchiveCard">
+    
+    <section id="statsProCard" class="card statsProCard">
+      <div class="cardHeader">
+        <h2>Statistiky PRO</h2>
+        <div class="hint">Porovnání období, trendy, vytížené hodiny a růst měst</div>
+      </div>
+
+      <div class="statsProControls">
+        <select id="statsProPreset">
+          <option value="month">Tento měsíc vs minulý měsíc</option>
+          <option value="lastMonth">Minulý měsíc vs předchozí měsíc</option>
+          <option value="week">Tento týden vs minulý týden</option>
+        </select>
+        <button id="loadStatsProBtn" class="btn primary">Načíst PRO statistiky</button>
+      </div>
+
+      <div id="statsProSummary" class="statsProSummary"></div>
+
+      <div class="statsProGrid">
+        <div class="statsProPanel">
+          <div class="cardHeader compact">
+            <h3>Trend typů událostí</h3>
+            <span class="hint">aktuální vs předchozí období</span>
+          </div>
+          <div id="statsProTypeTrend" class="statsProList"></div>
+        </div>
+
+        <div class="statsProPanel">
+          <div class="cardHeader compact">
+            <h3>Města podle nárůstu</h3>
+            <span class="hint">kde přibylo nejvíce událostí</span>
+          </div>
+          <div id="statsProCityGrowth" class="statsProList"></div>
+        </div>
+
+        <div class="statsProPanel">
+          <div class="cardHeader compact">
+            <h3>Nejaktivnější hodiny</h3>
+            <span class="hint">rozložení podle hodin</span>
+          </div>
+          <div id="statsProHours" class="hourBars"></div>
+        </div>
+
+        <div class="statsProPanel">
+          <div class="cardHeader compact">
+            <h3>Heatmapa období</h3>
+            <span class="hint">intenzita po dnech</span>
+          </div>
+          <div id="statsProHeatmap" class="statsHeatmap"></div>
+        </div>
+      </div>
+    </section>
+
+<section id="reportsArchiveCard" class="card reportsArchiveCard">
       <div class="cardHeader">
         <h2>Archiv analytických souhrnů</h2>
         <div class="hint">Denní / týdenní / měsíční snapshoty pro zpětné zobrazení a tisk</div>
