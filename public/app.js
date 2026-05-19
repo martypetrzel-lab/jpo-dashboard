@@ -1397,8 +1397,189 @@ function exportWithFilters(kind) {
   window.open(url, "_blank");
 }
 
+
+
+// ==============================
+// ARCHIV ANALYTICKÝCH SOUHRNŮ
+// ==============================
+
+function defaultReportKey(type) {
+  const d = new Date();
+  if (type === "day") {
+    d.setDate(d.getDate() - 1);
+    return d.toISOString().slice(0, 10);
+  }
+  if (type === "week") {
+    const tmp = new Date(d);
+    tmp.setDate(tmp.getDate() - 7);
+    const onejan = new Date(tmp.getFullYear(), 0, 1);
+    const week = Math.ceil((((tmp - onejan) / 86400000) + onejan.getDay() + 1) / 7);
+    return `${tmp.getFullYear()}-W${String(week).padStart(2, "0")}`;
+  }
+  d.setMonth(d.getMonth() - 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function reportTypeName(type) {
+  if (type === "month") return "měsíční";
+  if (type === "week") return "týdenní";
+  if (type === "day") return "denní";
+  return type;
+}
+
+async function loadReportsArchive() {
+  const box = document.getElementById("reportsList");
+  if (!box) return;
+
+  box.innerHTML = `<div class="muted">Načítám archiv…</div>`;
+
+  try {
+    const r = await fetch("/api/reports?limit=80", { cache: "no-store" });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || "reports failed");
+
+    const reports = j.reports || [];
+    if (!reports.length) {
+      box.innerHTML = `<div class="muted">Zatím není uložený žádný souhrn. Klikni na „Doplnit automatiku“ nebo vygeneruj konkrétní období.</div>`;
+      return;
+    }
+
+    box.innerHTML = reports.map(rep => `
+      <button class="reportItem" data-report-type="${escapeHtml(rep.period_type)}" data-report-key="${escapeHtml(rep.period_key)}">
+        <span>
+          <b>${escapeHtml(rep.title || rep.period_key)}</b>
+          <small>${escapeHtml(reportTypeName(rep.period_type))} • ${escapeHtml(rep.period_start || "")} – ${escapeHtml(rep.period_end || "")}</small>
+        </span>
+        <span class="reportItemNums">${Number(rep.total_events || 0)} událostí</span>
+      </button>
+    `).join("");
+
+    box.querySelectorAll(".reportItem").forEach(btn => {
+      btn.addEventListener("click", () => openReportDetail(btn.dataset.reportType, btn.dataset.reportKey));
+    });
+  } catch (e) {
+    box.innerHTML = `<div class="err">Archiv souhrnů se nepodařilo načíst.</div>`;
+  }
+}
+
+function renderReportDetail(rep) {
+  const box = document.getElementById("reportDetail");
+  if (!box || !rep) return;
+
+  const d = rep.data || {};
+  box.innerHTML = `
+    <div class="reportDetailHead">
+      <div>
+        <h3>${escapeHtml(rep.title || "Souhrn")}</h3>
+        <p>${escapeHtml(rep.period_start || "")} – ${escapeHtml(rep.period_end || "")}</p>
+      </div>
+      <div class="btnRow">
+        <a class="btn primary" target="_blank" href="/api/reports/${encodeURIComponent(rep.period_type)}/${encodeURIComponent(rep.period_key)}.pdf">Export PDF / tisk</a>
+        <button class="btn" onclick="window.print()">Tisk stránky</button>
+      </div>
+    </div>
+
+    <p class="reportSummary">${escapeHtml(d.summary || "")}</p>
+
+    <div class="reportKpis">
+      <div><span>Celkem</span><b>${Number(rep.total_events || 0)}</b></div>
+      <div><span>Aktivní</span><b>${Number(rep.open_count || 0)}</b></div>
+      <div><span>Ukončené</span><b>${Number(rep.closed_count || 0)}</b></div>
+      <div><span>Bez GPS</span><b>${Number(rep.missing_coords_count || 0)}</b></div>
+      <div><span>Průměr / den</span><b>${Number(d.avg_per_day || 0)}</b></div>
+    </div>
+
+    <div class="reportColumns">
+      <div class="reportPanel">
+        <h4>Typy událostí</h4>
+        ${(d.type_stats || []).slice(0, 12).map(x => `<div class="reportRow"><span>${escapeHtml(x.name)}</span><b>${x.count} (${x.percent} %)</b></div>`).join("") || "<p class='muted'>Bez dat</p>"}
+      </div>
+      <div class="reportPanel">
+        <h4>TOP města</h4>
+        ${(d.top_cities || []).slice(0, 12).map(x => `<div class="reportRow"><span>${escapeHtml(x.name)}</span><b>${x.count}</b></div>`).join("") || "<p class='muted'>Bez dat</p>"}
+      </div>
+      <div class="reportPanel">
+        <h4>Nejvytíženější dny</h4>
+        ${(d.busiest_days || []).slice(0, 10).map(x => `<div class="reportRow"><span>${escapeHtml(x.day)}</span><b>${x.count}</b></div>`).join("") || "<p class='muted'>Bez dat</p>"}
+      </div>
+      <div class="reportPanel">
+        <h4>Nejdelší zásahy</h4>
+        ${(d.longest || []).slice(0, 10).map(x => `<div class="reportLong"><b>${escapeHtml(x.duration_text || "")}</b><span>${escapeHtml(x.date || "")} • ${escapeHtml(x.type || "")} • ${escapeHtml(x.city || "")}<br>${escapeHtml(x.title || "")}</span></div>`).join("") || "<p class='muted'>Bez dat</p>"}
+      </div>
+    </div>
+  `;
+}
+
+async function openReportDetail(type, key) {
+  const box = document.getElementById("reportDetail");
+  if (box) box.innerHTML = `<div class="muted">Načítám souhrn…</div>`;
+
+  try {
+    const r = await fetch(`/api/reports/${encodeURIComponent(type)}/${encodeURIComponent(key)}`, { cache: "no-store" });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || "report detail failed");
+    renderReportDetail(j.report);
+  } catch (e) {
+    if (box) box.innerHTML = `<div class="err">Souhrn se nepodařilo otevřít.</div>`;
+  }
+}
+
+async function generateSelectedReport() {
+  const typeEl = document.getElementById("reportTypeSelect");
+  const keyEl = document.getElementById("reportKeyInput");
+  if (!typeEl || !keyEl) return;
+
+  const type = typeEl.value;
+  const key = keyEl.value.trim() || defaultReportKey(type);
+  keyEl.value = key;
+
+  try {
+    const r = await fetch("/api/reports/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type, key, force: true })
+    });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || "generate failed");
+    await loadReportsArchive();
+    renderReportDetail(j.report);
+  } catch (e) {
+    alert("Souhrn se nepodařilo vygenerovat: " + (e.message || e));
+  }
+}
+
+async function runReportsAutomationNow() {
+  try {
+    const r = await fetch("/api/reports/automation/run", { method: "POST" });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || "automation failed");
+    await loadReportsArchive();
+  } catch (e) {
+    alert("Automatika souhrnů se nepodařila spustit: " + (e.message || e));
+  }
+}
+
+function wireReportsArchive() {
+  const typeEl = document.getElementById("reportTypeSelect");
+  const keyEl = document.getElementById("reportKeyInput");
+
+  if (typeEl && keyEl) {
+    keyEl.value = keyEl.value || defaultReportKey(typeEl.value);
+    typeEl.addEventListener("change", () => {
+      keyEl.value = defaultReportKey(typeEl.value);
+    });
+  }
+
+  document.getElementById("refreshReportsBtn")?.addEventListener("click", loadReportsArchive);
+  document.getElementById("generateReportBtn")?.addEventListener("click", generateSelectedReport);
+  document.getElementById("runReportsAutomationBtn")?.addEventListener("click", runReportsAutomationNow);
+
+  loadReportsArchive();
+}
+
 // UI events
-document.getElementById("refreshBtn").addEventListener("click", () => { resetFilters(); loadAll(); });
+document.getElementById("refreshBtn").addEventListener("click", () => { resetFilters(); loadAll();
+wireReportsArchive(); });
 document.getElementById("applyBtn").addEventListener("click", loadAll);
 document.getElementById("resetBtn").addEventListener("click", () => { resetFilters(); loadAll(); });
 document.getElementById("exportCsvBtn").addEventListener("click", () => exportWithFilters("csv"));

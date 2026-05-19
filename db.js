@@ -79,6 +79,27 @@ export async function initDb() {
   `);
 
 
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS archived_reports (
+      id BIGSERIAL PRIMARY KEY,
+      period_type TEXT NOT NULL,
+      period_key TEXT NOT NULL,
+      period_start DATE NOT NULL,
+      period_end DATE NOT NULL,
+      title TEXT NOT NULL,
+      total_events INTEGER NOT NULL DEFAULT 0,
+      open_count INTEGER NOT NULL DEFAULT 0,
+      closed_count INTEGER NOT NULL DEFAULT 0,
+      missing_coords_count INTEGER NOT NULL DEFAULT 0,
+      data_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(period_type, period_key)
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_archived_reports_period ON archived_reports(period_type, period_key DESC);`);
+
   // ---------------- AUTH TABLES ----------------
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
@@ -969,5 +990,111 @@ export async function getEventsMissingCoords(limit = 50) {
      LIMIT $1`,
     [limit]
   );
+  return r.rows || [];
+}
+
+
+// ======================
+// Archived analytical reports
+// ======================
+
+export async function upsertArchivedReport(report) {
+  const q = `
+    INSERT INTO archived_reports (
+      period_type, period_key, period_start, period_end, title,
+      total_events, open_count, closed_count, missing_coords_count,
+      data_json, updated_at
+    )
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,NOW())
+    ON CONFLICT (period_type, period_key) DO UPDATE SET
+      period_start = EXCLUDED.period_start,
+      period_end = EXCLUDED.period_end,
+      title = EXCLUDED.title,
+      total_events = EXCLUDED.total_events,
+      open_count = EXCLUDED.open_count,
+      closed_count = EXCLUDED.closed_count,
+      missing_coords_count = EXCLUDED.missing_coords_count,
+      data_json = EXCLUDED.data_json,
+      updated_at = NOW()
+    RETURNING *
+  `;
+
+  const values = [
+    report.period_type,
+    report.period_key,
+    report.period_start,
+    report.period_end,
+    report.title,
+    report.total_events ?? 0,
+    report.open_count ?? 0,
+    report.closed_count ?? 0,
+    report.missing_coords_count ?? 0,
+    JSON.stringify(report.data_json || {})
+  ];
+
+  const r = await pool.query(q, values);
+  return r.rows[0];
+}
+
+export async function listArchivedReports({ type = "", limit = 120 } = {}) {
+  const params = [];
+  const where = [];
+
+  if (type) {
+    params.push(type);
+    where.push(`period_type = $${params.length}`);
+  }
+
+  params.push(Math.max(1, Math.min(Number(limit || 120), 500)));
+
+  const r = await pool.query(
+    `
+    SELECT
+      id, period_type, period_key, period_start, period_end, title,
+      total_events, open_count, closed_count, missing_coords_count,
+      created_at, updated_at
+    FROM archived_reports
+    ${where.length ? "WHERE " + where.join(" AND ") : ""}
+    ORDER BY period_start DESC, period_type
+    LIMIT $${params.length}
+    `,
+    params
+  );
+
+  return r.rows || [];
+}
+
+export async function getArchivedReport(periodType, periodKey) {
+  const r = await pool.query(
+    `
+    SELECT *
+    FROM archived_reports
+    WHERE period_type = $1 AND period_key = $2
+    LIMIT 1
+    `,
+    [periodType, periodKey]
+  );
+  return r.rows[0] || null;
+}
+
+export async function getEventsForPeriod(startIso, endExclusiveIso) {
+  const r = await pool.query(
+    `
+    SELECT
+      id, title, link, pub_date,
+      place_text, city_text,
+      status_text, event_type,
+      description_raw,
+      start_time_iso, end_time_iso, duration_min, is_closed,
+      lat, lon,
+      first_seen_at, last_seen_at, created_at
+    FROM events
+    WHERE COALESCE(pub_date, created_at) >= $1::date
+      AND COALESCE(pub_date, created_at) < $2::date
+    ORDER BY COALESCE(pub_date, created_at) DESC
+    `,
+    [startIso, endExclusiveIso]
+  );
+
   return r.rows || [];
 }

@@ -64,7 +64,11 @@ import {
   createOpsRequest,
   listPendingOpsRequests,
   decideOpsRequest,
-  getEventsMissingCoords
+  getEventsMissingCoords,
+  upsertArchivedReport,
+  listArchivedReports,
+  getArchivedReport,
+  getEventsForPeriod
 
 } from "./db.js";
 
@@ -665,6 +669,395 @@ function exportFiltersLabel(filters) {
   const cityLabel = filters.city || "vše";
 
   return `Den: ${dayLabel} | Typ: ${typeLabelText} | Město: ${cityLabel} | Stav: ${statusLabel}`;
+}
+
+
+// ======================
+// Archived analytical reports
+// ======================
+
+function isoDateOnly(d) {
+  return new Date(d).toISOString().slice(0, 10);
+}
+
+function addDays(date, days) {
+  const d = new Date(date);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d;
+}
+
+function startOfIsoWeek(date) {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const day = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() - day + 1);
+  return d;
+}
+
+function reportPeriodFromKey(type, key) {
+  const t = String(type || "").trim();
+  const k = String(key || "").trim();
+
+  if (t === "month") {
+    if (!/^\d{4}-\d{2}$/.test(k)) throw new Error("bad_period");
+    const [y, m] = k.split("-").map(Number);
+    const start = new Date(Date.UTC(y, m - 1, 1));
+    const endExclusive = new Date(Date.UTC(y, m, 1));
+    return {
+      type: t,
+      key: k,
+      start,
+      endExclusive,
+      startIso: isoDateOnly(start),
+      endIso: isoDateOnly(addDays(endExclusive, -1)),
+      endExclusiveIso: isoDateOnly(endExclusive)
+    };
+  }
+
+  if (t === "week") {
+    if (!/^\d{4}-W\d{2}$/.test(k)) throw new Error("bad_period");
+    const [yStr, wStr] = k.split("-W");
+    const y = Number(yStr);
+    const w = Number(wStr);
+    const jan4 = new Date(Date.UTC(y, 0, 4));
+    const week1 = startOfIsoWeek(jan4);
+    const start = addDays(week1, (w - 1) * 7);
+    const endExclusive = addDays(start, 7);
+    return {
+      type: t,
+      key: k,
+      start,
+      endExclusive,
+      startIso: isoDateOnly(start),
+      endIso: isoDateOnly(addDays(endExclusive, -1)),
+      endExclusiveIso: isoDateOnly(endExclusive)
+    };
+  }
+
+  if (t === "day") {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(k)) throw new Error("bad_period");
+    const start = new Date(`${k}T00:00:00.000Z`);
+    const endExclusive = addDays(start, 1);
+    return {
+      type: t,
+      key: k,
+      start,
+      endExclusive,
+      startIso: isoDateOnly(start),
+      endIso: isoDateOnly(start),
+      endExclusiveIso: isoDateOnly(endExclusive)
+    };
+  }
+
+  throw new Error("bad_period_type");
+}
+
+function isoWeekKey(date) {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const day = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - day);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  const weekNo = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+  return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, "0")}`;
+}
+
+function reportPeriodLabel(type, key) {
+  try {
+    const p = reportPeriodFromKey(type, key);
+    if (type === "month") {
+      const [y, m] = key.split("-").map(Number);
+      return new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString("cs-CZ", { month: "long", year: "numeric", timeZone: "UTC" });
+    }
+    if (type === "week") return `${key} (${p.startIso} – ${p.endIso})`;
+    if (type === "day") return new Date(`${key}T00:00:00Z`).toLocaleDateString("cs-CZ", { timeZone: "UTC" });
+  } catch {}
+  return key;
+}
+
+function reportTypeLabel(type) {
+  return typeLabel(type || "other");
+}
+
+function safePercent(part, total) {
+  if (!total) return 0;
+  return Math.round((Number(part || 0) / Number(total || 1)) * 1000) / 10;
+}
+
+function eventDayKey(ev) {
+  const d = new Date(ev.pub_date || ev.created_at || Date.now());
+  if (Number.isNaN(d.getTime())) return "neznámé datum";
+  return d.toISOString().slice(0, 10);
+}
+
+function formatMinutesLong(min) {
+  const n = Number(min || 0);
+  if (!n) return "0 min";
+  const h = Math.floor(n / 60);
+  const m = Math.round(n % 60);
+  if (!h) return `${m} min`;
+  return `${h} h ${m} min`;
+}
+
+function buildAnalyticalReport(type, key, rows) {
+  const p = reportPeriodFromKey(type, key);
+  const total = rows.length;
+  const open = rows.filter(r => !r.is_closed).length;
+  const closed = rows.filter(r => !!r.is_closed).length;
+  const missingCoords = rows.filter(r => r.lat == null || r.lon == null).length;
+
+  const byType = new Map();
+  const byCity = new Map();
+  const byDay = new Map();
+  const byStatusType = new Map();
+
+  for (const r of rows) {
+    const typ = reportTypeLabel(r.event_type || "other");
+    byType.set(typ, (byType.get(typ) || 0) + 1);
+
+    if (!byStatusType.has(typ)) byStatusType.set(typ, { active: 0, closed: 0 });
+    if (r.is_closed) byStatusType.get(typ).closed++;
+    else byStatusType.get(typ).active++;
+
+    const city = String(r.city_text || r.place_text || "Neznámé místo").trim() || "Neznámé místo";
+    byCity.set(city, (byCity.get(city) || 0) + 1);
+
+    const day = eventDayKey(r);
+    byDay.set(day, (byDay.get(day) || 0) + 1);
+  }
+
+  const sortDesc = (a, b) => Number(b.count || 0) - Number(a.count || 0);
+
+  const typeStats = [...byType.entries()].map(([name, count]) => ({
+    name,
+    count,
+    percent: safePercent(count, total),
+    active: byStatusType.get(name)?.active || 0,
+    closed: byStatusType.get(name)?.closed || 0
+  })).sort(sortDesc);
+
+  const topCities = [...byCity.entries()].map(([name, count]) => ({
+    name,
+    count,
+    percent: safePercent(count, total)
+  })).sort(sortDesc).slice(0, 25);
+
+  const byDayArr = [...byDay.entries()].map(([day, count]) => ({ day, count }))
+    .sort((a, b) => String(a.day).localeCompare(String(b.day)));
+
+  const busiestDays = [...byDayArr].sort(sortDesc).slice(0, 10);
+
+  const longest = rows
+    .filter(r => Number(r.duration_min || 0) > 0)
+    .sort((a, b) => Number(b.duration_min || 0) - Number(a.duration_min || 0))
+    .slice(0, 20)
+    .map(r => ({
+      id: r.id,
+      title: r.title || "",
+      city: r.city_text || r.place_text || "",
+      type: reportTypeLabel(r.event_type || "other"),
+      duration_min: Number(r.duration_min || 0),
+      duration_text: formatMinutesLong(r.duration_min),
+      date: eventDayKey(r),
+      link: r.link || ""
+    }));
+
+  const importantEvents = rows
+    .filter(r => !r.is_closed || Number(r.duration_min || 0) >= 120)
+    .slice(0, 30)
+    .map(r => ({
+      id: r.id,
+      title: r.title || "",
+      city: r.city_text || r.place_text || "",
+      type: reportTypeLabel(r.event_type || "other"),
+      is_closed: !!r.is_closed,
+      duration_min: Number(r.duration_min || 0),
+      duration_text: formatMinutesLong(r.duration_min),
+      date: eventDayKey(r),
+      link: r.link || ""
+    }));
+
+  const avgPerDay = byDayArr.length ? Math.round((total / byDayArr.length) * 10) / 10 : 0;
+
+  let summary = "Za vybrané období nebyly nalezeny žádné události.";
+  if (total > 0) {
+    const topType = typeStats[0];
+    const topCity = topCities[0];
+    const busiest = busiestDays[0];
+    summary = `Za období bylo evidováno ${total} událostí. Nejčastější typ: ${topType?.name || "—"} (${topType?.count || 0}). Nejvíce událostí bylo v lokalitě ${topCity?.name || "—"} (${topCity?.count || 0}). Nejvytíženější den: ${busiest?.day || "—"} (${busiest?.count || 0}).`;
+  }
+
+  const titlePrefix = type === "month" ? "Měsíční" : type === "week" ? "Týdenní" : "Denní";
+
+  return {
+    period_type: type,
+    period_key: key,
+    period_start: p.startIso,
+    period_end: p.endIso,
+    title: `${titlePrefix} analytický souhrn – ${reportPeriodLabel(type, key)}`,
+    total_events: total,
+    open_count: open,
+    closed_count: closed,
+    missing_coords_count: missingCoords,
+    data_json: {
+      period_type: type,
+      period_key: key,
+      period_label: reportPeriodLabel(type, key),
+      generated_at: new Date().toISOString(),
+      summary,
+      total_events: total,
+      open_count: open,
+      closed_count: closed,
+      missing_coords_count: missingCoords,
+      avg_per_day: avgPerDay,
+      type_stats: typeStats,
+      top_cities: topCities,
+      by_day: byDayArr,
+      busiest_days: busiestDays,
+      longest,
+      important_events: importantEvents,
+      notes: [
+        "Souhrn je archivní snapshot vytvořený z dat dostupných v době generování.",
+        "Údaje mají orientační a analytický charakter."
+      ]
+    }
+  };
+}
+
+async function generateArchivedReport(type, key, { force = false } = {}) {
+  const p = reportPeriodFromKey(type, key);
+  const existing = await getArchivedReport(type, key);
+  if (existing && !force) return existing;
+
+  const rows = await getEventsForPeriod(p.startIso, p.endExclusiveIso);
+  const report = buildAnalyticalReport(type, key, rows);
+  return await upsertArchivedReport(report);
+}
+
+function reportJson(row) {
+  const data = row?.data_json || {};
+  return {
+    id: row.id,
+    period_type: row.period_type,
+    period_key: row.period_key,
+    period_start: row.period_start,
+    period_end: row.period_end,
+    title: row.title,
+    total_events: row.total_events,
+    open_count: row.open_count,
+    closed_count: row.closed_count,
+    missing_coords_count: row.missing_coords_count,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    data
+  };
+}
+
+function reportKeysToEnsure(date = new Date()) {
+  const today = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+
+  const yesterday = addDays(today, -1);
+  const lastWeekDate = addDays(startOfIsoWeek(today), -1);
+  const lastMonth = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - 1, 1));
+
+  return [
+    { type: "day", key: isoDateOnly(yesterday) },
+    { type: "week", key: isoWeekKey(lastWeekDate) },
+    { type: "month", key: `${lastMonth.getUTCFullYear()}-${String(lastMonth.getUTCMonth() + 1).padStart(2, "0")}` }
+  ];
+}
+
+let archivedReportsAutomationRunning = false;
+
+async function runArchivedReportsAutomation(reason = "interval") {
+  if (archivedReportsAutomationRunning) return;
+  archivedReportsAutomationRunning = true;
+
+  try {
+    for (const item of reportKeysToEnsure()) {
+      const existing = await getArchivedReport(item.type, item.key);
+      if (!existing) {
+        const rep = await generateArchivedReport(item.type, item.key, { force: false });
+        console.log(`[report-archive] generated ${rep.period_type}:${rep.period_key} (${reason})`);
+      }
+    }
+  } catch (e) {
+    console.warn("[report-archive] automation failed:", e?.message || e);
+  } finally {
+    archivedReportsAutomationRunning = false;
+  }
+}
+
+function drawReportPdf(doc, row) {
+  const report = reportJson(row);
+  const data = report.data || {};
+
+  tryApplyPdfFont(doc);
+
+  doc.fontSize(20).fillColor("#111").text("FireWatch CZ", { align: "left" });
+  doc.moveDown(0.2);
+  doc.fontSize(16).fillColor("#111").text(report.title || "Analytický souhrn");
+  doc.moveDown(0.2);
+  doc.fontSize(10).fillColor("#444").text(`Období: ${report.period_start} – ${report.period_end}`);
+  doc.text(`Vytvořeno: ${new Date(report.created_at || Date.now()).toLocaleString("cs-CZ")}`);
+  doc.moveDown(0.6);
+
+  doc.fontSize(11).fillColor("#111").text(data.summary || "");
+  doc.moveDown(0.8);
+
+  const y0 = doc.y;
+  const cardW = 170;
+  const cards = [
+    ["Celkem", report.total_events],
+    ["Aktivní", report.open_count],
+    ["Ukončené", report.closed_count],
+    ["Bez GPS", report.missing_coords_count]
+  ];
+  cards.forEach((c, idx) => {
+    const x = 40 + idx * (cardW + 10);
+    doc.roundedRect(x, y0, cardW, 48, 8).strokeColor("#bbb").lineWidth(0.8).stroke();
+    doc.fontSize(9).fillColor("#555").text(c[0], x + 10, y0 + 8, { width: cardW - 20 });
+    doc.fontSize(17).fillColor("#111").text(String(c[1]), x + 10, y0 + 23, { width: cardW - 20 });
+  });
+  doc.y = y0 + 64;
+
+  const section = (title) => {
+    doc.moveDown(0.5);
+    doc.fontSize(14).fillColor("#111").text(title);
+    doc.moveDown(0.25);
+  };
+
+  const line = (txt) => {
+    doc.fontSize(9).fillColor("#222").text(txt, { continued: false });
+  };
+
+  section("Rozdělení podle typů");
+  (data.type_stats || []).slice(0, 12).forEach((x, i) => {
+    line(`${i + 1}. ${x.name}: ${x.count} (${x.percent} %) — aktivní ${x.active}, ukončené ${x.closed}`);
+  });
+
+  section("TOP města / lokality");
+  (data.top_cities || []).slice(0, 15).forEach((x, i) => {
+    line(`${i + 1}. ${x.name}: ${x.count} (${x.percent} %)`);
+  });
+
+  section("Nejvytíženější dny");
+  (data.busiest_days || []).slice(0, 10).forEach((x, i) => {
+    line(`${i + 1}. ${x.day}: ${x.count}`);
+  });
+
+  if (doc.y > 450) doc.addPage();
+
+  section("Nejdelší zásahy");
+  (data.longest || []).slice(0, 15).forEach((x, i) => {
+    line(`${i + 1}. ${x.date} • ${x.type} • ${x.city} • ${x.duration_text || formatMinutesLong(x.duration_min)} • ${x.title}`);
+  });
+
+  section("Významné / otevřené události");
+  (data.important_events || []).slice(0, 15).forEach((x, i) => {
+    line(`${i + 1}. ${x.date} • ${x.type} • ${x.city} • ${x.is_closed ? "ukončené" : "aktivní"} • ${x.title}`);
+  });
+
+  doc.moveDown(1);
+  doc.fontSize(8).fillColor("#666").text("FireWatch CZ není oficiální systém HZS/JPO/IZS. Údaje jsou orientační a analytické.");
 }
 
 // ---------------- STATIC ----------------
@@ -1446,6 +1839,78 @@ app.post("/api/admin/fix-geocode", requireKey, async (req, res) => {
   }
 });
 
+
+// Archived reports API
+app.get("/api/reports", async (req, res) => {
+  try {
+    const type = String(req.query.type || "").trim();
+    const reports = await listArchivedReports({ type, limit: Number(req.query.limit || 120) });
+    res.json({ ok: true, reports });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok: false, error: "reports_list_failed" });
+  }
+});
+
+app.post("/api/reports/generate", async (req, res) => {
+  try {
+    const type = String(req.body?.type || req.query.type || "").trim();
+    const key = String(req.body?.key || req.query.key || "").trim();
+    const force = String(req.body?.force || req.query.force || "") === "1" || req.body?.force === true;
+
+    const report = await generateArchivedReport(type, key, { force });
+    res.json({ ok: true, report: reportJson(report) });
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ ok: false, error: e?.message || "report_generate_failed" });
+  }
+});
+
+app.post("/api/reports/automation/run", async (req, res) => {
+  try {
+    await runArchivedReportsAutomation("manual");
+    const reports = await listArchivedReports({ limit: 20 });
+    res.json({ ok: true, reports });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok: false, error: "report_automation_failed" });
+  }
+});
+
+app.get("/api/reports/:type/:key", async (req, res) => {
+  try {
+    let row = await getArchivedReport(req.params.type, req.params.key);
+    if (!row) {
+      row = await generateArchivedReport(req.params.type, req.params.key, { force: false });
+    }
+    res.json({ ok: true, report: reportJson(row) });
+  } catch (e) {
+    console.error(e);
+    res.status(404).json({ ok: false, error: e?.message || "report_not_found" });
+  }
+});
+
+app.get("/api/reports/:type/:key.pdf", async (req, res) => {
+  try {
+    let row = await getArchivedReport(req.params.type, req.params.key);
+    if (!row) {
+      row = await generateArchivedReport(req.params.type, req.params.key, { force: false });
+    }
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="firewatch_report_${req.params.type}_${req.params.key}.pdf"`);
+
+    const doc = new PDFDocument({ size: "A4", layout: "portrait", margin: 40 });
+    doc.pipe(res);
+    drawReportPdf(doc, row);
+    doc.end();
+  } catch (e) {
+    console.error(e);
+    res.status(500).send("PDF report failed");
+  }
+});
+
+
 app.get("/health", (req, res) => res.send("OK"));
 
 async function ensureInitialAdmin() {
@@ -1509,6 +1974,10 @@ await ensureInitialAdmin();
 // start stale closer loop (ESP-only)
 await runStaleAutoClose();
 setInterval(runStaleAutoClose, STALE_CLOSE_INTERVAL_MS);
+
+// archived analytical reports automation
+await runArchivedReportsAutomation("startup");
+setInterval(() => runArchivedReportsAutomation("interval"), 6 * 60 * 60 * 1000);
 
 const server = http.createServer(app);
 attachOpsRadio(server);

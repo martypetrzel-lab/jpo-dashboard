@@ -655,3 +655,188 @@ body.isGuestMode #registerBtn {
   opacity: 0.55;
   cursor: wait;
 }
+
+
+/* Archived analytical reports */
+.reportsArchiveCard {
+  grid-column: 1 / -1;
+}
+
+.reportControls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 10px 0 14px;
+}
+
+.reportControls select,
+.reportControls input {
+  min-height: 38px;
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 12px;
+  background: rgba(255,255,255,0.06);
+  color: #fff;
+  padding: 8px 10px;
+}
+
+.reportsList {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.reportItem {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  text-align: left;
+  padding: 12px;
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 14px;
+  color: #fff;
+  background: rgba(255,255,255,0.045);
+  cursor: pointer;
+}
+
+.reportItem:hover {
+  border-color: rgba(90,160,255,0.35);
+  background: rgba(90,160,255,0.08);
+}
+
+.reportItem small {
+  display: block;
+  margin-top: 3px;
+  color: rgba(235,245,255,0.66);
+}
+
+.reportItemNums {
+  white-space: nowrap;
+  color: rgba(235,245,255,0.82);
+  font-weight: 800;
+}
+
+.reportDetail {
+  border-top: 1px solid rgba(255,255,255,0.10);
+  padding-top: 14px;
+}
+
+.reportDetailHead {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+.reportDetailHead h3 {
+  margin: 0 0 4px;
+}
+
+.reportDetailHead p,
+.reportSummary {
+  color: rgba(235,245,255,0.76);
+}
+
+.reportKpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(135px, 1fr));
+  gap: 10px;
+  margin: 14px 0;
+}
+
+.reportKpis div {
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 14px;
+  padding: 12px;
+  background: rgba(255,255,255,0.045);
+}
+
+.reportKpis span {
+  display: block;
+  color: rgba(235,245,255,0.65);
+  margin-bottom: 5px;
+}
+
+.reportKpis b {
+  font-size: 24px;
+}
+
+.reportColumns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.reportPanel {
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 16px;
+  padding: 12px;
+  background: rgba(255,255,255,0.035);
+}
+
+.reportPanel h4 {
+  margin: 0 0 10px;
+}
+
+.reportRow,
+.reportLong {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+
+.reportLong {
+  justify-content: flex-start;
+}
+
+.reportLong b {
+  min-width: 72px;
+}
+
+.err {
+  color: #ff9b9b;
+}
+
+@media (max-width: 900px) {
+  .reportDetailHead,
+  .reportItem {
+    flex-direction: column;
+  }
+
+  .reportColumns {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media print {
+  header,
+  .filters,
+  .mapCard,
+  .talkLauncherCard,
+  #opsRadioMount,
+  #talkLockedCard,
+  .eventsCard,
+  .reportControls,
+  .reportsList,
+  .btnRow {
+    display: none !important;
+  }
+
+  body {
+    background: white !important;
+    color: black !important;
+  }
+
+  .card,
+  .reportPanel,
+  .reportKpis div {
+    border-color: #ccc !important;
+    background: white !important;
+    color: black !important;
+  }
+
+  .reportsArchiveCard {
+    box-shadow: none !important;
+  }
+}

@@ -251,7 +251,30 @@
       <div class="list" id="longestList"></div>
     </section>
 
-    <section class="card tableCard">
+    
+    <section id="reportsArchiveCard" class="card reportsArchiveCard">
+      <div class="cardHeader">
+        <h2>Archiv analytických souhrnů</h2>
+        <div class="hint">Denní / týdenní / měsíční snapshoty pro zpětné zobrazení a tisk</div>
+      </div>
+
+      <div class="reportControls">
+        <select id="reportTypeSelect">
+          <option value="month">měsíční</option>
+          <option value="week">týdenní</option>
+          <option value="day">denní</option>
+        </select>
+        <input id="reportKeyInput" type="text" placeholder="2026-05 / 2026-W21 / 2026-05-18" />
+        <button id="generateReportBtn" class="btn primary">Vygenerovat / otevřít</button>
+        <button id="refreshReportsBtn" class="btn">Načíst archiv</button>
+        <button id="runReportsAutomationBtn" class="btn">Doplnit automatiku</button>
+      </div>
+
+      <div id="reportsList" class="reportsList"></div>
+      <div id="reportDetail" class="reportDetail"></div>
+    </section>
+
+<section class="card tableCard">
       <div class="cardHeader">
         <h2>Poslední výjezdy</h2>
         <div class="hint">Tabulka (scroll na mobilu)</div>
