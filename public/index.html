@@ -56,7 +56,8 @@
       <button id="briefingBtn" class="btn" title="Hlasový briefing (OPS)" style="display:none;">🗣️</button>
 
       <span id="modePill" class="pill pillMode">PUBLIC</span>
-      <button id="loginBtn" class="btn">Přihlásit</button>
+      <button id="landingHomeBtn" class="btn">Úvod</button>
+        <button id="loginBtn" class="btn">Přihlásit</button>
       <button id="registerBtn" class="btn">Registrace</button>
       <button id="adminBtn" class="btn" style="display:none;">Admin</button>
       <button id="logoutBtn" class="btn" style="display:none;">Odhlásit</button>
@@ -66,6 +67,106 @@
       <button id="refreshBtn" class="btn">Obnovit</button>
     </div>
   </header>
+
+  <section id="landingPage" class="landingPage">
+    <div class="landingHero">
+      <div class="landingHeroText">
+        <div class="landingBadge">FireWatch CZ • veřejný přehledový projekt</div>
+        <h1>Veřejné události, mapa, statistiky a týmová komunikace v jednom prostředí.</h1>
+        <p>
+          FireWatch CZ je soukromý webový projekt pro přehledné zobrazování veřejně dostupných
+          informací o událostech jednotek požární ochrany. Nabízí dashboard, mapu, filtrování,
+          statistiky, archiv analytických souhrnů a komunikační modul FireWatch Talk.
+        </p>
+
+        <div class="landingActions">
+          <button id="landingDashboardBtn" class="btn primary landingCta">Zobrazit dashboard</button>
+          <button id="landingLoginBtn" class="btn">Přihlásit</button>
+          <button id="landingRegisterBtn" class="btn">Registrovat</button>
+        </div>
+
+        <div class="landingNote">
+          ⚠️ FireWatch CZ není oficiální systém HZS, JPO ani IZS a neslouží k řízení zásahů.
+          Údaje mají orientační, analytický a vývojový charakter.
+        </div>
+      </div>
+
+      <div class="landingPreview">
+        <div class="landingPreviewTop">
+          <span></span><span></span><span></span>
+        </div>
+        <div class="landingPreviewTitle">Aktuální přehled</div>
+        <div class="landingPreviewGrid">
+          <div><b>Mapa</b><small>body událostí</small></div>
+          <div><b>Statistiky</b><small>typy a města</small></div>
+          <div><b>Reporty</b><small>denní / týdenní / měsíční</small></div>
+          <div><b>Talk</b><small>týmová komunikace</small></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="landingFeatureGrid">
+      <article class="landingFeature">
+        <div class="landingIcon">🗺️</div>
+        <h3>Mapa událostí</h3>
+        <p>Rychlý přehled událostí v mapě, filtrování podle typu, dne, stavu a města.</p>
+      </article>
+
+      <article class="landingFeature">
+        <div class="landingIcon">📊</div>
+        <h3>Statistiky a reporty</h3>
+        <p>Denní, týdenní a měsíční analytické souhrny, archiv reportů, PDF export a tisk.</p>
+      </article>
+
+      <article class="landingFeature">
+        <div class="landingIcon">🔎</div>
+        <h3>Veřejný HOST režim</h3>
+        <p>Základní přehled je dostupný bez registrace. Přihlášení odemyká pokročilé funkce.</p>
+      </article>
+
+      <article class="landingFeature">
+        <div class="landingIcon">🎙️</div>
+        <h3>FireWatch Talk</h3>
+        <p>Soukromý komunikační modul ve stylu internetové vysílačky pro týmovou komunikaci.</p>
+      </article>
+    </div>
+
+    <div class="landingSplit">
+      <div class="landingPanel">
+        <h2>Co je dostupné bez registrace?</h2>
+        <ul>
+          <li>veřejný dashboard</li>
+          <li>mapa událostí</li>
+          <li>poslední výjezdy</li>
+          <li>základní statistiky</li>
+          <li>archiv analytických souhrnů</li>
+        </ul>
+      </div>
+
+      <div class="landingPanel landingPanelAccent">
+        <h2>Co odemkne účet?</h2>
+        <ul>
+          <li>FireWatch Talk</li>
+          <li>vlastní nastavení</li>
+          <li>pokročilejší práce s funkcemi</li>
+          <li>OPS/admin nástroje podle oprávnění</li>
+          <li>budoucí notifikace a odběry</li>
+        </ul>
+      </div>
+
+      <div class="landingPanel">
+        <h2>Co se chystá dál?</h2>
+        <ul>
+          <li>Geolokace 2.0</li>
+          <li>Statistiky PRO</li>
+          <li>Notifikace a odběry</li>
+          <li>FireWatch Talk 2.0</li>
+          <li>nový profesionální layout v2.0</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
 
   <section id="publicGuestHero" class="publicHero" style="display:none;">
     <div class="publicHeroMain">

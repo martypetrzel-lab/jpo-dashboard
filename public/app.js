@@ -1584,6 +1584,56 @@ function wireReportsArchive() {
   loadReportsArchive();
 }
 
+
+
+// ==============================
+// LANDING PAGE / PUBLIC PRESENTATION
+// ==============================
+
+const LS_LANDING_DISMISSED = "fwcz_landingDismissed";
+
+function setLandingVisible(visible) {
+  const landing = document.getElementById("landingPage");
+  if (!landing) return;
+  landing.style.display = visible ? "" : "none";
+  document.body.classList.toggle("landingVisible", visible);
+}
+
+function showLandingPage() {
+  localStorage.removeItem(LS_LANDING_DISMISSED);
+  setLandingVisible(true);
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function openDashboardFromLanding() {
+  localStorage.setItem(LS_LANDING_DISMISSED, "1");
+  setLandingVisible(false);
+
+  const filters = document.querySelector(".filters");
+  if (filters) {
+    filters.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+}
+
+function initLandingPage() {
+  const shouldHide = localStorage.getItem(LS_LANDING_DISMISSED) === "1";
+  setLandingVisible(!shouldHide);
+
+  document.getElementById("landingDashboardBtn")?.addEventListener("click", openDashboardFromLanding);
+  document.getElementById("landingHomeBtn")?.addEventListener("click", showLandingPage);
+
+  document.getElementById("landingLoginBtn")?.addEventListener("click", () => {
+    openDashboardFromLanding();
+    document.getElementById("loginBtn")?.click();
+  });
+
+  document.getElementById("landingRegisterBtn")?.addEventListener("click", () => {
+    openDashboardFromLanding();
+    document.getElementById("registerBtn")?.click();
+  });
+}
+
+
 // UI events
 document.getElementById("refreshBtn").addEventListener("click", () => { resetFilters(); loadAll();
 wireReportsArchive(); });
@@ -1601,6 +1651,7 @@ window.addEventListener("resize", () => {
 window.addEventListener("orientationchange", () => safeInvalidateMap());
 
 initMap();
+initLandingPage();
 
 // HZS stanice toggle (statická vrstva)
 hzsStationsToggleEl = document.getElementById("hzsStationsToggle");
