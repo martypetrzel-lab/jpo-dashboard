@@ -2583,3 +2583,30 @@ tr.majorEventRow {
     grid-template-columns: 1fr;
   }
 }
+
+
+.adminManualQuickSearch {
+  min-height: 38px;
+  min-width: 240px;
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 12px;
+  background: rgba(255,255,255,0.06);
+  color: #fff;
+  padding: 8px 10px;
+}
+
+.adminManualQuickList {
+  max-height: 360px;
+  overflow: auto;
+  margin-top: 10px;
+  padding-right: 4px;
+}
+
+.adminManualQuickList .manualQuickItem {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.manualEditAdminBox {
+  position: relative;
+  z-index: 2;
+}

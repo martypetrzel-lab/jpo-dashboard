@@ -2808,12 +2808,13 @@ function wireManualEventEditor() {
 
 let __manualQuickItems = [];
 
-function renderManualQuickList(items = __manualQuickItems) {
-  const list = document.getElementById("manualQuickList");
-  const status = document.getElementById("manualQuickStatus");
+
+function renderManualQuickListTarget(listId, statusId, searchId, items = __manualQuickItems) {
+  const list = document.getElementById(listId);
+  const status = document.getElementById(statusId);
   if (!list) return;
 
-  const q = String(document.getElementById("manualQuickSearch")?.value || "").toLowerCase().trim();
+  const q = String(document.getElementById(searchId)?.value || "").toLowerCase().trim();
   const filtered = items.filter((it) => {
     if (!q) return true;
     return `${it.title || ""} ${it.city_text || ""} ${it.place_text || ""} ${it.status_text || ""}`.toLowerCase().includes(q);
@@ -2844,6 +2845,12 @@ function renderManualQuickList(items = __manualQuickItems) {
   list.querySelectorAll(".manualQuickEditBtn").forEach((btn) => {
     btn.addEventListener("click", () => openManualEventEditor(btn.getAttribute("data-event-id")));
   });
+}
+
+
+function renderManualQuickList(items = __manualQuickItems) {
+  renderManualQuickListTarget("manualQuickList", "manualQuickStatus", "manualQuickSearch", items);
+  renderManualQuickListTarget("adminManualQuickList", "adminManualQuickStatus", "adminManualQuickSearch", items);
 }
 
 async function loadManualQuickEvents() {
@@ -2878,8 +2885,12 @@ async function loadManualQuickEvents() {
     __manualQuickItems = Array.isArray(j.items) ? j.items : [];
     renderManualQuickList(__manualQuickItems);
 
-    const card = document.getElementById("manualEventQuickCard");
-    if (card) card.scrollIntoView({ behavior: "smooth", block: "start" });
+    const adminList = document.getElementById("adminManualQuickList");
+    const adminModalVisible = document.getElementById("modalBackdrop")?.style.display !== "none" && adminList;
+    if (!adminModalVisible) {
+      const card = document.getElementById("manualEventQuickCard");
+      if (card) card.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
   } catch (e) {
     if (status) status.textContent = `Nepodařilo se načíst: ${String(e.message || e)}`;
   } finally {
@@ -2894,6 +2905,7 @@ function wireManualQuickEditList() {
   document.getElementById("manualQuickLoadBtn")?.addEventListener("click", loadManualQuickEvents);
   document.getElementById("adminManualQuickLoadBtn")?.addEventListener("click", loadManualQuickEvents);
   document.getElementById("manualQuickSearch")?.addEventListener("input", () => renderManualQuickList());
+  document.getElementById("adminManualQuickSearch")?.addEventListener("input", () => renderManualQuickList());
 }
 
 
