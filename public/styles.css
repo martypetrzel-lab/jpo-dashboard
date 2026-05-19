@@ -2255,3 +2255,224 @@ tr.majorEventRow {
 .adminOnly {
   display: none;
 }
+
+
+/* ==============================
+   FireWatchCZ v2.3 layout polish / no jump
+   ============================== */
+.commandOverviewCard {
+  grid-column: 1 / -1;
+  overflow: hidden;
+}
+
+.commandOverviewHero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+  padding: 4px 2px 14px;
+}
+
+.commandOverviewHero .eyebrow {
+  color: rgba(130,180,255,0.88);
+  font-weight: 950;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 11px;
+  margin-bottom: 6px;
+}
+
+.commandOverviewHero h2 {
+  margin: 0;
+  font-size: clamp(22px, 2.4vw, 34px);
+  line-height: 1.12;
+}
+
+.commandOverviewHero p {
+  margin: 7px 0 0;
+  color: rgba(235,245,255,0.68);
+}
+
+.commandOverviewStatus {
+  padding: 10px 13px;
+  border-radius: 999px;
+  border: 1px solid rgba(120,255,180,0.24);
+  background: rgba(40,180,100,0.10);
+  color: rgba(210,255,225,0.94);
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.commandOverviewGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(145px, 1fr));
+  gap: 10px;
+}
+
+.commandTile {
+  min-height: 110px;
+  text-align: left;
+  border-radius: 20px;
+  padding: 14px;
+  color: #fff;
+  border: 1px solid rgba(255,255,255,0.10);
+  background:
+    radial-gradient(circle at top right, rgba(90,160,255,0.14), transparent 55%),
+    rgba(255,255,255,0.045);
+  cursor: pointer;
+}
+
+.commandTile:hover {
+  border-color: rgba(90,160,255,0.38);
+  background:
+    radial-gradient(circle at top right, rgba(90,160,255,0.22), transparent 55%),
+    rgba(255,255,255,0.065);
+}
+
+.commandTile span,
+.commandTile small {
+  display: block;
+}
+
+.commandTile span {
+  color: rgba(235,245,255,0.72);
+  font-weight: 850;
+}
+
+.commandTile b {
+  display: block;
+  margin: 10px 0 3px;
+  font-size: 28px;
+  line-height: 1;
+}
+
+.commandTile small {
+  color: rgba(235,245,255,0.58);
+}
+
+#regionalWeatherDetail {
+  scroll-margin-top: 110px;
+}
+
+@media (max-width: 1050px) {
+  .commandOverviewHero {
+    grid-template-columns: 1fr;
+  }
+
+  .commandOverviewStatus {
+    justify-self: start;
+    white-space: normal;
+  }
+
+  .commandOverviewGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 620px) {
+  .commandOverviewGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+
+/* filter polish compact */
+.filters {
+  border-radius: 0 0 22px 22px;
+}
+
+.filterRow,
+.controlsRow {
+  gap: 10px;
+}
+
+#talkLauncherCard {
+  margin-top: 10px;
+}
+
+
+/* ==============================
+   FireWatchCZ v2.4 manual event edit
+   ============================== */
+.miniBtn {
+  min-height: 30px;
+  padding: 4px 9px;
+  border-radius: 10px;
+  font-size: 12px;
+}
+
+.manualEventModal {
+  max-width: 780px;
+  width: min(780px, calc(100vw - 28px));
+}
+
+.manualEventBody {
+  display: grid;
+  gap: 12px;
+}
+
+.manualEventBody label {
+  display: grid;
+  gap: 6px;
+  font-weight: 850;
+  color: rgba(235,245,255,0.78);
+}
+
+.manualEventBody input,
+.manualEventBody select {
+  min-height: 40px;
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 12px;
+  background: rgba(255,255,255,0.06);
+  color: #fff;
+  padding: 8px 10px;
+}
+
+.manualEventInfo {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid rgba(90,160,255,0.22);
+  border-radius: 16px;
+  background: rgba(90,160,255,0.08);
+}
+
+.manualEventInfo span,
+.manualEventInfo small {
+  color: rgba(235,245,255,0.66);
+}
+
+.manualEventTimeGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.manualMajorCheck {
+  display: flex !important;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 14px;
+  padding: 10px;
+  background: rgba(255,255,255,0.04);
+}
+
+.manualMajorCheck input {
+  min-height: auto;
+}
+
+.manualEventComputed {
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(255,205,90,0.25);
+  background: rgba(255,205,90,0.08);
+  color: rgba(255,245,220,0.92);
+  font-weight: 850;
+}
+
+@media (max-width: 720px) {
+  .manualEventTimeGrid {
+    grid-template-columns: 1fr;
+  }
+}

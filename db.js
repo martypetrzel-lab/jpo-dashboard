@@ -1279,3 +1279,57 @@ export async function getMajorEventsSummary(limit = 20) {
   );
   return r.rows || [];
 }
+
+
+// ---------------- MANUAL EVENT EDIT ----------------
+export async function getEventForManualEdit(id) {
+  const r = await pool.query(
+    `
+    SELECT
+      id, title, link, pub_date,
+      place_text, city_text, status_text, event_type,
+      description_raw,
+      start_time_iso, end_time_iso, duration_min, is_closed,
+      alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
+      lat, lon,
+      first_seen_at, last_seen_at, created_at
+    FROM events
+    WHERE id = $1
+    `,
+    [id]
+  );
+  return r.rows?.[0] || null;
+}
+
+export async function updateEventManualMeta(id, patch = {}) {
+  await pool.query(
+    `
+    UPDATE events
+    SET
+      is_closed = $2,
+      status_text = $3,
+      status_source = 'manual',
+      alarm_level = $4,
+      alarm_level_text = $5,
+      is_major_event = $6,
+      major_reason = $7,
+      start_time_iso = $8,
+      end_time_iso = $9,
+      duration_min = $10,
+      last_seen_at = NOW()
+    WHERE id = $1
+    `,
+    [
+      id,
+      !!patch.isClosed,
+      patch.statusText || null,
+      Number.isFinite(Number(patch.alarmLevel)) ? Number(patch.alarmLevel) : null,
+      patch.alarmLevelText || null,
+      !!patch.isMajorEvent,
+      patch.majorReason || null,
+      patch.startTimeIso || null,
+      patch.endTimeIso || null,
+      Number.isFinite(Number(patch.durationMin)) ? Number(patch.durationMin) : null
+    ]
+  );
+}

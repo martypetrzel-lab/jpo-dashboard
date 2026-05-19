@@ -46,6 +46,8 @@ import {
   listEventsForMajorBackfill,
   updateEventMajorAnalysis,
   getMajorEventsSummary,
+  getEventForManualEdit,
+  updateEventManualMeta,
 
   // auth
   getUsersCount,
@@ -2573,7 +2575,25 @@ function majorNormText(value) {
     .trim();
 }
 
+
+function parseStandaloneAlarmToken(value) {
+  const raw = String(value || "").trim();
+  const n = majorNormText(raw);
+
+  if (/^(zvlastni|zvlastni\s+stupen)$/i.test(n)) return { level: 4, text: "Zvláštní stupeň poplachu" };
+  if (/^(iv|iv\.|4|4\.|ctvrty)$/i.test(n)) return { level: 4, text: "IV. stupeň poplachu" };
+  if (/^(iii|iii\.|3|3\.|treti)$/i.test(n)) return { level: 3, text: "III. stupeň poplachu" };
+  if (/^(ii|ii\.|2|2\.|druhy)$/i.test(n)) return { level: 2, text: "II. stupeň poplachu" };
+  if (/^(i|i\.|1|1\.|prvni)$/i.test(n)) return { level: 1, text: "I. stupeň poplachu" };
+
+  return { level: null, text: null };
+}
+
+
 function parseAlarmLevelFromText(...parts) {
+  const standaloneAlarm = parts.map(parseStandaloneAlarmToken).find(x => x.level);
+  if (standaloneAlarm?.level) return standaloneAlarm;
+
   const raw = parts.filter(Boolean).join(" | ");
   const text = majorNormText(raw);
   if (!text) return { level: null, text: null };
@@ -2583,8 +2603,8 @@ function parseAlarmLevelFromText(...parts) {
   }
 
   const candidates = [
-    { level: 4, text: "IV. stupeň poplachu", patterns: [/\biv\s*\.?\s*(stupen|sp)\b/i, /\b4\s*\.?\s*(stupen|sp)\b/i, /\bctvrty\s+stupen\b/i] },
-    { level: 3, text: "III. stupeň poplachu", patterns: [/\biii\s*\.?\s*(stupen|sp)\b/i, /\b3\s*\.?\s*(stupen|sp)\b/i, /\btreti\s+stupen\b/i] },
+    { level: 4, text: "IV. stupeň poplachu", patterns: [/\biv\s*\.?\s*(stupen|sp|poplachovy\s+stupen|poplach)\b/i, /\b(stupen|poplachovy\s+stupen)\s*[:\-]?\s*iv\.?\b/i, /\b4\s*\.?\s*(stupen|sp|poplachovy\s+stupen|poplach)\b/i, /\b(stupen|poplachovy\s+stupen)\s*[:\-]?\s*4\.?\b/i, /\bctvrty\s+stupen\b/i] },
+    { level: 3, text: "III. stupeň poplachu", patterns: [/\biii\s*\.?\s*(stupen|sp|poplachovy\s+stupen|poplach)\b/i, /\b(stupen|poplachovy\s+stupen)\s*[:\-]?\s*iii\.?\b/i, /\b3\s*\.?\s*(stupen|sp|poplachovy\s+stupen|poplach)\b/i, /\b(stupen|poplachovy\s+stupen)\s*[:\-]?\s*3\.?\b/i, /\btreti\s+stupen\b/i] },
     { level: 2, text: "II. stupeň poplachu", patterns: [/\bii\s*\.?\s*(stupen|sp)\b/i, /\b2\s*\.?\s*(stupen|sp)\b/i, /\bdruhy\s+stupen\b/i] },
     { level: 1, text: "I. stupeň poplachu", patterns: [/\bi\s*\.?\s*(stupen|sp)\b/i, /\b1\s*\.?\s*(stupen|sp)\b/i, /\bprvni\s+stupen\b/i] }
   ];
@@ -2635,6 +2655,9 @@ function analyzeMajorEvent(it = {}, desc = "") {
     it.alarm_level_text,
     it.alarmLevel,
     it.alarm_level,
+    it.alarm_degree,
+    it.poplachovy_stupen,
+    it.grade,
     it.statusText,
     it.status_text,
     it.title,
@@ -2814,6 +2837,43 @@ if (Number.isFinite(it.durationMin)) {
 });
 
 
+
+function alarmLevelTextFromManual(level) {
+  const n = Number(level);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  if (n === 1) return "I. stupeň poplachu";
+  if (n === 2) return "II. stupeň poplachu";
+  if (n === 3) return "III. stupeň poplachu";
+  if (n === 4) return "IV. / zvláštní stupeň poplachu";
+  return `${n}. stupeň poplachu`;
+}
+
+function parseManualIso(value) {
+  if (!value) return null;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString();
+}
+
+function computeManualDurationMin(startIso, endIso, isClosed) {
+  if (!startIso) return null;
+  const start = new Date(startIso);
+  if (Number.isNaN(start.getTime())) return null;
+
+  if (!isClosed) {
+    // Aktivní zásah: délka se nechává průběžná pro UI/reporty; end_time zůstává NULL.
+    const now = new Date();
+    const min = Math.max(0, Math.round((now - start) / 60000));
+    return min;
+  }
+
+  if (!endIso) return null;
+  const end = new Date(endIso);
+  if (Number.isNaN(end.getTime()) || end < start) return null;
+  return Math.max(0, Math.round((end - start) / 60000));
+}
+
+
 // ---------------- MAJOR EVENTS BACKFILL ----------------
 app.post("/api/admin/major-events/backfill", requireAdmin, async (req, res) => {
   try {
@@ -2919,6 +2979,75 @@ app.get("/api/admin/major-events", requireAdmin, async (req, res) => {
   } catch (e) {
     console.error("[major-events-list]", e);
     return res.status(500).json({ ok: false, error: "major_events_list_failed", detail: String(e?.message || e) });
+  }
+});
+
+
+
+// ---------------- MANUAL EVENT EDIT ----------------
+app.get("/api/admin/events/:id/manual", requireAdmin, async (req, res) => {
+  try {
+    const row = await getEventForManualEdit(req.params.id);
+    if (!row) return res.status(404).json({ ok: false, error: "event_not_found" });
+    return res.json({ ok: true, event: row });
+  } catch (e) {
+    console.error("[manual-event-get]", e);
+    return res.status(500).json({ ok: false, error: "manual_event_get_failed", detail: String(e?.message || e) });
+  }
+});
+
+app.post("/api/admin/events/:id/manual", requireAdmin, async (req, res) => {
+  try {
+    const current = await getEventForManualEdit(req.params.id);
+    if (!current) return res.status(404).json({ ok: false, error: "event_not_found" });
+
+    const mode = String(req.body?.statusMode || "").toLowerCase();
+    const isClosed = mode === "closed" ? true : mode === "open" ? false : !!current.is_closed;
+    const statusText = mode === "open" ? "probíhá zásah" : mode === "closed" ? "ukončená" : (current.status_text || null);
+
+    const startTimeIso = parseManualIso(req.body?.startTimeIso) || current.start_time_iso || current.pub_date || current.first_seen_at || current.created_at || null;
+    const endTimeIso = isClosed
+      ? (parseManualIso(req.body?.endTimeIso) || current.end_time_iso || new Date().toISOString())
+      : null;
+
+    const alarmLevelRaw = req.body?.alarmLevel;
+    const alarmLevel = alarmLevelRaw === "" || alarmLevelRaw === null || alarmLevelRaw === undefined
+      ? null
+      : Number(alarmLevelRaw);
+
+    const alarmLevelText = alarmLevelTextFromManual(alarmLevel);
+    const manualMajor = req.body?.isMajorEvent === true || req.body?.isMajorEvent === "true";
+    const isMajorEvent = manualMajor || Number(alarmLevel || 0) >= 3;
+    const majorReason = String(req.body?.majorReason || "").trim()
+      || (Number(alarmLevel || 0) >= 3 ? alarmLevelText : null);
+
+    const durationMin = computeManualDurationMin(startTimeIso, endTimeIso, isClosed);
+
+    await updateEventManualMeta(req.params.id, {
+      isClosed,
+      statusText,
+      alarmLevel,
+      alarmLevelText,
+      isMajorEvent,
+      majorReason,
+      startTimeIso,
+      endTimeIso,
+      durationMin
+    });
+
+    await insertAudit({
+      userId: req.auth?.user?.id || null,
+      username: req.auth?.user?.username || null,
+      action: "manual_event_edit",
+      details: `event=${req.params.id}; status=${statusText}; alarm=${alarmLevelText || "none"}; major=${isMajorEvent}; duration=${durationMin}`,
+      ip: getClientIp(req)
+    });
+
+    const updated = await getEventForManualEdit(req.params.id);
+    return res.json({ ok: true, event: updated });
+  } catch (e) {
+    console.error("[manual-event-post]", e);
+    return res.status(500).json({ ok: false, error: "manual_event_update_failed", detail: String(e?.message || e) });
   }
 });
 

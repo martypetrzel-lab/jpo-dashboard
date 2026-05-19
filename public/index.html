@@ -32,6 +32,7 @@
 
     <nav class="fwSidebarNav" aria-label="FireWatch navigace">
       <button type="button" data-scroll-target="landingPage">Úvod</button>
+      <button type="button" data-scroll-target="commandOverviewCard">Přehled</button>
       <button type="button" data-scroll-target="publicGuestHero">Veřejný režim</button>
       <button type="button" data-scroll-target="mapCard">Mapa</button>
       <button type="button" data-scroll-target="statsProCard">Statistiky PRO</button>
@@ -297,7 +298,44 @@
   <main class="grid">
 
 
-    <section id="talkLauncherCard" class="card talkLauncherCard">
+    
+    <section id="commandOverviewCard" class="card commandOverviewCard">
+      <div class="commandOverviewHero">
+        <div>
+          <div class="eyebrow">FireWatchCZ přehled</div>
+          <h2>Živý přehled událostí, počasí a významných zásahů</h2>
+          <p>Hlavní informace na jednom místě bez nutnosti hned rolovat do detailních sekcí.</p>
+        </div>
+        <div class="commandOverviewStatus" id="commandOverviewStatus">
+          Načítám…
+        </div>
+      </div>
+
+      <div class="commandOverviewGrid">
+        <button type="button" class="commandTile" data-scroll-target="mapCard">
+          <span>🗺️ Mapa</span>
+          <b id="overviewMapCount">—</b>
+          <small>body na mapě</small>
+        </button>
+        <button type="button" class="commandTile" data-scroll-target="majorEventsCard">
+          <span>🚨 Významné</span>
+          <b id="overviewMajorCount">—</b>
+          <small>III. stupeň a vyšší</small>
+        </button>
+        <button type="button" class="commandTile" data-scroll-target="regionalWeatherCard">
+          <span>🌦️ Počasí</span>
+          <b id="overviewWeatherRisk">—</b>
+          <small>regionální riziko</small>
+        </button>
+        <button type="button" class="commandTile" data-scroll-target="reportsArchiveCard">
+          <span>📄 Reporty</span>
+          <b>Archiv</b>
+          <small>denní/týdenní/měsíční</small>
+        </button>
+      </div>
+    </section>
+
+<section id="talkLauncherCard" class="card talkLauncherCard">
       <div class="talkLauncherMain">
         <div>
           <h2>FireWatch Talk</h2>
@@ -562,6 +600,7 @@
             <th>Význam</th>
             <th>Délka</th>
             <th>Odkaz</th>
+            <th>Úprava</th>
           </tr>
           </thead>
           <tbody id="eventsTbody"></tbody>
@@ -896,5 +935,71 @@ Události bez souřadnic</div>
   
 </div>
 <button id="restoreAdminPanelBtn" class="restoreAdminPanelBtn" style="display:none;">Zpět do adminu</button>
+
+  <div id="manualEventModalBackdrop" class="modalBackdrop" style="display:none;">
+    <div class="modal manualEventModal">
+      <div class="modalHead">
+        <div>
+          <h2>Ruční úprava události</h2>
+          <p id="manualEventSubtitle">Nastavení stavu, stupně poplachu a délky zásahu.</p>
+        </div>
+        <button id="manualEventCloseBtn" class="iconBtn" type="button">×</button>
+      </div>
+
+      <div class="manualEventBody">
+        <div class="manualEventInfo" id="manualEventInfo"></div>
+
+        <label>
+          Stav zásahu
+          <select id="manualEventStatusMode">
+            <option value="auto">Nechat aktuální / automatiku</option>
+            <option value="open">Probíhá zásah</option>
+            <option value="closed">Ukončená</option>
+          </select>
+        </label>
+
+        <label>
+          Stupeň poplachu
+          <select id="manualEventAlarmLevel">
+            <option value="">Bez stupně / neznámý</option>
+            <option value="1">I. stupeň</option>
+            <option value="2">II. stupeň</option>
+            <option value="3">III. stupeň</option>
+            <option value="4">IV. / zvláštní stupeň</option>
+          </select>
+        </label>
+
+        <label class="check manualMajorCheck">
+          <input id="manualEventIsMajor" type="checkbox" />
+          Označit jako významnou událost
+        </label>
+
+        <label>
+          Důvod / poznámka
+          <input id="manualEventMajorReason" type="text" placeholder="např. III. stupeň poplachu, dlouhotrvající zásah…" />
+        </label>
+
+        <div class="manualEventTimeGrid">
+          <label>
+            Začátek zásahu
+            <input id="manualEventStart" type="datetime-local" />
+          </label>
+          <label>
+            Konec zásahu
+            <input id="manualEventEnd" type="datetime-local" />
+          </label>
+        </div>
+
+        <div id="manualEventComputed" class="manualEventComputed"></div>
+
+        <div class="modalActions">
+          <button id="manualEventSaveBtn" class="btn primary" type="button">Uložit a přepočítat</button>
+          <button id="manualEventCancelBtn" class="btn" type="button">Zavřít</button>
+          <span id="manualEventStatus" class="hint"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
 </body>
 </html>
