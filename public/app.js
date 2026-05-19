@@ -90,6 +90,9 @@ function toggleMasterMute() {
 }
 
 let latestItemsSnapshot = [];
+let lastGoodItemsSnapshot = [];
+let lastGoodStatsSnapshot = null;
+let lastGoodLoadAt = 0;
 let latestStatsSnapshot = null;
 
 const audioState = {
@@ -1286,12 +1289,14 @@ async function startSimulationForEvent(ev) {
 // DATA LOAD
 // ==============================
 
-async function loadAll() {
+async function loadAll(options = {}) {
   if (inFlight) return;
   inFlight = true;
 
+  const isAutoRefresh = options?.auto === true;
+
   try {
-    setStatus("načítám…", true);
+    if (!isAutoRefresh) setStatus("načítám…", true);
 
     const filters = getFiltersFromUi();
     const qEvents = buildEventsQuery(filters);
@@ -1307,10 +1312,6 @@ async function loadAll() {
     let eventsJson = await eventsRes.json();
     const statsJson = await statsRes.json();
 
-    // Praktické chování pro filtr města:
-    // když uživatel hledá město a aktuální den nemá záznamy, tabulka by působila rozbitě,
-    // zatímco statistiky ukazují 30denní výsledek. Proto jen v tomto případě zkusíme
-    // načíst stejné město napříč všemi dny.
     let usedCityDayFallback = false;
     if ((!eventsJson.items || eventsJson.items.length === 0) && filters.city && (filters.day === "today" || filters.day === "yesterday")) {
       const fallbackFilters = { ...filters, day: "all" };
@@ -1325,10 +1326,27 @@ async function loadAll() {
       }
     }
 
-    const items = eventsJson.items || [];
+    const items = Array.isArray(eventsJson.items) ? eventsJson.items : [];
+
+    // Ochrana proti „vynulování“ obrazovky:
+    // pokud auto-refresh vrátí prázdno, ale předtím jsme měli funkční data,
+    // nepřepíšeme mapu/tabulku/grafy prázdným stavem.
+    if (isAutoRefresh && items.length === 0 && lastGoodItemsSnapshot.length > 0) {
+      const ageMin = Math.round((Date.now() - lastGoodLoadAt) / 60000);
+      setStatus(`OK • ponechána poslední data (${lastGoodItemsSnapshot.length} záznamů, ${ageMin} min)`, true);
+      return;
+    }
+
     // snapshot pro audio souhrn
     latestItemsSnapshot = items;
     latestStatsSnapshot = statsJson;
+
+    if (items.length > 0) {
+      lastGoodItemsSnapshot = items;
+      lastGoodStatsSnapshot = statsJson;
+      lastGoodLoadAt = Date.now();
+    }
+
     renderTable(items);
     renderMap(items);
 
@@ -1337,14 +1355,24 @@ async function loadAll() {
 
     renderChart(statsJson.byDay || []);
     renderCounts(statsJson.openCount, statsJson.closedCount);
-    renderActiveClosedTypeBreakdown(items);
+    if (typeof renderActiveClosedTypeBreakdown === "function") {
+      renderActiveClosedTypeBreakdown(items);
+    }
     renderTopCities(statsJson.topCities || []);
     renderLongest(statsJson.longest || []);
 
     const missing = items.filter(x => x.lat == null || x.lon == null).length;
     setStatus(`OK • ${items.length} záznamů • bez souřadnic ${missing}${usedCityDayFallback ? " • město zobrazeno ze všech dnů" : ""}`, true);
-  } catch {
-    setStatus("chyba načítání", false);
+  } catch (e) {
+    console.warn("[loadAll] refresh failed:", e);
+
+    // Při chybě refreshu zachovej poslední dobrá data, ať web nespadne do prázdna.
+    if (lastGoodItemsSnapshot.length > 0) {
+      const ageMin = Math.round((Date.now() - lastGoodLoadAt) / 60000);
+      setStatus(`OK • ponechána poslední data (${lastGoodItemsSnapshot.length} záznamů, ${ageMin} min)`, true);
+    } else {
+      setStatus("chyba načítání", false);
+    }
   } finally {
     inFlight = false;
   }
@@ -1408,7 +1436,7 @@ loadAll();
 
 // AUTO REFRESH každých 5 minut (stabilní 1.02 – beze změny)
 setInterval(() => {
-  loadAll();
+  loadAll({ auto: true });
 }, 5 * 60 * 1000);
 
 // ==============================
