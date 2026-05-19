@@ -1440,6 +1440,679 @@ function buildStatsProPayload({ preset, currentRows, previousRows, range }) {
   };
 }
 
+
+// ======================
+// FireWatchCZ Web v2.1 – Regionální počasí × události
+// Zdroj počasí: Open-Meteo, regionální zóny Středočeského kraje
+// ======================
+
+const WEATHER_CACHE_TTL_MS = Math.max(5 * 60 * 1000, Number(process.env.FIREWATCH_WEATHER_CACHE_TTL_MS || 45 * 60 * 1000));
+const regionalWeatherCache = new Map();
+
+const FIREWATCH_WEATHER_ZONES = [
+  {
+    id: "praha-vychod",
+    name: "Praha-východ",
+    lat: 50.1333,
+    lon: 14.6667,
+    aliases: ["praha-východ", "praha vychod", "brandýs nad labem", "brandys nad labem", "stará boleslav", "stara boleslav", "čelákovice", "celakovice", "nehvizdy", "říčany", "ricany", "úvaly", "uvaly", "klecany", "odolená voda", "odolena voda"]
+  },
+  {
+    id: "praha-zapad",
+    name: "Praha-západ",
+    lat: 49.9833,
+    lon: 14.3333,
+    aliases: ["praha-západ", "praha zapad", "černošice", "cernosice", "hostivice", "roztoky", "dobřichovice", "dobrichovice", "mníšek pod brdy", "mnisek pod brdy", "rudná", "rudna", "jesenice"]
+  },
+  {
+    id: "kladensko",
+    name: "Kladensko",
+    lat: 50.1431,
+    lon: 14.1052,
+    aliases: ["kladno", "slaný", "slany", "buštěhrad", "bustehrad", "velvary", "stochov", "unhošť", "unhost", "velké přílepy", "velke prilepy"]
+  },
+  {
+    id: "melnik",
+    name: "Mělnicko",
+    lat: 50.3512,
+    lon: 14.4746,
+    aliases: ["mělník", "melnik", "kralupy nad vltavou", "neratovice", "mělnicko", "melniksko", "mšeno", "mseno", "veltrusy", "liběchov", "libechov"]
+  },
+  {
+    id: "mlada-boleslav",
+    name: "Mladoboleslavsko",
+    lat: 50.4114,
+    lon: 14.9032,
+    aliases: ["mladá boleslav", "mlada boleslav", "kosmonosy", "mnichovo hradiště", "mnichovo hradiste", "dobrovice", "benátky nad jizerou", "benatky nad jizerou", "bělá pod bezdězem", "bela pod bezdezem"]
+  },
+  {
+    id: "nymburk",
+    name: "Nymbursko",
+    lat: 50.1861,
+    lon: 15.0417,
+    aliases: ["nymburk", "poděbrady", "podebrady", "lysá nad labem", "lysa nad labem", "milovice", "sadská", "sadska", "libice nad cidlinou"]
+  },
+  {
+    id: "kolin",
+    name: "Kolínsko",
+    lat: 50.0281,
+    lon: 15.2016,
+    aliases: ["kolín", "kolin", "český brod", "cesky brod", "pečky", "pecky", "kouřim", "kourim", "týnec nad labem", "tynec nad labem", "velim"]
+  },
+  {
+    id: "kutna-hora",
+    name: "Kutnohorsko",
+    lat: 49.9484,
+    lon: 15.2682,
+    aliases: ["kutná hora", "kutna hora", "čáslav", "caslav", "zruč nad sázavou", "zruc nad sazavou", "uhlířské janovice", "uhlirske janovice", "nové dvory", "nove dvory"]
+  },
+  {
+    id: "benesov",
+    name: "Benešovsko",
+    lat: 49.7816,
+    lon: 14.6869,
+    aliases: ["benešov", "benesov", "vlašim", "vlasim", "týnec nad sázavou", "tynec nad sazavou", "sázava", "sazava", "votice", "bystrice"]
+  },
+  {
+    id: "pribram",
+    name: "Příbramsko",
+    lat: 49.6854,
+    lon: 14.0104,
+    aliases: ["příbram", "pribram", "dobříš", "dobris", "sedlčany", "sedlcany", "rožmitál pod třemšínem", "rozmital pod tremsinem", "nový knín", "novy knin"]
+  },
+  {
+    id: "beroun",
+    name: "Berounsko",
+    lat: 49.9638,
+    lon: 14.0720,
+    aliases: ["beroun", "hořovice", "horovice", "králův dvůr", "kraluv dvur", "zruč", "zruc", "loděnice", "lodenice", "tetín", "tetin"]
+  },
+  {
+    id: "rakovnik",
+    name: "Rakovnicko",
+    lat: 50.1037,
+    lon: 13.7334,
+    aliases: ["rakovník", "rakovnik", "nové strašecí", "nove straseci", "jesenice u rakovníka", "jesenice u rakovnika", "křivoklát", "krivoklat", "kněževes", "knezeves"]
+  }
+];
+
+function fwRemoveDiacritics(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function fwWeatherNorm(value) {
+  return fwRemoveDiacritics(String(value || ""))
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s.-]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function fwDistanceKm(lat1, lon1, lat2, lon2) {
+  const r = 6371;
+  const toRad = (d) => Number(d) * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return r * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function weatherCodeLabel(code) {
+  const c = Number(code);
+  if ([0].includes(c)) return "jasno";
+  if ([1, 2, 3].includes(c)) return "oblačno";
+  if ([45, 48].includes(c)) return "mlha";
+  if ([51, 53, 55, 56, 57].includes(c)) return "mrholení";
+  if ([61, 63, 65, 66, 67, 80, 81, 82].includes(c)) return "déšť";
+  if ([71, 73, 75, 77, 85, 86].includes(c)) return "sněžení";
+  if ([95, 96, 99].includes(c)) return "bouřky";
+  return "neznámé";
+}
+
+function weatherEmoji(code) {
+  const label = weatherCodeLabel(code);
+  if (label === "jasno") return "☀️";
+  if (label === "oblačno") return "⛅";
+  if (label === "mlha") return "🌫️";
+  if (label === "mrholení") return "🌦️";
+  if (label === "déšť") return "🌧️";
+  if (label === "sněžení") return "❄️";
+  if (label === "bouřky") return "⛈️";
+  return "🌡️";
+}
+
+function clampWeatherNumber(value, min, max, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, n));
+}
+
+function assignEventToWeatherZone(ev) {
+  const lat = Number(ev.lat);
+  const lon = Number(ev.lon);
+
+  if (Number.isFinite(lat) && Number.isFinite(lon)) {
+    let best = FIREWATCH_WEATHER_ZONES[0];
+    let bestDist = Infinity;
+    for (const zone of FIREWATCH_WEATHER_ZONES) {
+      const d = fwDistanceKm(lat, lon, zone.lat, zone.lon);
+      if (d < bestDist) {
+        best = zone;
+        bestDist = d;
+      }
+    }
+    return { zone: best, method: "gps", distanceKm: Math.round(bestDist * 10) / 10 };
+  }
+
+  const hay = fwWeatherNorm(`${ev.city_text || ""} ${ev.place_text || ""} ${ev.title || ""} ${ev.description_raw || ""}`);
+  for (const zone of FIREWATCH_WEATHER_ZONES) {
+    for (const alias of zone.aliases || []) {
+      const a = fwWeatherNorm(alias);
+      if (a && hay.includes(a)) return { zone, method: "alias", distanceKm: null };
+    }
+  }
+
+  return { zone: FIREWATCH_WEATHER_ZONES[0], method: "fallback", distanceKm: null };
+}
+
+function weatherEventDateKey(ev) {
+  const d = new Date(ev.pub_date || ev.created_at || ev.first_seen_at || Date.now());
+  if (Number.isNaN(d.getTime())) return new Date().toISOString().slice(0, 10);
+  return d.toISOString().slice(0, 10);
+}
+
+function weatherEventHour(ev) {
+  const d = new Date(ev.pub_date || ev.created_at || ev.first_seen_at || Date.now());
+  if (Number.isNaN(d.getTime())) return 12;
+  return d.getHours();
+}
+
+function eventTypeBucketForWeather(ev) {
+  const t = fwWeatherNorm(ev.event_type || "");
+  const title = fwWeatherNorm(ev.title || "");
+
+  if (t.includes("fire") || title.includes("pozar")) return "fire";
+  if (t.includes("traffic") || title.includes("doprav") || title.includes("nehod")) return "traffic";
+  if (t.includes("tech") || title.includes("technick") || title.includes("strom") || title.includes("voda")) return "tech";
+  if (t.includes("rescue") || title.includes("zachran")) return "rescue";
+  if (t.includes("false") || title.includes("plany")) return "false_alarm";
+  return "other";
+}
+
+function avgOf(items, key) {
+  const vals = items.map(x => Number(x?.[key])).filter(Number.isFinite);
+  if (!vals.length) return 0;
+  return Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 10) / 10;
+}
+
+function maxOf(items, key) {
+  const vals = items.map(x => Number(x?.[key])).filter(Number.isFinite);
+  if (!vals.length) return 0;
+  return Math.round(Math.max(...vals) * 10) / 10;
+}
+
+function sumOf(items, key) {
+  const vals = items.map(x => Number(x?.[key])).filter(Number.isFinite);
+  if (!vals.length) return 0;
+  return Math.round(vals.reduce((a, b) => a + b, 0) * 10) / 10;
+}
+
+function ratioText(current, base) {
+  if (!base) return current > 0 ? "bez běžného srovnání" : "bez nárůstu";
+  const pct = Math.round(((current - base) / base) * 100);
+  if (pct > 0) return `+${pct} %`;
+  return `${pct} %`;
+}
+
+function modeWeatherCode(items) {
+  const m = new Map();
+  for (const x of items) {
+    const code = Number(x.weather_code);
+    if (!Number.isFinite(code)) continue;
+    m.set(code, (m.get(code) || 0) + 1);
+  }
+  const sorted = [...m.entries()].sort((a, b) => b[1] - a[1]);
+  return sorted.length ? sorted[0][0] : null;
+}
+
+function hourWindowLabel(hour) {
+  const h = Number(hour);
+  if (h >= 6 && h < 10) return "ráno";
+  if (h >= 10 && h < 12) return "dopoledne";
+  if (h >= 12 && h < 18) return "odpoledne";
+  if (h >= 18 && h < 22) return "večer";
+  return "noc";
+}
+
+function analyzeHourlyRisk(hourlyItems = []) {
+  const windows = new Map();
+
+  for (const item of hourlyItems) {
+    const hour = Number(String(item.time || "").slice(11, 13));
+    const win = hourWindowLabel(hour);
+    if (!windows.has(win)) windows.set(win, []);
+    windows.get(win).push(item);
+  }
+
+  const out = [];
+  for (const [window, items] of windows.entries()) {
+    const maxGust = maxOf(items, "wind_gusts_10m");
+    const maxWind = maxOf(items, "wind_speed_10m");
+    const rain = sumOf(items, "precipitation");
+    const maxTemp = maxOf(items, "temperature_2m");
+    const code = modeWeatherCode(items);
+    const storm = items.some(x => [95, 96, 99].includes(Number(x.weather_code)));
+
+    let score = 0;
+    const impacts = [];
+    const factors = [];
+
+    if (maxGust >= 70) { score += 60; factors.push("velmi silné nárazy větru"); impacts.push("technické pomoci"); }
+    else if (maxGust >= 50) { score += 40; factors.push("silné nárazy větru"); impacts.push("technické pomoci"); }
+    else if (maxGust >= 40 || maxWind >= 30) { score += 20; factors.push("zvýšený vítr"); impacts.push("technické pomoci"); }
+
+    if (rain >= 12) { score += 35; factors.push("výraznější srážky"); impacts.push("dopravní nehody"); }
+    else if (rain >= 5) { score += 25; factors.push("déšť"); impacts.push("dopravní nehody"); }
+    else if (rain >= 2) { score += 12; factors.push("slabší déšť"); impacts.push("doprava"); }
+
+    if (storm) { score += 50; factors.push("bouřkový charakter"); impacts.push("technické pomoci"); }
+
+    if (maxTemp >= 28 && rain <= 0.2 && maxGust >= 25) { score += 30; factors.push("teplo/sucho/vítr"); impacts.push("požáry porostu"); }
+    else if (maxTemp >= 25 && rain <= 0.2) { score += 15; factors.push("teplo a minimum srážek"); impacts.push("požáry porostu"); }
+
+    const uniqueImpacts = [...new Set(impacts)];
+    const uniqueFactors = [...new Set(factors)];
+
+    out.push({
+      window,
+      score: Math.min(100, score),
+      level: score >= 76 ? "vysoké" : score >= 51 ? "střední" : score >= 26 ? "zvýšené" : "běžné",
+      factors: uniqueFactors,
+      impacts: uniqueImpacts,
+      maxGustKmh: maxGust,
+      maxWindKmh: maxWind,
+      rainMm: Math.round(rain * 10) / 10,
+      maxTemp: Math.round(maxTemp * 10) / 10,
+      weatherCode: code,
+      weatherLabel: weatherCodeLabel(code),
+      weatherEmoji: weatherEmoji(code)
+    });
+  }
+
+  const order = { "ráno": 1, "dopoledne": 2, "odpoledne": 3, "večer": 4, "noc": 5 };
+  return out.sort((a, b) => (order[a.window] || 99) - (order[b.window] || 99));
+}
+
+function buildWeatherDayRows(hourly = {}) {
+  const grouped = new Map();
+  const times = hourly.time || [];
+
+  for (let i = 0; i < times.length; i++) {
+    const time = String(times[i] || "");
+    const day = time.slice(0, 10);
+    if (!day) continue;
+    if (!grouped.has(day)) grouped.set(day, []);
+    grouped.get(day).push({
+      time,
+      temperature_2m: hourly.temperature_2m?.[i],
+      precipitation: hourly.precipitation?.[i],
+      wind_speed_10m: hourly.wind_speed_10m?.[i],
+      wind_gusts_10m: hourly.wind_gusts_10m?.[i],
+      weather_code: hourly.weather_code?.[i],
+      relative_humidity_2m: hourly.relative_humidity_2m?.[i]
+    });
+  }
+
+  return [...grouped.entries()].map(([day, items]) => {
+    const code = modeWeatherCode(items);
+    const rain = sumOf(items, "precipitation");
+    const wind = maxOf(items, "wind_speed_10m");
+    const gust = maxOf(items, "wind_gusts_10m");
+    const temp = avgOf(items, "temperature_2m");
+    const humidity = avgOf(items, "relative_humidity_2m");
+    const hourlyRisk = analyzeHourlyRisk(items);
+    const maxRisk = [...hourlyRisk].sort((a, b) => b.score - a.score)[0] || null;
+
+    return {
+      day,
+      avgTemp: temp,
+      avgHumidity: humidity,
+      rainMm: rain,
+      maxWindKmh: wind,
+      maxGustKmh: gust,
+      weatherCode: code,
+      weatherLabel: weatherCodeLabel(code),
+      weatherEmoji: weatherEmoji(code),
+      windy: gust >= 50 || wind >= 35,
+      rainy: rain >= 3,
+      storm: items.some(x => [95, 96, 99].includes(Number(x.weather_code))),
+      dryWarm: rain <= 0.2 && temp >= 25,
+      hourlyRisk,
+      maxRisk
+    };
+  }).sort((a, b) => String(a.day).localeCompare(String(b.day)));
+}
+
+function aggregateRegionalEvents(rows) {
+  const zoneMap = new Map(FIREWATCH_WEATHER_ZONES.map(z => [z.id, {
+    zoneId: z.id,
+    zoneName: z.name,
+    total: 0,
+    fire: 0,
+    traffic: 0,
+    tech: 0,
+    rescue: 0,
+    false_alarm: 0,
+    other: 0,
+    assignedByGps: 0,
+    assignedByAlias: 0,
+    assignedByFallback: 0,
+    byDay: new Map()
+  }]));
+
+  for (const ev of rows) {
+    const assigned = assignEventToWeatherZone(ev);
+    const zone = zoneMap.get(assigned.zone.id);
+    if (!zone) continue;
+
+    const bucket = eventTypeBucketForWeather(ev);
+    const day = weatherEventDateKey(ev);
+
+    zone.total++;
+    zone[bucket] = (zone[bucket] || 0) + 1;
+
+    if (assigned.method === "gps") zone.assignedByGps++;
+    else if (assigned.method === "alias") zone.assignedByAlias++;
+    else zone.assignedByFallback++;
+
+    if (!zone.byDay.has(day)) {
+      zone.byDay.set(day, {
+        day,
+        total: 0,
+        fire: 0,
+        traffic: 0,
+        tech: 0,
+        rescue: 0,
+        false_alarm: 0,
+        other: 0
+      });
+    }
+
+    const d = zone.byDay.get(day);
+    d.total++;
+    d[bucket] = (d[bucket] || 0) + 1;
+  }
+
+  return zoneMap;
+}
+
+async function fetchOpenMeteoZoneWeather(zone) {
+  const url = new URL("https://api.open-meteo.com/v1/forecast");
+  url.searchParams.set("latitude", String(zone.lat));
+  url.searchParams.set("longitude", String(zone.lon));
+  url.searchParams.set("timezone", "Europe/Prague");
+  url.searchParams.set("past_days", "31");
+  url.searchParams.set("forecast_days", "2");
+  url.searchParams.set("current", "temperature_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m,wind_gusts_10m,relative_humidity_2m");
+  url.searchParams.set("hourly", "temperature_2m,relative_humidity_2m,precipitation,weather_code,wind_speed_10m,wind_gusts_10m");
+
+  const r = await fetchWithTimeout(url.toString(), {
+    headers: { "User-Agent": "FireWatchCZ/2.1 regional-weather" }
+  }, 12000);
+
+  if (!r.ok) throw new Error(`weather_provider_http_${r.status}`);
+  return await r.json();
+}
+
+async function fetchCachedZoneWeather(zone) {
+  const key = `zone:${zone.id}`;
+  const cached = regionalWeatherCache.get(key);
+  if (cached && (Date.now() - cached.at) < WEATHER_CACHE_TTL_MS) {
+    return { ...cached.data, _cached: true };
+  }
+
+  const data = await fetchOpenMeteoZoneWeather(zone);
+  regionalWeatherCache.set(key, { at: Date.now(), data });
+  return { ...data, _cached: false };
+}
+
+function buildZoneWeatherInsight(zone, weather, eventAgg) {
+  const dailyWeather = buildWeatherDayRows(weather.hourly || {});
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const tomorrowDate = new Date();
+  tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+  const tomorrowIso = tomorrowDate.toISOString().slice(0, 10);
+
+  const today = dailyWeather.find(x => x.day === todayIso) || dailyWeather[dailyWeather.length - 1] || null;
+  const tomorrow = dailyWeather.find(x => x.day === tomorrowIso) || null;
+
+  const eventDays = [...eventAgg.byDay.values()];
+  const avgTotal = avgOf(eventDays, "total");
+  const avgTech = avgOf(eventDays, "tech");
+  const avgTraffic = avgOf(eventDays, "traffic");
+  const avgFire = avgOf(eventDays, "fire");
+
+  const windyDays = dailyWeather.filter(x => x.windy).map(x => ({ ...x, events: eventAgg.byDay.get(x.day) || {} }));
+  const rainyDays = dailyWeather.filter(x => x.rainy).map(x => ({ ...x, events: eventAgg.byDay.get(x.day) || {} }));
+  const dryDays = dailyWeather.filter(x => x.dryWarm).map(x => ({ ...x, events: eventAgg.byDay.get(x.day) || {} }));
+
+  const current = weather.current || {};
+  const currentCode = Number(current.weather_code || 0);
+  const currentRisk = {
+    score: 0,
+    factors: [],
+    impacts: []
+  };
+
+  const currentGust = Number(current.wind_gusts_10m || 0);
+  const currentWind = Number(current.wind_speed_10m || 0);
+  const currentRain = Number(current.precipitation || 0);
+  const currentTemp = Number(current.temperature_2m || 0);
+
+  if (currentGust >= 50 || currentWind >= 35) { currentRisk.score += 40; currentRisk.factors.push("vítr"); currentRisk.impacts.push("technické pomoci"); }
+  else if (currentGust >= 40 || currentWind >= 30) { currentRisk.score += 20; currentRisk.factors.push("zvýšený vítr"); currentRisk.impacts.push("technické pomoci"); }
+
+  if (currentRain >= 3) { currentRisk.score += 25; currentRisk.factors.push("déšť"); currentRisk.impacts.push("dopravní nehody"); }
+  if ([95, 96, 99].includes(currentCode)) { currentRisk.score += 50; currentRisk.factors.push("bouřky"); currentRisk.impacts.push("technické pomoci"); }
+  if (currentTemp >= 28 && currentRain <= 0.1 && currentWind >= 20) { currentRisk.score += 30; currentRisk.factors.push("teplo/sucho"); currentRisk.impacts.push("požáry porostu"); }
+
+  currentRisk.score = Math.min(100, currentRisk.score);
+  currentRisk.level = currentRisk.score >= 76 ? "vysoké" : currentRisk.score >= 51 ? "střední" : currentRisk.score >= 26 ? "zvýšené" : "běžné";
+  currentRisk.factors = [...new Set(currentRisk.factors)];
+  currentRisk.impacts = [...new Set(currentRisk.impacts)];
+
+  const insights = [];
+
+  if (windyDays.length) {
+    const techAvg = avgOf(windyDays.map(x => x.events), "tech");
+    insights.push({
+      icon: "💨",
+      title: "Vítr vs technické pomoci",
+      text: `Ve větrných dnech: ${techAvg} technických pomocí/den. Běžný průměr v regionu: ${avgTech}. Změna: ${ratioText(techAvg, avgTech)}.`,
+      level: techAvg > avgTech ? "warning" : "info"
+    });
+  }
+
+  if (rainyDays.length) {
+    const trafficAvg = avgOf(rainyDays.map(x => x.events), "traffic");
+    insights.push({
+      icon: "🌧️",
+      title: "Déšť vs dopravní nehody",
+      text: `V deštivých dnech: ${trafficAvg} dopravních nehod/den. Běžný průměr v regionu: ${avgTraffic}. Změna: ${ratioText(trafficAvg, avgTraffic)}.`,
+      level: trafficAvg > avgTraffic ? "warning" : "info"
+    });
+  }
+
+  if (dryDays.length) {
+    const fireAvg = avgOf(dryDays.map(x => x.events), "fire");
+    insights.push({
+      icon: "🔥",
+      title: "Sucho/teplo vs požáry",
+      text: `V suchých teplejších dnech: ${fireAvg} požárů/den. Běžný průměr v regionu: ${avgFire}. Změna: ${ratioText(fireAvg, avgFire)}.`,
+      level: fireAvg > avgFire ? "warning" : "info"
+    });
+  }
+
+  if (!insights.length) {
+    insights.push({
+      icon: "🌡️",
+      title: "Bez výrazné vazby",
+      text: "V tomto regionu se zatím neukazuje výrazná vazba mezi počasím a počtem událostí.",
+      level: "info"
+    });
+  }
+
+  const todayRisk = today?.maxRisk || null;
+  const tomorrowRisk = tomorrow?.maxRisk || null;
+
+  return {
+    zoneId: zone.id,
+    zoneName: zone.name,
+    lat: zone.lat,
+    lon: zone.lon,
+    cached: Boolean(weather._cached),
+    current: {
+      temp: Number(current.temperature_2m || 0),
+      apparentTemp: Number(current.apparent_temperature || 0),
+      humidity: Number(current.relative_humidity_2m || 0),
+      rainMm: Number(current.precipitation || 0),
+      windKmh: Number(current.wind_speed_10m || 0),
+      gustKmh: Number(current.wind_gusts_10m || 0),
+      weatherCode: currentCode,
+      weatherLabel: weatherCodeLabel(currentCode),
+      weatherEmoji: weatherEmoji(currentCode),
+      risk: currentRisk
+    },
+    events: {
+      total: eventAgg.total,
+      fire: eventAgg.fire,
+      traffic: eventAgg.traffic,
+      tech: eventAgg.tech,
+      rescue: eventAgg.rescue,
+      false_alarm: eventAgg.false_alarm,
+      other: eventAgg.other,
+      assignedByGps: eventAgg.assignedByGps,
+      assignedByAlias: eventAgg.assignedByAlias,
+      assignedByFallback: eventAgg.assignedByFallback,
+      avgTotal,
+      avgTech,
+      avgTraffic,
+      avgFire
+    },
+    today: today ? {
+      day: today.day,
+      weatherEmoji: today.weatherEmoji,
+      weatherLabel: today.weatherLabel,
+      rainMm: today.rainMm,
+      maxGustKmh: today.maxGustKmh,
+      avgTemp: today.avgTemp,
+      risk: todayRisk,
+      hourlyRisk: today.hourlyRisk
+    } : null,
+    tomorrow: tomorrow ? {
+      day: tomorrow.day,
+      weatherEmoji: tomorrow.weatherEmoji,
+      weatherLabel: tomorrow.weatherLabel,
+      rainMm: tomorrow.rainMm,
+      maxGustKmh: tomorrow.maxGustKmh,
+      avgTemp: tomorrow.avgTemp,
+      risk: tomorrowRisk,
+      hourlyRisk: tomorrow.hourlyRisk
+    } : null,
+    insights,
+    daily: dailyWeather.slice(-32).map(day => ({
+      day: day.day,
+      weatherEmoji: day.weatherEmoji,
+      weatherLabel: day.weatherLabel,
+      rainMm: day.rainMm,
+      maxGustKmh: day.maxGustKmh,
+      avgTemp: day.avgTemp,
+      risk: day.maxRisk,
+      events: eventAgg.byDay.get(day.day) || {
+        total: 0,
+        fire: 0,
+        traffic: 0,
+        tech: 0,
+        rescue: 0,
+        false_alarm: 0,
+        other: 0
+      }
+    }))
+  };
+}
+
+function buildRegionalWeatherSummary(zones) {
+  const byWind = [...zones].sort((a, b) => Number(b.current?.gustKmh || 0) - Number(a.current?.gustKmh || 0))[0] || null;
+  const byRain = [...zones].sort((a, b) => Number(b.current?.rainMm || 0) - Number(a.current?.rainMm || 0))[0] || null;
+  const byEvents = [...zones].sort((a, b) => Number(b.events?.total || 0) - Number(a.events?.total || 0))[0] || null;
+  const byRisk = [...zones].sort((a, b) => Number(b.current?.risk?.score || 0) - Number(a.current?.risk?.score || 0))[0] || null;
+  const tomorrowRisk = [...zones].sort((a, b) => Number(b.tomorrow?.risk?.score || 0) - Number(a.tomorrow?.risk?.score || 0))[0] || null;
+
+  const highRiskZones = zones.filter(z => Number(z.current?.risk?.score || 0) >= 51);
+
+  let text = "V regionech Středočeského kraje není aktuálně výrazná meteorologická anomálie.";
+  if (highRiskZones.length) {
+    text = `Aktuálně je zvýšené/střední riziko v ${highRiskZones.length} regionech. Nejvýraznější oblast: ${byRisk?.zoneName || "—"}.`;
+  } else if (byWind && Number(byWind.current?.gustKmh || 0) >= 40) {
+    text = `Nejvýraznějším faktorem je vítr v oblasti ${byWind.zoneName}, nárazy okolo ${Math.round(byWind.current.gustKmh)} km/h.`;
+  } else if (byRain && Number(byRain.current?.rainMm || 0) >= 1) {
+    text = `Nejvýraznějším faktorem jsou srážky v oblasti ${byRain.zoneName}.`;
+  }
+
+  return {
+    text,
+    strongestWind: byWind,
+    strongestRain: byRain,
+    mostEvents: byEvents,
+    highestRisk: byRisk,
+    tomorrowHighestRisk: tomorrowRisk,
+    highRiskZones: highRiskZones.map(z => z.zoneName)
+  };
+}
+
+async function buildRegionalWeatherPayload(days = 30) {
+  const now = new Date();
+  const endIso = now.toISOString().slice(0, 10);
+  const start = new Date(now);
+  start.setUTCDate(start.getUTCDate() - days);
+  const startIso = start.toISOString().slice(0, 10);
+
+  const events = await getEventsForPeriod(startIso, endIso);
+  const eventAggMap = aggregateRegionalEvents(events);
+
+  const zonePayloads = [];
+  const errors = [];
+
+  // Open-Meteo calls are intentionally sequential to avoid spiking the provider.
+  for (const zone of FIREWATCH_WEATHER_ZONES) {
+    try {
+      const weather = await fetchCachedZoneWeather(zone);
+      const eventAgg = eventAggMap.get(zone.id);
+      zonePayloads.push(buildZoneWeatherInsight(zone, weather, eventAgg));
+    } catch (e) {
+      console.warn("[regional-weather] zone failed", zone.id, e?.message || e);
+      errors.push({ zoneId: zone.id, zoneName: zone.name, error: String(e?.message || e) });
+    }
+  }
+
+  return {
+    generatedAt: new Date().toISOString(),
+    source: "Open-Meteo forecast API + FireWatchCZ events",
+    period: {
+      start: startIso,
+      end: endIso,
+      days
+    },
+    zones: zonePayloads,
+    summary: buildRegionalWeatherSummary(zonePayloads),
+    errors
+  };
+}
+
 // ---------------- STATIC ----------------
 app.use(express.static(path.join(__dirname, "public")));
 
@@ -2308,6 +2981,32 @@ app.post("/api/admin/fix-geocode", requireKey, async (req, res) => {
 
 
 // Archived reports API
+
+
+app.get("/api/weather/regions/anomalies", async (req, res) => {
+  try {
+    const days = Math.max(7, Math.min(Number(req.query.days || 30), 31));
+    const data = await buildRegionalWeatherPayload(days);
+    res.json({ ok: true, weather: data });
+  } catch (e) {
+    console.error("[regional-weather]", e);
+    res.status(500).json({ ok: false, error: "regional_weather_failed", detail: String(e?.message || e) });
+  }
+});
+
+app.get("/api/weather/regions/:zoneId", async (req, res) => {
+  try {
+    const days = Math.max(7, Math.min(Number(req.query.days || 30), 31));
+    const data = await buildRegionalWeatherPayload(days);
+    const zone = data.zones.find(z => z.zoneId === String(req.params.zoneId));
+    if (!zone) return res.status(404).json({ ok: false, error: "zone_not_found" });
+    res.json({ ok: true, zone, summary: data.summary, period: data.period, source: data.source });
+  } catch (e) {
+    console.error("[regional-weather-detail]", e);
+    res.status(500).json({ ok: false, error: "regional_weather_detail_failed", detail: String(e?.message || e) });
+  }
+});
+
 
 app.get("/api/stats/pro", async (req, res) => {
   try {

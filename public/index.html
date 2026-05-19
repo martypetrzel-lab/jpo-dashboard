@@ -35,6 +35,7 @@
       <button type="button" data-scroll-target="publicGuestHero">Veřejný režim</button>
       <button type="button" data-scroll-target="mapCard">Mapa</button>
       <button type="button" data-scroll-target="statsProCard">Statistiky PRO</button>
+      <button type="button" data-scroll-target="regionalWeatherCard">Počasí</button>
       <button type="button" data-scroll-target="watchCard">Notifikace</button>
       <button type="button" data-scroll-target="reportsArchiveCard">Reporty</button>
       <button type="button" data-scroll-target="talkLauncherCard">FireWatch Talk</button>
@@ -425,6 +426,32 @@
           <div id="watchHistory" class="watchHistory">Zatím žádné upozornění.</div>
         </div>
       </div>
+    </section>
+
+
+    <section id="regionalWeatherCard" class="card regionalWeatherCard">
+      <div class="cardHeader">
+        <h2>Regionální počasí × události</h2>
+        <div class="hint">Open‑Meteo pro zóny Středočeského kraje, dnešek a dalších 24 hodin</div>
+      </div>
+
+      <div class="regionalWeatherControls">
+        <label>
+          Období pro porovnání
+          <select id="regionalWeatherDays">
+            <option value="30" selected>30 dní</option>
+            <option value="14">14 dní</option>
+            <option value="7">7 dní</option>
+          </select>
+        </label>
+        <button id="loadRegionalWeatherBtn" class="btn primary">Načíst regionální počasí</button>
+      </div>
+
+      <div id="regionalWeatherSummary" class="regionalWeatherSummary"></div>
+      <div id="regionalWeatherHighlights" class="regionalWeatherHighlights"></div>
+      <div id="regionalWeatherZones" class="regionalWeatherZones"></div>
+
+      <div id="regionalWeatherDetail" class="regionalWeatherDetail"></div>
     </section>
 
 <section id="statsProCard" class="card statsProCard">

@@ -1751,3 +1751,326 @@ button:hover,
     margin-left: 0 !important;
   }
 }
+
+
+/* ==============================
+   FireWatchCZ Regional Weather Intelligence
+   ============================== */
+.regionalWeatherCard {
+  grid-column: 1 / -1;
+}
+
+.regionalWeatherControls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: end;
+  margin: 10px 0 14px;
+}
+
+.regionalWeatherControls label {
+  display: grid;
+  gap: 5px;
+  color: rgba(235,245,255,0.76);
+  font-weight: 800;
+  font-size: 13px;
+}
+
+.regionalWeatherControls select {
+  min-height: 38px;
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 12px;
+  background: rgba(255,255,255,0.06);
+  color: #fff;
+  padding: 8px 10px;
+}
+
+.regionalWeatherSummary,
+.regionalWeatherHighlights,
+.regionalWeatherZones,
+.regionalWeatherDetail {
+  margin-top: 12px;
+}
+
+.regionalWeatherLead {
+  padding: 14px;
+  border: 1px solid rgba(90,160,255,0.22);
+  border-radius: 18px;
+  background: rgba(90,160,255,0.08);
+}
+
+.regionalWeatherLead b,
+.regionalWeatherLead span {
+  display: block;
+}
+
+.regionalWeatherLead span {
+  margin-top: 4px;
+  color: rgba(235,245,255,0.66);
+}
+
+.regionalWeatherHighlights {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px;
+}
+
+.regionalWeatherKpi {
+  padding: 12px;
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 16px;
+  background: rgba(255,255,255,0.045);
+}
+
+.regionalWeatherKpi span,
+.regionalWeatherKpi small {
+  display: block;
+  color: rgba(235,245,255,0.66);
+}
+
+.regionalWeatherKpi b {
+  display: block;
+  margin: 4px 0;
+  font-size: 19px;
+}
+
+.regionalWeatherKpi.elevated,
+.regionalZoneCard.elevated,
+.regionalWeatherWindow.elevated,
+.regionalDailyRow.elevated {
+  border-color: rgba(255,205,90,0.28);
+  background: rgba(255,205,90,0.08);
+}
+
+.regionalWeatherKpi.medium,
+.regionalZoneCard.medium,
+.regionalWeatherWindow.medium,
+.regionalDailyRow.medium {
+  border-color: rgba(255,140,70,0.36);
+  background: rgba(255,140,70,0.11);
+}
+
+.regionalWeatherKpi.high,
+.regionalZoneCard.high,
+.regionalWeatherWindow.high,
+.regionalDailyRow.high {
+  border-color: rgba(255,70,70,0.42);
+  background: rgba(255,70,70,0.13);
+}
+
+.regionalWeatherZones {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(265px, 1fr));
+  gap: 10px;
+}
+
+.regionalZoneCard {
+  text-align: left;
+  color: #fff;
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 18px;
+  background: rgba(255,255,255,0.04);
+  padding: 13px;
+  cursor: pointer;
+}
+
+.regionalZoneCard:hover {
+  border-color: rgba(90,160,255,0.35);
+  background: rgba(90,160,255,0.09);
+}
+
+.regionalZoneHead {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: start;
+  margin-bottom: 9px;
+}
+
+.regionalZoneHead strong {
+  font-size: 17px;
+}
+
+.regionalZoneMetrics {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  color: rgba(235,245,255,0.78);
+  font-size: 13px;
+}
+
+.regionalZoneRisk,
+.regionalZoneTomorrow {
+  margin-top: 9px;
+  color: rgba(235,245,255,0.72);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.regionalDetailHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 12px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255,255,255,0.09);
+}
+
+.regionalDetailHead h3 {
+  margin: 0 0 4px;
+  font-size: 24px;
+}
+
+.regionalDetailHead p {
+  margin: 0;
+  color: rgba(235,245,255,0.66);
+}
+
+.regionalDetailBadge {
+  padding: 9px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.05);
+  white-space: nowrap;
+  font-weight: 900;
+}
+
+.regionalDetailGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.regionalDetailPanel {
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 18px;
+  background: rgba(255,255,255,0.035);
+  padding: 12px;
+}
+
+.regionalDetailPanel h4 {
+  margin: 0 0 10px;
+}
+
+.regionalWeatherWindow {
+  display: grid;
+  gap: 3px;
+  padding: 9px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 14px;
+  margin-bottom: 7px;
+  background: rgba(255,255,255,0.04);
+}
+
+.regionalWeatherWindow span,
+.regionalWeatherWindow small {
+  color: rgba(235,245,255,0.72);
+}
+
+.regionalWeatherInsight {
+  display: grid;
+  grid-template-columns: 36px 1fr;
+  gap: 9px;
+  padding: 9px;
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(255,255,255,0.04);
+  margin-bottom: 7px;
+}
+
+.regionalWeatherInsight.warning {
+  border-color: rgba(255,170,80,0.28);
+  background: rgba(255,140,50,0.08);
+}
+
+.regionalWeatherInsight > span {
+  font-size: 24px;
+}
+
+.regionalWeatherInsight p {
+  margin: 3px 0 0;
+  color: rgba(235,245,255,0.70);
+}
+
+.regionalEventStats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(105px, 1fr));
+  gap: 8px;
+}
+
+.regionalEventStats div {
+  padding: 10px;
+  border-radius: 14px;
+  background: rgba(255,255,255,0.045);
+  border: 1px solid rgba(255,255,255,0.07);
+}
+
+.regionalEventStats span {
+  display: block;
+  color: rgba(235,245,255,0.62);
+  margin-bottom: 3px;
+}
+
+.regionalEventStats b {
+  font-size: 20px;
+}
+
+.regionalDailyRows {
+  display: grid;
+  gap: 7px;
+}
+
+.regionalDailyRow {
+  display: grid;
+  grid-template-columns: minmax(120px, 1.2fr) repeat(4, minmax(85px, .8fr));
+  gap: 8px;
+  align-items: center;
+  padding: 9px;
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(255,255,255,0.04);
+}
+
+.regionalDailyRow span:first-child small {
+  display: block;
+  color: rgba(235,245,255,0.62);
+  margin-top: 2px;
+}
+
+.regionalWeatherLoading {
+  padding: 14px;
+  color: rgba(235,245,255,0.75);
+}
+
+@media (max-width: 1000px) {
+  .regionalDetailGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .regionalDailyRow {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .regionalDetailHead {
+    flex-direction: column;
+  }
+
+  .regionalDetailBadge {
+    white-space: normal;
+  }
+}
+
+@media (max-width: 620px) {
+  .regionalWeatherZones {
+    grid-template-columns: 1fr;
+  }
+
+  .regionalZoneMetrics {
+    grid-template-columns: 1fr;
+  }
+
+  .regionalDailyRow {
+    grid-template-columns: 1fr;
+  }
+}

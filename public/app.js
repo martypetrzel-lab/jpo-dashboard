@@ -2159,6 +2159,260 @@ function wireProfessionalLayout() {
 }
 
 
+
+
+// ==============================
+// FireWatchCZ Web v2.1 – Regionální počasí × události
+// ==============================
+
+let __regionalWeatherLastData = null;
+
+function riskLevelClass(level) {
+  const l = String(level || "").toLowerCase();
+  if (l.includes("vysok")) return "high";
+  if (l.includes("střed") || l.includes("stred")) return "medium";
+  if (l.includes("zvý") || l.includes("zvys")) return "elevated";
+  return "normal";
+}
+
+function riskText(risk) {
+  if (!risk) return "běžné";
+  const impacts = Array.isArray(risk.impacts) && risk.impacts.length ? ` • ${risk.impacts.join(", ")}` : "";
+  return `${risk.level || "běžné"} (${Number(risk.score || 0)}/100)${impacts}`;
+}
+
+function formatRegionalWeatherDay(day) {
+  if (!day) return "—";
+  return String(day).split("-").reverse().join(".");
+}
+
+function renderRegionalWeather(data) {
+  __regionalWeatherLastData = data;
+
+  const summaryBox = document.getElementById("regionalWeatherSummary");
+  const highlightsBox = document.getElementById("regionalWeatherHighlights");
+  const zonesBox = document.getElementById("regionalWeatherZones");
+  const detailBox = document.getElementById("regionalWeatherDetail");
+
+  const summary = data.summary || {};
+  const zones = data.zones || [];
+
+  if (summaryBox) {
+    summaryBox.innerHTML = `
+      <div class="regionalWeatherLead">
+        <b>${escapeHtml(summary.text || "Regionální počasí načteno.")}</b>
+        <span>Zdroj: ${escapeHtml(data.source || "Open‑Meteo")} • období ${escapeHtml(data.period?.start || "")} – ${escapeHtml(data.period?.end || "")}</span>
+      </div>
+    `;
+  }
+
+  if (highlightsBox) {
+    const strongestWind = summary.strongestWind;
+    const strongestRain = summary.strongestRain;
+    const mostEvents = summary.mostEvents;
+    const highestRisk = summary.highestRisk;
+    const tomorrowRisk = summary.tomorrowHighestRisk;
+
+    highlightsBox.innerHTML = `
+      <div class="regionalWeatherKpi">
+        <span>💨 Nejvyšší vítr</span>
+        <b>${escapeHtml(strongestWind?.zoneName || "—")}</b>
+        <small>${Math.round(Number(strongestWind?.current?.gustKmh || 0))} km/h nárazy</small>
+      </div>
+      <div class="regionalWeatherKpi">
+        <span>🌧️ Nejvíce srážek teď</span>
+        <b>${escapeHtml(strongestRain?.zoneName || "—")}</b>
+        <small>${Number(strongestRain?.current?.rainMm || 0).toFixed(1)} mm</small>
+      </div>
+      <div class="regionalWeatherKpi">
+        <span>📍 Nejvíce událostí</span>
+        <b>${escapeHtml(mostEvents?.zoneName || "—")}</b>
+        <small>${Number(mostEvents?.events?.total || 0)} za období</small>
+      </div>
+      <div class="regionalWeatherKpi ${riskLevelClass(highestRisk?.current?.risk?.level)}">
+        <span>⚠️ Aktuální riziko</span>
+        <b>${escapeHtml(highestRisk?.zoneName || "—")}</b>
+        <small>${escapeHtml(riskText(highestRisk?.current?.risk))}</small>
+      </div>
+      <div class="regionalWeatherKpi ${riskLevelClass(tomorrowRisk?.tomorrow?.risk?.level)}">
+        <span>🔮 Zítra / 24 h</span>
+        <b>${escapeHtml(tomorrowRisk?.zoneName || "—")}</b>
+        <small>${escapeHtml(riskText(tomorrowRisk?.tomorrow?.risk))}</small>
+      </div>
+    `;
+  }
+
+  if (zonesBox) {
+    zonesBox.innerHTML = zones.map(zone => {
+      const risk = zone.current?.risk || {};
+      const todayRisk = zone.today?.risk || null;
+      const tomorrowRisk = zone.tomorrow?.risk || null;
+      return `
+        <button type="button" class="regionalZoneCard ${riskLevelClass(risk.level)}" data-weather-zone="${escapeHtml(zone.zoneId)}">
+          <div class="regionalZoneHead">
+            <strong>${escapeHtml(zone.zoneName)}</strong>
+            <span>${escapeHtml(zone.current?.weatherEmoji || "🌡️")} ${escapeHtml(zone.current?.weatherLabel || "")}</span>
+          </div>
+          <div class="regionalZoneMetrics">
+            <span>🌡️ ${Number(zone.current?.temp || 0).toFixed(1)} °C</span>
+            <span>💨 ${Math.round(Number(zone.current?.gustKmh || 0))} km/h</span>
+            <span>🌧️ ${Number(zone.current?.rainMm || 0).toFixed(1)} mm</span>
+            <span>📍 ${Number(zone.events?.total || 0)} událostí</span>
+          </div>
+          <div class="regionalZoneRisk">
+            Dnes: ${escapeHtml(riskText(todayRisk || risk))}
+          </div>
+          <div class="regionalZoneTomorrow">
+            Zítra: ${escapeHtml(riskText(tomorrowRisk))}
+          </div>
+        </button>
+      `;
+    }).join("");
+
+    zonesBox.querySelectorAll("[data-weather-zone]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const zone = zones.find(z => z.zoneId === btn.getAttribute("data-weather-zone"));
+        if (zone) renderRegionalWeatherDetail(zone);
+      });
+    });
+  }
+
+  if (detailBox && zones.length && !detailBox.innerHTML.trim()) {
+    renderRegionalWeatherDetail(zones[0]);
+  }
+}
+
+function renderRegionalWeatherDetail(zone) {
+  const box = document.getElementById("regionalWeatherDetail");
+  if (!box || !zone) return;
+
+  const insights = zone.insights || [];
+  const todayWindows = zone.today?.hourlyRisk || [];
+  const tomorrowWindows = zone.tomorrow?.hourlyRisk || [];
+  const daily = zone.daily || [];
+
+  box.innerHTML = `
+    <div class="regionalDetailHead">
+      <div>
+        <h3>${escapeHtml(zone.zoneName)}</h3>
+        <p>Detail počasí, dnešního rizika, zítřejšího výhledu a vazby na události.</p>
+      </div>
+      <div class="regionalDetailBadge ${riskLevelClass(zone.current?.risk?.level)}">
+        ${escapeHtml(riskText(zone.current?.risk))}
+      </div>
+    </div>
+
+    <div class="regionalDetailGrid">
+      <div class="regionalDetailPanel">
+        <h4>Dnešní vývoj</h4>
+        ${todayWindows.length ? todayWindows.map(w => `
+          <div class="regionalWeatherWindow ${riskLevelClass(w.level)}">
+            <b>${escapeHtml(w.window)}</b>
+            <span>${escapeHtml(w.weatherEmoji || "")} ${escapeHtml(w.weatherLabel || "")} • ${escapeHtml(riskText(w))}</span>
+            <small>nárazy ${Math.round(Number(w.maxGustKmh || 0))} km/h • déšť ${Number(w.rainMm || 0).toFixed(1)} mm</small>
+          </div>
+        `).join("") : `<div class="muted">Bez hodinové analýzy.</div>`}
+      </div>
+
+      <div class="regionalDetailPanel">
+        <h4>Následující den</h4>
+        ${tomorrowWindows.length ? tomorrowWindows.map(w => `
+          <div class="regionalWeatherWindow ${riskLevelClass(w.level)}">
+            <b>${escapeHtml(w.window)}</b>
+            <span>${escapeHtml(w.weatherEmoji || "")} ${escapeHtml(w.weatherLabel || "")} • ${escapeHtml(riskText(w))}</span>
+            <small>nárazy ${Math.round(Number(w.maxGustKmh || 0))} km/h • déšť ${Number(w.rainMm || 0).toFixed(1)} mm</small>
+          </div>
+        `).join("") : `<div class="muted">Bez výhledu.</div>`}
+      </div>
+    </div>
+
+    <div class="regionalDetailGrid">
+      <div class="regionalDetailPanel">
+        <h4>Self analytika regionu</h4>
+        ${insights.map(item => `
+          <div class="regionalWeatherInsight ${escapeHtml(item.level || "info")}">
+            <span>${escapeHtml(item.icon || "🌡️")}</span>
+            <div>
+              <b>${escapeHtml(item.title || "")}</b>
+              <p>${escapeHtml(item.text || "")}</p>
+            </div>
+          </div>
+        `).join("")}
+      </div>
+
+      <div class="regionalDetailPanel">
+        <h4>Události v regionu</h4>
+        <div class="regionalEventStats">
+          <div><span>Celkem</span><b>${Number(zone.events?.total || 0)}</b></div>
+          <div><span>Technická</span><b>${Number(zone.events?.tech || 0)}</b></div>
+          <div><span>Dopravní</span><b>${Number(zone.events?.traffic || 0)}</b></div>
+          <div><span>Požár</span><b>${Number(zone.events?.fire || 0)}</b></div>
+          <div><span>GPS</span><b>${Number(zone.events?.assignedByGps || 0)}</b></div>
+          <div><span>Alias</span><b>${Number(zone.events?.assignedByAlias || 0)}</b></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="regionalDetailPanel">
+      <h4>Denní přehled počasí × události</h4>
+      <div class="regionalDailyRows">
+        ${daily.slice(-14).reverse().map(day => `
+          <div class="regionalDailyRow ${riskLevelClass(day.risk?.level)}">
+            <span><b>${escapeHtml(formatRegionalWeatherDay(day.day))}</b><small>${escapeHtml(day.weatherEmoji || "")} ${escapeHtml(day.weatherLabel || "")}</small></span>
+            <span>🌡️ ${Number(day.avgTemp || 0).toFixed(1)} °C</span>
+            <span>💨 ${Math.round(Number(day.maxGustKmh || 0))} km/h</span>
+            <span>🌧️ ${Number(day.rainMm || 0).toFixed(1)} mm</span>
+            <span>📍 ${Number(day.events?.total || 0)} událostí</span>
+          </div>
+        `).join("")}
+      </div>
+    </div>
+  `;
+
+  try { box.scrollIntoView({ behavior: "smooth", block: "nearest" }); } catch {}
+}
+
+async function loadRegionalWeather() {
+  const btn = document.getElementById("loadRegionalWeatherBtn");
+  const old = btn?.textContent || "Načíst regionální počasí";
+  const days = document.getElementById("regionalWeatherDays")?.value || "30";
+  const summary = document.getElementById("regionalWeatherSummary");
+  const zones = document.getElementById("regionalWeatherZones");
+  const detail = document.getElementById("regionalWeatherDetail");
+
+  try {
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "Načítám…";
+    }
+
+    if (summary) summary.innerHTML = `<div class="regionalWeatherLoading">Načítám počasí pro regiony Středočeského kraje…</div>`;
+    if (zones) zones.innerHTML = "";
+    if (detail) detail.innerHTML = "";
+
+    const r = await fetch(`/api/weather/regions/anomalies?days=${encodeURIComponent(days)}&_=${Date.now()}`, { cache: "no-store" });
+    const j = await r.json();
+
+    if (!r.ok || !j.ok) throw new Error(j.detail || j.error || "regional weather failed");
+
+    renderRegionalWeather(j.weather);
+  } catch (e) {
+    if (summary) summary.innerHTML = `<div class="err">Regionální počasí se nepodařilo načíst: ${escapeHtml(String(e.message || e))}</div>`;
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = old;
+    }
+  }
+}
+
+function wireRegionalWeather() {
+  document.getElementById("loadRegionalWeatherBtn")?.addEventListener("click", loadRegionalWeather);
+  document.getElementById("regionalWeatherDays")?.addEventListener("change", loadRegionalWeather);
+  loadRegionalWeather();
+}
+
+
 // UI events
 document.getElementById("refreshBtn").addEventListener("click", () => { resetFilters(); loadAll(); });
 document.getElementById("applyBtn").addEventListener("click", loadAll);
@@ -2177,6 +2431,7 @@ window.addEventListener("orientationchange", () => safeInvalidateMap());
 initMap();
 initLandingPage();
 wireProfessionalLayout();
+wireRegionalWeather();
 wireWatchNotifications();
 
 
