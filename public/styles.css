@@ -649,3 +649,9 @@ body.isGuestMode #registerBtn {
   width: 100%;
   align-items: stretch;
 }
+
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}

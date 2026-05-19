@@ -2350,6 +2350,43 @@ async function loadMissingCoords() {
   }
 }
 
+async function autoGeocodeMissingCoords() {
+  if (!currentUser || currentUser.role !== "admin") return;
+  const btn = document.getElementById("autoGeocodeMissingBtn");
+  const oldText = btn?.textContent || "Auto doplnit GPS";
+
+  try {
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "Doplňuji…";
+    }
+
+    msg("coordsMsg", "Zkouším automaticky dohledat souřadnice pro prvních 10 chybějících událostí…", true);
+
+    const r = await apiFetch("/api/admin/geocode-missing?limit=10", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ limit: 10 })
+    });
+
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || "auto geocode failed");
+
+    msg("coordsMsg", `Hotovo. Zkontrolováno ${j.checked}, doplněno ${j.fixed}.`, true);
+
+    await loadMissingCoords();
+    await loadAll();
+  } catch (e) {
+    msg("coordsMsg", `Auto doplnění GPS selhalo: ${String(e.message || e)}`, false);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = oldText;
+    }
+  }
+}
+
+
 async function saveCoordsForSelected() {
   const id = document.getElementById("coordsEventId")?.value?.trim();
   const lat = Number(document.getElementById("coordsLat")?.value);
@@ -2394,6 +2431,7 @@ async function clearCoordsForSelected() {
 
 function wireMissingCoordsUiOnce() {
   document.getElementById("reloadMissingCoordsBtn")?.addEventListener("click", loadMissingCoords);
+  document.getElementById("autoGeocodeMissingBtn")?.addEventListener("click", autoGeocodeMissingCoords);
   document.getElementById("pickOnMapBtn")?.addEventListener("click", () => {
     if (pickingCoords) return setPickMode(false);
     setPickMode(true);

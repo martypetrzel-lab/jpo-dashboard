@@ -366,59 +366,239 @@ async function computeDurationMin(id, startIso, endIso, firstSeen, cutoffIso) {
   return dur;
 }
 
+
+
+// ---------------- GEOCODE (CZ ONLY) ----------------
+
+function deaccent(input) {
+  return String(input || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function normalizePlaceKey(input) {
+  return deaccent(input)
+    .toLowerCase()
+    .replace(/\([^)]*\)/g, " ")
+    .replace(/\bokres\b/g, " ")
+    .replace(/\bok\.\b/g, " ")
+    .replace(/\bčást obce\b/g, " ")
+    .replace(/\bobec\b/g, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
 function normalizePlaceQuery(placeText) {
   const raw = String(placeText || "").trim();
   if (!raw) return "";
-  return raw.replace(/^okres\s+/i, "").replace(/^ok\.\s*/i, "").trim();
+
+  return raw
+    .replace(/\([^)]*\)/g, " ")
+    .replace(/^okres\s+/i, "")
+    .replace(/^ok\.\s*/i, "")
+    .replace(/\s*-\s*okres\s+.*$/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
-// ---------------- GEOCODE (CZ ONLY) ----------------
+function isAllowedGeocodeState(state) {
+  const strict = process.env.STRICT_STC_GEOCODE === "1";
+  if (!strict) return true;
+
+  const s = normalizePlaceKey(state);
+  return (
+    s.includes("stredocesky") ||
+    s.includes("central bohemia") ||
+    s.includes("hlavni mesto praha") ||
+    s.includes("praha")
+  );
+}
+
+// Lokální fallback pro časté obce a města.
+// Slouží hlavně jako rychlá záloha, když Nominatim nedá výsledek nebo ho dočasně blokuje.
+// Souřadnice jsou orientační středy obcí.
+const LOCAL_PLACE_COORDS = new Map(Object.entries({
+  "kladno": [50.1431, 14.1052],
+  "mlada boleslav": [50.4114, 14.9032],
+  "nymburk": [50.1856, 15.0433],
+  "neratovice": [50.2593, 14.5176],
+  "pribram": [49.6899, 14.0104],
+  "kolin": [50.0281, 15.2016],
+  "brandys nad labem stara boleslav": [50.1871, 14.6633],
+  "brandys nad labem": [50.1867, 14.6692],
+  "stara boleslav": [50.1938, 14.6724],
+  "beroun": [49.9638, 14.0720],
+  "rakovnik": [50.1037, 13.7334],
+  "caslav": [49.9105, 15.3897],
+  "celakovice": [50.1605, 14.7501],
+  "kosmonosy": [50.4385, 14.9308],
+  "uhlicke janovice": [49.8802, 15.0648],
+  "uhlirske janovice": [49.8802, 15.0648],
+  "zbizuby": [49.8184, 15.0730],
+  "petrovice": [49.5542, 14.3374],
+  "nove dvory": [49.9700, 15.3318],
+  "stara hut": [49.7840, 14.1984],
+  "cestin": [49.8552, 15.1700],
+  "kopidlno": [50.3291, 15.2703],
+  "bile podoli": [49.9560, 15.4891],
+  "kresetice": [49.9088, 15.2638],
+  "zapy": [50.1656, 14.6811],
+  "zbisuby": [49.8184, 15.0730],
+  "zbiroh": [49.8602, 13.7726],
+  "kutna hora": [49.9484, 15.2682],
+  "benesov": [49.7823, 14.6869],
+  "melnik": [50.3513, 14.4741],
+  "slany": [50.2305, 14.0869],
+  "horovice": [49.8359, 13.9027],
+  "dobris": [49.7811, 14.1672],
+  "sedlcany": [49.6606, 14.4266],
+  "vlasim": [49.7063, 14.8988],
+  "ricany": [49.9917, 14.6543],
+  "mnichovo hradiste": [50.5272, 14.9713],
+  "poděbrady": [50.1424, 15.1188],
+  "podebrady": [50.1424, 15.1188],
+  "milovice": [50.2259, 14.8886],
+  "cesky brod": [50.0742, 14.8608],
+  "kralupy nad vltavou": [50.2411, 14.3115],
+  "kourim": [50.0031, 14.9770],
+  "tynec nad sazavou": [49.8335, 14.5896],
+  "sazava": [49.8717, 14.8967],
+  "roztoky": [50.1584, 14.3976],
+  "libusin": [50.1682, 14.0544],
+  "hostivice": [50.0816, 14.2586],
+  "rudna": [50.0350, 14.2344],
+  "jesenice": [49.9681, 14.5135],
+  "unhost": [50.0854, 14.1301],
+  "kamenice": [49.9017, 14.5824],
+  "zruč nad sazavou": [49.7401, 15.1061],
+  "zruc nad sazavou": [49.7401, 15.1061]
+}));
+
+function localGeocode(placeText) {
+  const key = normalizePlaceKey(placeText);
+  if (!key) return null;
+
+  if (LOCAL_PLACE_COORDS.has(key)) {
+    const [lat, lon] = LOCAL_PLACE_COORDS.get(key);
+    return { lat, lon, cached: true, source: "local" };
+  }
+
+  // Když přijde delší text, zkus najít známou obec uvnitř.
+  for (const [name, coords] of LOCAL_PLACE_COORDS.entries()) {
+    if (key.includes(name)) {
+      const [lat, lon] = coords;
+      return { lat, lon, cached: true, source: "local-substring" };
+    }
+  }
+
+  return null;
+}
+
+function uniqueNonEmpty(items) {
+  const out = [];
+  const seen = new Set();
+  for (const item of items) {
+    const v = String(item || "").trim();
+    if (!v) continue;
+    const k = normalizePlaceKey(v);
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    out.push(v);
+  }
+  return out;
+}
+
+function buildGeocodeQueriesForEvent(ev, districtFromDesc = "") {
+  const titleCity = extractCityFromTitle(ev?.title || "");
+  const place = ev?.placeText || ev?.place_text || "";
+  const city = ev?.cityText || ev?.city_text || "";
+  const district = districtFromDesc || extractDistrictFromDescription(ev?.descriptionRaw || ev?.description_raw || "");
+
+  const base = uniqueNonEmpty([
+    city,
+    titleCity,
+    place
+  ]);
+
+  const queries = [];
+
+  for (const item of base) {
+    const cleaned = normalizePlaceQuery(item);
+    if (!cleaned) continue;
+
+    if (district) queries.push(`${cleaned}, okres ${district}`);
+    queries.push(cleaned);
+    queries.push(`${cleaned}, Středočeský kraj`);
+    queries.push(`${cleaned}, Stredocesky kraj`);
+    queries.push(`${cleaned}, Central Bohemia`);
+    queries.push(`${cleaned}, Czechia`);
+    queries.push(`${cleaned}, Středočeský kraj, Czechia`);
+  }
+
+  return uniqueNonEmpty(queries);
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 async function geocodePlace(placeText) {
   if (!placeText || placeText.trim().length < 2) return null;
 
+  const local = localGeocode(placeText);
+  if (local) {
+    await setCachedGeocode(placeText, local.lat, local.lon);
+    return local;
+  }
+
   const cached = await getCachedGeocode(placeText);
   if (cached && typeof cached.lat === "number" && typeof cached.lon === "number") {
-    return { lat: cached.lat, lon: cached.lon, cached: true };
+    return { lat: cached.lat, lon: cached.lon, cached: true, source: "cache" };
   }
+
+  if (Date.now() < geocodeDisabledUntil) return null;
 
   const cleaned = normalizePlaceQuery(placeText);
 
-  const candidates = [];
-  candidates.push(String(placeText).trim());
-  if (cleaned && cleaned !== String(placeText).trim()) candidates.push(cleaned);
-
-  if (cleaned) candidates.push(`${cleaned}, Středočeský kraj`);
-  if (cleaned) candidates.push(`${cleaned}, Stredocesky kraj`);
-  if (cleaned) candidates.push(`${cleaned}, Central Bohemia`);
-  if (cleaned) candidates.push(`${cleaned}, Czechia`);
-  if (cleaned) candidates.push(`${cleaned}, Středočeský kraj, Czechia`);
-  if (cleaned) candidates.push(`${cleaned}, Central Bohemia, Czechia`);
-
-  candidates.push(`${String(placeText).trim()}, Czechia`);
-
-  const CZ_VIEWBOX = STC_VIEWBOX;
+  const candidates = uniqueNonEmpty([
+    String(placeText).trim(),
+    cleaned,
+    cleaned ? `${cleaned}, Středočeský kraj` : "",
+    cleaned ? `${cleaned}, Stredocesky kraj` : "",
+    cleaned ? `${cleaned}, Central Bohemia` : "",
+    cleaned ? `${cleaned}, Czechia` : "",
+    cleaned ? `${cleaned}, Středočeský kraj, Czechia` : "",
+    cleaned ? `${cleaned}, Central Bohemia, Czechia` : ""
+  ]);
 
   for (const q of candidates) {
     const url = new URL("https://nominatim.openstreetmap.org/search");
-    url.searchParams.set("format", "json");
-    url.searchParams.set("limit", "3");
+    url.searchParams.set("format", "jsonv2");
+    url.searchParams.set("limit", "5");
     url.searchParams.set("q", q);
-
     url.searchParams.set("countrycodes", "cz");
     url.searchParams.set("addressdetails", "1");
     url.searchParams.set("bounded", "1");
-    url.searchParams.set("viewbox", CZ_VIEWBOX);
+    url.searchParams.set("viewbox", STC_VIEWBOX);
 
     let r;
     try {
       r = await fetchWithTimeout(url.toString(), {
         headers: { "User-Agent": GEOCODE_UA, "Accept-Language": "cs,en;q=0.8" }
-      }, 8000);
+      }, 9000);
     } catch (e) {
-      geocodeDisabledUntil = Date.now() + 5 * 60 * 1000; // 5 min
+      geocodeDisabledUntil = Date.now() + 5 * 60 * 1000;
       console.warn("[geocode] provider unreachable, disabling for 5 min:", e?.message || e);
       return null;
     }
+
+    if (r.status === 429) {
+      geocodeDisabledUntil = Date.now() + 10 * 60 * 1000;
+      console.warn("[geocode] rate limited, disabling for 10 min");
+      return null;
+    }
+
     if (!r.ok) continue;
 
     let data;
@@ -427,6 +607,7 @@ async function geocodePlace(placeText) {
     } catch {
       continue;
     }
+
     if (!Array.isArray(data) || data.length === 0) continue;
 
     for (const cand of data) {
@@ -438,7 +619,7 @@ async function geocodePlace(placeText) {
       if (cc && cc !== "cz") continue;
 
       const state = String(cand?.address?.state || cand?.address?.region || "");
-      if (state && !STC_STATE_ALLOW.test(state)) continue;
+      if (state && !isAllowedGeocodeState(state)) continue;
 
       const vb = String(STC_VIEWBOX).split(",").map(x => Number(x));
       if (vb.length === 4 && vb.every(n => Number.isFinite(n))) {
@@ -447,7 +628,7 @@ async function geocodePlace(placeText) {
       }
 
       await setCachedGeocode(placeText, lat, lon);
-      return { lat, lon, cached: false, qUsed: q };
+      return { lat, lon, cached: false, source: "nominatim", qUsed: q };
     }
   }
 
@@ -649,6 +830,74 @@ app.post("/api/admin/ops-requests/:id/reject", requireAdmin, async (req, res) =>
     return res.status(500).json({ ok: false, error: "server_error" });
   }
 });
+
+
+app.post("/api/admin/geocode-missing", requireAdmin, async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(30, Number(req.body?.limit || req.query?.limit || 10)));
+    const rows = await getEventsMissingCoords(limit);
+
+    let checked = 0;
+    let fixed = 0;
+    const results = [];
+
+    for (const row of rows) {
+      checked++;
+
+      const ev = {
+        id: row.id,
+        title: row.title,
+        placeText: row.place_text,
+        cityText: row.city_text,
+        descriptionRaw: row.description_raw
+      };
+
+      const district = extractDistrictFromDescription(row.description_raw || "");
+      const queries = buildGeocodeQueriesForEvent(ev, district);
+
+      let hit = null;
+      let usedQuery = "";
+
+      for (const q of queries) {
+        const g = await geocodePlace(q);
+        if (g) {
+          hit = g;
+          usedQuery = q;
+          break;
+        }
+      }
+
+      if (hit) {
+        await updateEventCoords(row.id, hit.lat, hit.lon);
+        fixed++;
+        results.push({
+          id: row.id,
+          title: row.title,
+          lat: hit.lat,
+          lon: hit.lon,
+          source: hit.source || (hit.cached ? "cache" : "geocode"),
+          query: usedQuery
+        });
+      }
+
+      // Šetrnější k Nominatimu. Lokální/cache výsledky jsou okamžité, ale při neúspěchu
+      // mohl proběhnout dotaz ven, takže mezi událostmi krátce počkáme.
+      await sleep(650);
+    }
+
+    await insertAudit({
+      actor_user_id: req.auth.user.id,
+      action: "admin_geocode_missing",
+      detail: JSON.stringify({ checked, fixed })
+    }).catch(() => {});
+
+    return res.json({ ok: true, checked, fixed, results });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ ok: false, error: "geocode_missing_failed" });
+  }
+});
+
 
 // ---------------- ADMIN: Missing coordinates management ----------------
 app.get("/api/admin/events-missing-coords", requireAdmin, async (req, res) => {
@@ -871,10 +1120,7 @@ if (Number.isFinite(it.durationMin)) {
 
       if (ev.isClosed) updatedClosed++;
 
-      const geoQueries = [];
-      if (ev.cityText && districtFromDesc) geoQueries.push(`${ev.cityText}, okres ${districtFromDesc}`);
-      if (ev.cityText) geoQueries.push(ev.cityText);
-      if (ev.placeText && ev.placeText !== ev.cityText) geoQueries.push(ev.placeText);
+      const geoQueries = buildGeocodeQueriesForEvent(ev, districtFromDesc);
 
       let fixed = false;
       for (const q of geoQueries) {
