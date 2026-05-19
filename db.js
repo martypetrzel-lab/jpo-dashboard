@@ -607,6 +607,8 @@ function buildTimeWindowSql(day, params, iStart) {
     // Důležité:
     // Filtr dne už nebere jen události, které v daný den začaly.
     // Bere i aktivní zásahy, které začaly dříve a do vybraného dne stále přesahují.
+    // ALE pouze významné / vyšší: alarm_level >= 2 nebo is_major_event = TRUE.
+    // Jinak by se do dneška natahovaly staré běžné události, které zůstaly v DB neukončené.
     //
     // Příklad:
     // Zásah začal včera, je pořád aktivní a dnes je vybraný filtr "dnes".
@@ -620,6 +622,7 @@ function buildTimeWindowSql(day, params, iStart) {
         OR
         (
           is_closed = FALSE
+          AND (COALESCE(alarm_level, 0) >= 2 OR COALESCE(is_major_event, FALSE) = TRUE)
           AND
           (COALESCE(NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date
           <= ((NOW() AT TIME ZONE 'Europe/Prague')::date - $${i}::int)
@@ -712,12 +715,15 @@ export async function getEventsFiltered(filters, limit = 400) {
       manual_detail_text, manual_detail_source, manual_detail_updated_at,
       (
         is_closed = FALSE
+        AND (COALESCE(alarm_level, 0) >= 2 OR COALESCE(is_major_event, FALSE) = TRUE)
         AND (COALESCE(NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date
             < (NOW() AT TIME ZONE 'Europe/Prague')::date
       ) AS is_carryover_active,
       (
         CASE
-          WHEN is_closed = FALSE AND (COALESCE(NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date
+          WHEN is_closed = FALSE
+               AND (COALESCE(alarm_level, 0) >= 2 OR COALESCE(is_major_event, FALSE) = TRUE)
+               AND (COALESCE(NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date
                < (NOW() AT TIME ZONE 'Europe/Prague')::date
           THEN ((NOW() AT TIME ZONE 'Europe/Prague')::date - (COALESCE(NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date)::int
           ELSE 0
@@ -729,10 +735,11 @@ export async function getEventsFiltered(filters, limit = 400) {
     ${where.length ? "WHERE " + where.join(" AND ") : ""}
     ORDER BY
       CASE
-        WHEN is_closed = FALSE AND COALESCE(alarm_level, 0) >= 3 THEN 0
-        WHEN is_closed = FALSE THEN 1
-        WHEN COALESCE(alarm_level, 0) >= 3 THEN 2
-        ELSE 3
+        WHEN is_closed = FALSE AND (COALESCE(alarm_level, 0) >= 3 OR COALESCE(is_major_event, FALSE) = TRUE) THEN 0
+        WHEN is_closed = FALSE AND COALESCE(alarm_level, 0) >= 2 THEN 1
+        WHEN is_closed = FALSE THEN 2
+        WHEN COALESCE(alarm_level, 0) >= 3 OR COALESCE(is_major_event, FALSE) = TRUE THEN 3
+        ELSE 4
       END ASC,
       COALESCE(NULLIF(start_time_iso,'' )::timestamptz, created_at) DESC,
       created_at DESC
@@ -1226,12 +1233,15 @@ export async function getEventsForPeriod(startIso, endExclusiveIso) {
       manual_detail_text, manual_detail_source, manual_detail_updated_at,
       (
         is_closed = FALSE
+        AND (COALESCE(alarm_level, 0) >= 2 OR COALESCE(is_major_event, FALSE) = TRUE)
         AND (COALESCE(NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date
             < (NOW() AT TIME ZONE 'Europe/Prague')::date
       ) AS is_carryover_active,
       (
         CASE
-          WHEN is_closed = FALSE AND (COALESCE(NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date
+          WHEN is_closed = FALSE
+               AND (COALESCE(alarm_level, 0) >= 2 OR COALESCE(is_major_event, FALSE) = TRUE)
+               AND (COALESCE(NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date
                < (NOW() AT TIME ZONE 'Europe/Prague')::date
           THEN ((NOW() AT TIME ZONE 'Europe/Prague')::date - (COALESCE(NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date)::int
           ELSE 0

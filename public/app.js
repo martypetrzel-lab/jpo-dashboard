@@ -854,8 +854,13 @@ function getFiltersFromUi() {
 // ==============================
 
 
+
+function isImportantCarryoverEvent(it) {
+  return !!it && !it.is_closed && (Number(it.alarm_level || 0) >= 2 || !!it.is_major_event);
+}
+
 function carryoverBadgeHtml(it) {
-  if (!it || it.is_closed) return "";
+  if (!isImportantCarryoverEvent(it)) return "";
   const days = Number(it.carryover_days || 0);
   if (!it.is_carryover_active && days <= 0) return "";
   const text = days > 1 ? `aktivní už ${days} dny` : "aktivní od včera";
@@ -984,30 +989,49 @@ function tableEditButtonHtml(it) {
 
 function renderTable(items) {
   const tbody = document.getElementById("eventsTbody");
+  if (!tbody) return;
+
   tbody.innerHTML = "";
 
-  for (const it of items) {
+  const safeItems = Array.isArray(items) ? items : [];
+
+  for (const it of safeItems) {
     const meta = typeMeta(it.event_type);
     const tr = document.createElement("tr");
-    if (isMajorEventItem(it)) tr.classList.add("majorEventRow");
+
+    if (typeof isMajorEventItem === "function" && isMajorEventItem(it)) {
+      tr.classList.add("majorEventRow");
+    }
+
+    const timeValue = it.pub_date || it.start_time_iso || it.created_at || "";
+    const title = it.title || "";
+    const city = it.city_text || it.place_text || "";
+    const statusText = typeof statusLabelForEvent === "function"
+      ? statusLabelForEvent(it)
+      : (it.is_closed ? "ukončená" : "aktivní");
+
+    const alarmHtml = typeof alarmLevelBadge === "function" ? (alarmLevelBadge(it) || "") : "";
+    const carryHtml = typeof carryoverBadgeHtml === "function" ? (carryoverBadgeHtml(it) || "") : "";
+    const durationValue = typeof liveDurationForEvent === "function" ? liveDurationForEvent(it) : it.duration_min;
 
     tr.innerHTML = `
+      <td>${escapeHtml(formatDate(timeValue))}</td>
+      <td title="${escapeHtml(meta.label || it.event_type || "")}">${escapeHtml(meta.emoji || "")}</td>
+      <td>${escapeHtml(title)}</td>
+      <td>${escapeHtml(city)}</td>
+      <td>${statusEmoji(it.is_closed)} ${escapeHtml(statusText)} ${carryHtml}</td>
+      <td>${alarmHtml}</td>
+      <td>${escapeHtml(formatDuration(durationValue))}</td>
       <td>${eventDetailButtonHtml(it)}</td>
-      <td>${tableEditButtonHtml(it)}</td>`;
+      <td>${tableEditButtonHtml(it)}</td>
+    `;
 
     tbody.appendChild(tr);
   }
 
-  document.querySelectorAll(".manualEditEventBtn").forEach((btn) => {
-    btn.addEventListener("click", () => openManualEventEditor(btn.getAttribute("data-event-id")));
-  });
-  syncAdminVisibility?.();
-
   bindInlineTableEditButtons();
   syncAdminVisibility?.();
-
 }
-
 function makeEventIcon(eventType, it = null) {
   const meta = typeMeta(eventType);
   return L.divIcon({
@@ -2646,7 +2670,7 @@ function updateCommandOverview(items = [], stats = null) {
   const mapped = items.filter(x => Number.isFinite(Number(x.lat)) && Number.isFinite(Number(x.lon))).length;
   const major = items.filter(x => typeof isMajorEventItem === "function" ? isMajorEventItem(x) : false).length;
   const open = items.filter(x => !x.is_closed).length;
-  const carryover = items.filter(x => !x.is_closed && (x.is_carryover_active || Number(x.carryover_days || 0) > 0)).length;
+  const carryover = items.filter(x => isImportantCarryoverEvent(x) && (x.is_carryover_active || Number(x.carryover_days || 0) > 0)).length;
 
   if (mapCount) mapCount.textContent = `${mapped}`;
   if (majorCount) majorCount.textContent = `${major}`;
