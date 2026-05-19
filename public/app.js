@@ -927,7 +927,7 @@ function renderMajorEvents(items = []) {
 
 
 function bindInlineTableEditButtons() {
-  document.querySelectorAll(".tableManualEditBtn, .manualEditEventBtn").forEach((btn) => {
+  document.querySelectorAll(".tableManualEditBtn").forEach((btn) => {
     if (btn.dataset.bound === "1") return;
     btn.dataset.bound = "1";
     btn.addEventListener("click", (ev) => {
@@ -939,6 +939,14 @@ function bindInlineTableEditButtons() {
   });
 }
 
+
+
+function tableEditButtonHtml(it) {
+  if (!isCurrentUserAdmin || !isCurrentUserAdmin()) return "";
+  const id = escapeHtml(it?.id || "");
+  if (!id) return "";
+  return `<button type="button" class="btn miniBtn tableManualEditBtn" data-event-id="${id}">Upravit</button>`;
+}
 
 function renderTable(items) {
   const tbody = document.getElementById("eventsTbody");
@@ -958,9 +966,7 @@ function renderTable(items) {
       <td>${alarmLevelBadge(it) || ""}</td>
       <td>${escapeHtml(formatDuration(it.duration_min))}</td>
       <td><a href="${escapeHtml(it.link)}" target="_blank" rel="noopener">detail</a></td>
-      <td><button type="button" class="btn miniBtn adminOnly manualEditEventBtn" data-event-id="${escapeHtml(it.id || "")}">Upravit</button></td>
-    
-      <td><button type="button" class="btn miniBtn tableManualEditBtn adminOnly" data-event-id="${escapeHtml(it.id || "")}">Upravit</button></td>`;
+      <td>${tableEditButtonHtml(it)}</td>`;
 
     tbody.appendChild(tr);
   }
@@ -2205,6 +2211,7 @@ function wireWatchNotifications() {
 
 function wireProfessionalLayout() {
   syncAdminVisibility();
+  rerenderCurrentTableForAdminButtons();
   const sidebar = document.getElementById("fwSidebar");
   const toggle = document.getElementById("mobileSidebarToggle");
 
@@ -3200,6 +3207,15 @@ function syncPublicGuestUi() {
   document.body.classList.toggle("isTalkOpen", talkPanelOpen);
 }
 
+
+
+function rerenderCurrentTableForAdminButtons() {
+  if (Array.isArray(window.latestItemsSnapshot)) {
+    try {
+      renderTable(window.latestItemsSnapshot);
+    } catch {}
+  }
+}
 
 async function refreshMe() {
   try {

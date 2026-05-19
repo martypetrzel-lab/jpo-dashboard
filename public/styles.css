@@ -2641,3 +2641,29 @@ tr.majorEventRow {
   text-align: right;
   min-width: 92px;
 }
+
+
+/* table edit render fixed */
+.tableManualEditBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 78px;
+  min-height: 32px;
+  padding: 5px 10px;
+  border-radius: 11px;
+  color: #fff;
+  background: rgba(47, 109, 246, 0.22);
+  border: 1px solid rgba(90, 160, 255, 0.42);
+  font-weight: 900;
+}
+
+.tableManualEditBtn:hover {
+  background: rgba(47, 109, 246, 0.36);
+}
+
+.tableCard table th:last-child,
+.tableCard table td:last-child {
+  min-width: 94px;
+  text-align: right;
+}
