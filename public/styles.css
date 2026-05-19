@@ -1391,3 +1391,102 @@ body.isGuestMode #registerBtn {
   color: rgba(235,245,255,0.72);
   background: rgba(255,255,255,0.04);
 }
+
+
+/* ==============================
+   FireWatchCZ Web v1.6 – Notifikace a odběry
+   ============================== */
+.watchCard {
+  grid-column: 1 / -1;
+}
+
+.watchGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(300px, 0.8fr);
+  gap: 12px;
+}
+
+.watchPanel {
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 18px;
+  padding: 14px;
+  background: rgba(255,255,255,0.035);
+}
+
+.watchPanel h3 {
+  margin: 0 0 10px;
+}
+
+.watchLabel {
+  display: grid;
+  gap: 6px;
+  color: rgba(235,245,255,0.78);
+  font-weight: 800;
+}
+
+.watchLabel input {
+  min-height: 38px;
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 12px;
+  background: rgba(255,255,255,0.06);
+  color: #fff;
+  padding: 8px 10px;
+}
+
+.watchTypes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.watchTypes label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255,255,255,0.09);
+  border-radius: 12px;
+  background: rgba(255,255,255,0.04);
+  cursor: pointer;
+}
+
+.watchActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.watchSummary {
+  display: grid;
+  gap: 8px;
+  color: rgba(235,245,255,0.78);
+}
+
+.watchHistory {
+  display: grid;
+  gap: 8px;
+  color: rgba(235,245,255,0.72);
+}
+
+.watchHistoryItem {
+  display: grid;
+  gap: 3px;
+  padding: 9px 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(255,255,255,0.04);
+}
+
+.watchHistoryItem span {
+  color: rgba(235,245,255,0.62);
+  font-size: 12px;
+}
+
+@media (max-width: 900px) {
+  .watchGrid {
+    grid-template-columns: 1fr;
+  }
+}

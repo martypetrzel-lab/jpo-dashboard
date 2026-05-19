@@ -354,7 +354,50 @@
 
     
     
-    <section id="statsProCard" class="card statsProCard">
+    
+    <section id="watchCard" class="card watchCard">
+      <div class="cardHeader">
+        <h2>Moje sledování a notifikace</h2>
+        <div class="hint">Lokální webové upozornění podle měst a typů událostí</div>
+      </div>
+
+      <div class="watchGrid">
+        <div class="watchPanel">
+          <h3>Co chci sledovat</h3>
+          <label class="watchLabel">
+            Města / lokality
+            <input id="watchCitiesInput" type="text" placeholder="např. Nehvizdy, Kladno, Čelákovice" />
+          </label>
+
+          <div class="watchTypes">
+            <label><input type="checkbox" class="watchTypeCheck" value="fire"> 🔥 Požár</label>
+            <label><input type="checkbox" class="watchTypeCheck" value="traffic"> 🚗 Dopravní nehoda</label>
+            <label><input type="checkbox" class="watchTypeCheck" value="tech"> 🛠 Technická pomoc</label>
+            <label><input type="checkbox" class="watchTypeCheck" value="rescue"> 🚑 Záchrana</label>
+            <label><input type="checkbox" class="watchTypeCheck" value="false_alarm"> 🚫 Planý poplach</label>
+            <label><input type="checkbox" class="watchTypeCheck" value="other"> ❓ Jiné</label>
+          </div>
+
+          <div class="watchActions">
+            <button id="saveWatchBtn" class="btn primary">Uložit sledování</button>
+            <button id="enableBrowserNotifBtn" class="btn">Povolit notifikace</button>
+            <button id="testWatchNotifBtn" class="btn">Test</button>
+          </div>
+
+          <div id="watchMsg" class="hint" style="min-height:18px;"></div>
+        </div>
+
+        <div class="watchPanel">
+          <h3>Aktuální nastavení</h3>
+          <div id="watchSummary" class="watchSummary">—</div>
+
+          <h3 style="margin-top:14px;">Poslední upozornění</h3>
+          <div id="watchHistory" class="watchHistory">Zatím žádné upozornění.</div>
+        </div>
+      </div>
+    </section>
+
+<section id="statsProCard" class="card statsProCard">
       <div class="cardHeader">
         <h2>Statistiky PRO</h2>
         <div class="hint">Porovnání období, trendy, vytížené hodiny a růst měst</div>

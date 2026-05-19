@@ -1786,6 +1786,307 @@ function wireStatsPro() {
   loadStatsPro();
 }
 
+
+
+// ==============================
+// FireWatchCZ Web v1.6 – Notifikace a odběry
+// ==============================
+
+const FW_WATCH_SETTINGS_KEY = "fwcz_watchSettings_v1";
+const FW_WATCH_SEEN_KEY = "fwcz_watchSeenEvents_v1";
+const FW_WATCH_HISTORY_KEY = "fwcz_watchHistory_v1";
+
+const FW_TYPE_ALIASES = {
+  fire: ["fire", "požár", "pozar"],
+  traffic: ["traffic", "dopravní", "nehoda", "dn"],
+  tech: ["tech", "technická", "technicka"],
+  rescue: ["rescue", "záchrana", "zachrana"],
+  false_alarm: ["false_alarm", "planý", "plany", "poplach"],
+  other: ["other", "jiné", "jine"]
+};
+
+function loadWatchSettings() {
+  try {
+    return JSON.parse(localStorage.getItem(FW_WATCH_SETTINGS_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function saveWatchSettings(settings) {
+  localStorage.setItem(FW_WATCH_SETTINGS_KEY, JSON.stringify(settings || {}));
+}
+
+function loadWatchSeen() {
+  try {
+    const arr = JSON.parse(localStorage.getItem(FW_WATCH_SEEN_KEY) || "[]");
+    return new Set(Array.isArray(arr) ? arr : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveWatchSeen(set) {
+  const arr = [...set].slice(-500);
+  localStorage.setItem(FW_WATCH_SEEN_KEY, JSON.stringify(arr));
+}
+
+function loadWatchHistory() {
+  try {
+    const arr = JSON.parse(localStorage.getItem(FW_WATCH_HISTORY_KEY) || "[]");
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveWatchHistory(arr) {
+  localStorage.setItem(FW_WATCH_HISTORY_KEY, JSON.stringify((arr || []).slice(0, 30)));
+}
+
+function normalizeWatchText(text) {
+  return String(text || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
+function eventTypeKey(ev) {
+  const raw = normalizeWatchText(ev.event_type || ev.type || ev.kind || ev.category || ev.title || "");
+  for (const [key, aliases] of Object.entries(FW_TYPE_ALIASES)) {
+    if (aliases.some(a => raw.includes(normalizeWatchText(a)))) return key;
+  }
+  return "other";
+}
+
+function eventCityText(ev) {
+  return String(ev.city_text || ev.place_text || ev.city || ev.place || ev.title || "");
+}
+
+function watchEventMatches(ev, settings) {
+  if (!settings || settings.enabled === false) return false;
+
+  const cities = Array.isArray(settings.cities) ? settings.cities : [];
+  const types = Array.isArray(settings.types) ? settings.types : [];
+
+  const cityOk = !cities.length || cities.some(city => {
+    const wanted = normalizeWatchText(city);
+    const hay = normalizeWatchText(`${eventCityText(ev)} ${ev.title || ""}`);
+    return wanted && hay.includes(wanted);
+  });
+
+  const typeKey = eventTypeKey(ev);
+  const typeOk = !types.length || types.includes(typeKey);
+
+  return cityOk && typeOk;
+}
+
+function watchNotificationTitle(ev) {
+  const type = fwPrettyType?.(ev.event_type || ev.type || "other") || "událost";
+  return `Nová událost: ${String(type).replace(/^[^\s]+\s*/, "")}`;
+}
+
+function watchNotificationBody(ev) {
+  const city = ev.city_text || ev.place_text || "neznámé místo";
+  return `${ev.title || "Nová událost"}\n${city}`;
+}
+
+async function requestBrowserNotifications() {
+  if (!("Notification" in window)) {
+    setWatchMsg("Tento prohlížeč nepodporuje webové notifikace.", false);
+    return false;
+  }
+
+  if (Notification.permission === "granted") {
+    setWatchMsg("Notifikace jsou povolené.", true);
+    return true;
+  }
+
+  if (Notification.permission === "denied") {
+    setWatchMsg("Notifikace jsou v prohlížeči zakázané. Povol je v nastavení webu/prohlížeče.", false);
+    return false;
+  }
+
+  const result = await Notification.requestPermission();
+  const ok = result === "granted";
+  setWatchMsg(ok ? "Notifikace povoleny." : "Notifikace nebyly povoleny.", ok);
+  return ok;
+}
+
+function showWatchBrowserNotification(ev) {
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
+
+  const n = new Notification(watchNotificationTitle(ev), {
+    body: watchNotificationBody(ev),
+    tag: `fwcz-event-${ev.id || ev.link || ev.title}`,
+    renotify: false,
+    icon: "/favicon.ico"
+  });
+
+  n.onclick = () => {
+    window.focus();
+    try {
+      document.getElementById("eventsTable")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    } catch {}
+    n.close();
+  };
+}
+
+function setWatchMsg(text, ok = true) {
+  const el = document.getElementById("watchMsg");
+  if (!el) return;
+  el.textContent = text || "";
+  el.style.color = ok ? "rgba(120,255,180,0.9)" : "rgba(255,140,140,0.95)";
+}
+
+function readWatchForm() {
+  const citiesRaw = document.getElementById("watchCitiesInput")?.value || "";
+  const cities = citiesRaw
+    .split(",")
+    .map(x => x.trim())
+    .filter(Boolean);
+
+  const types = [...document.querySelectorAll(".watchTypeCheck:checked")]
+    .map(x => x.value);
+
+  return {
+    enabled: true,
+    cities,
+    types,
+    savedAt: new Date().toISOString()
+  };
+}
+
+function fillWatchForm(settings) {
+  const cityInput = document.getElementById("watchCitiesInput");
+  if (cityInput) cityInput.value = (settings.cities || []).join(", ");
+
+  document.querySelectorAll(".watchTypeCheck").forEach(ch => {
+    ch.checked = Array.isArray(settings.types) && settings.types.includes(ch.value);
+  });
+}
+
+function renderWatchSummary() {
+  const settings = loadWatchSettings();
+  const box = document.getElementById("watchSummary");
+  if (!box) return;
+
+  const cities = settings.cities?.length ? settings.cities.join(", ") : "všechna města";
+  const types = settings.types?.length
+    ? settings.types.map(t => {
+        if (t === "fire") return "🔥 požár";
+        if (t === "traffic") return "🚗 dopravní nehoda";
+        if (t === "tech") return "🛠 technická pomoc";
+        if (t === "rescue") return "🚑 záchrana";
+        if (t === "false_alarm") return "🚫 planý poplach";
+        return "❓ jiné";
+      }).join(", ")
+    : "všechny typy";
+
+  const perm = ("Notification" in window) ? Notification.permission : "nepodporováno";
+
+  box.innerHTML = `
+    <div><b>Města:</b> ${escapeHtml(cities)}</div>
+    <div><b>Typy:</b> ${escapeHtml(types)}</div>
+    <div><b>Notifikace:</b> ${escapeHtml(perm)}</div>
+  `;
+}
+
+function renderWatchHistory() {
+  const box = document.getElementById("watchHistory");
+  if (!box) return;
+
+  const hist = loadWatchHistory();
+  if (!hist.length) {
+    box.innerHTML = "Zatím žádné upozornění.";
+    return;
+  }
+
+  box.innerHTML = hist.slice(0, 8).map(item => `
+    <div class="watchHistoryItem">
+      <b>${escapeHtml(item.title || "Událost")}</b>
+      <span>${escapeHtml(item.city || "")} • ${escapeHtml(item.time || "")}</span>
+    </div>
+  `).join("");
+}
+
+function addWatchHistory(ev) {
+  const hist = loadWatchHistory();
+  const item = {
+    id: ev.id || ev.link || ev.title,
+    title: ev.title || "Událost",
+    city: ev.city_text || ev.place_text || "",
+    time: new Date().toLocaleString("cs-CZ")
+  };
+  hist.unshift(item);
+  saveWatchHistory(hist);
+  renderWatchHistory();
+}
+
+function processWatchNotifications(items, { initial = false } = {}) {
+  if (!Array.isArray(items) || !items.length) return;
+
+  const settings = loadWatchSettings();
+  if (!settings || settings.enabled === false) return;
+
+  const seen = loadWatchSeen();
+
+  // První načtení: jen si zapamatujeme současné události, aby web neposlal hromadu starých upozornění.
+  if (initial && seen.size === 0) {
+    items.forEach(ev => seen.add(String(ev.id || ev.link || ev.title || "")));
+    saveWatchSeen(seen);
+    return;
+  }
+
+  for (const ev of items) {
+    const id = String(ev.id || ev.link || ev.title || "");
+    if (!id || seen.has(id)) continue;
+
+    seen.add(id);
+
+    if (watchEventMatches(ev, settings)) {
+      showWatchBrowserNotification(ev);
+      addWatchHistory(ev);
+    }
+  }
+
+  saveWatchSeen(seen);
+}
+
+function saveWatchFromUi() {
+  const settings = readWatchForm();
+  saveWatchSettings(settings);
+  renderWatchSummary();
+  setWatchMsg("Sledování uloženo. Upozornění se zobrazí u nových odpovídajících událostí.", true);
+}
+
+async function testWatchNotification() {
+  const ok = await requestBrowserNotifications();
+  if (!ok) return;
+
+  showWatchBrowserNotification({
+    id: "test-" + Date.now(),
+    event_type: "fire",
+    title: "Testovací upozornění FireWatch CZ",
+    city_text: "Testovací město"
+  });
+
+  setWatchMsg("Testovací notifikace odeslána.", true);
+}
+
+function wireWatchNotifications() {
+  const settings = loadWatchSettings();
+  fillWatchForm(settings);
+  renderWatchSummary();
+  renderWatchHistory();
+
+  document.getElementById("saveWatchBtn")?.addEventListener("click", saveWatchFromUi);
+  document.getElementById("enableBrowserNotifBtn")?.addEventListener("click", requestBrowserNotifications);
+  document.getElementById("testWatchNotifBtn")?.addEventListener("click", testWatchNotification);
+}
+
+
 // UI events
 document.getElementById("refreshBtn").addEventListener("click", () => { resetFilters(); loadAll(); });
 document.getElementById("applyBtn").addEventListener("click", loadAll);
@@ -1803,6 +2104,7 @@ window.addEventListener("orientationchange", () => safeInvalidateMap());
 
 initMap();
 initLandingPage();
+wireWatchNotifications();
 
 
 
