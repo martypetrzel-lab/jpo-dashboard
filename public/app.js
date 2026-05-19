@@ -594,6 +594,34 @@ function setStatus(text, ok = true) {
   pill.style.borderColor = ok ? "rgba(60, 180, 120, 0.35)" : "rgba(220, 80, 80, 0.35)";
 }
 
+
+function normalizeEventCoords(ev) {
+  if (!ev || typeof ev !== "object") return ev;
+
+  const latRaw = ev.lat ?? ev.latitude;
+  const lonRaw = ev.lon ?? ev.lng ?? ev.longitude;
+
+  const lat = typeof latRaw === "number" ? latRaw : Number(String(latRaw ?? "").replace(",", "."));
+  const lon = typeof lonRaw === "number" ? lonRaw : Number(String(lonRaw ?? "").replace(",", "."));
+
+  return {
+    ...ev,
+    lat: Number.isFinite(lat) ? lat : null,
+    lon: Number.isFinite(lon) ? lon : null
+  };
+}
+
+function normalizeEventsCoords(items) {
+  return Array.isArray(items) ? items.map(normalizeEventCoords) : [];
+}
+
+function hasValidCoords(ev) {
+  const lat = Number(ev?.lat);
+  const lon = Number(ev?.lon);
+  return Number.isFinite(lat) && Number.isFinite(lon) && lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180;
+}
+
+
 function initMap() {
   map = L.map("map").setView([49.8, 15.3], 7);
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
@@ -1097,8 +1125,8 @@ function renderMap(items) {
 
   const pts = [];
   for (const it of items) {
-    if (!Number.isFinite(it.lat) || !Number.isFinite(it.lon)) continue;
-    const marker = L.marker([it.lat, it.lon], { icon: makeEventIcon(it.event_type, it) });
+    if (!hasValidCoords(it)) continue;
+    const marker = L.marker([Number(it.lat), Number(it.lon)], { icon: makeEventIcon(it.event_type, it) });
     marker.bindPopup(`
       <b>${escapeHtml(it.title)}</b><br>
       <span style="opacity:.85">${escapeHtml(it.city_text || it.place_text || "")}</span><br>
@@ -1106,7 +1134,7 @@ function renderMap(items) {
       <a href="${escapeHtml(it.link)}" target="_blank" rel="noopener">detail</a>
     `);
     marker.addTo(markersLayer);
-    pts.push([it.lat, it.lon]);
+    pts.push([Number(it.lat), Number(it.lon)]);
   }
 
   if (pts.length > 0) {
@@ -1395,7 +1423,7 @@ function updateSimsFromItems(items) {
   for (const it of items) {
     if (it.is_closed) continue;
     if (!it.id) continue;
-    if (!Number.isFinite(it.lat) || !Number.isFinite(it.lon)) continue;
+    if (!hasValidCoords(it)) continue;
 
     // viděli jsme už? (jen nové)
     if (seenEventIds.has(it.id)) continue;
@@ -1421,7 +1449,7 @@ async function startSimulationForEvent(ev) {
     let best = null;
     for (const c of candidates.slice(0, 10)) { // limit kvůli requestům
       try {
-        const r = await osrmRoute([c.station.lat, c.station.lon], [ev.lat, ev.lon]);
+        const r = await osrmRoute([c.station.lat, c.station.lon], [Number(ev.lat), Number(ev.lon)]);
         if (!best || r.duration_s < best.route.duration_s) {
           best = { station: c.station, route: r };
         }
@@ -1578,7 +1606,7 @@ async function loadAll(options = {}) {
     renderTopCities(statsJson.topCities || []);
     renderLongest(statsJson.longest || []);
 
-    const missing = items.filter(x => x.lat == null || x.lon == null).length;
+    const missing = items.filter(x => !hasValidCoords(x)).length;
     setStatus(`OK • ${items.length} záznamů • bez souřadnic ${missing}${usedCityDayFallback ? " • město zobrazeno ze všech dnů" : ""}`, true);
   } catch (e) {
     console.warn("[loadAll] refresh failed:", e);
@@ -4440,7 +4468,7 @@ async function autoGeocodeMissingCoords() {
     msg("coordsMsg", `Hotovo. Zkontrolováno ${j.checked}, doplněno ${j.fixed}.`, true);
 
     await loadMissingCoords();
-    await loadAll();
+    await loadAll(true);
   } catch (e) {
     msg("coordsMsg", `Auto doplnění GPS selhalo: ${String(e.message || e)}`, false);
   } finally {
