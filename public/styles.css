@@ -2211,3 +2211,10 @@ tr.majorEventRow {
   gap: 10px;
   margin: 10px 0 12px;
 }
+
+
+/* Admin menu protection: hidden by default, shown only after /api/auth/me confirms role admin */
+.adminOnlyNav,
+[data-admin-only="true"] {
+  display: none;
+}

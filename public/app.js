@@ -2165,6 +2165,7 @@ function wireWatchNotifications() {
 // ==============================
 
 function wireProfessionalLayout() {
+  syncAdminVisibility();
   const sidebar = document.getElementById("fwSidebar");
   const toggle = document.getElementById("mobileSidebarToggle");
 
@@ -2677,6 +2678,33 @@ function setModePill(modeText, roleText = "") {
   }
 }
 
+
+
+// FireWatchCZ security/UI fix – admin menu only for admin role
+function isCurrentUserAdmin() {
+  return String(currentUser?.role || "").toLowerCase() === "admin";
+}
+
+function syncAdminVisibility() {
+  const isAdmin = isCurrentUserAdmin();
+
+  // Horní tlačítko Admin
+  showEl("adminBtn", isAdmin);
+
+  // Levé sidebar menu Admin
+  document.querySelectorAll(".adminOnlyNav, [data-admin-only='true']").forEach((el) => {
+    el.style.display = isAdmin ? "" : "none";
+    el.setAttribute("aria-hidden", isAdmin ? "false" : "true");
+  });
+
+  // Admin-only ovládací prvky uvnitř karet
+  document.querySelectorAll(".adminOnly").forEach((el) => {
+    el.style.display = isAdmin ? "" : "none";
+    el.setAttribute("aria-hidden", isAdmin ? "false" : "true");
+  });
+}
+
+
 function showEl(id, on) {
   const el = document.getElementById(id);
   if (!el) return;
@@ -2810,7 +2838,6 @@ async function refreshMe() {
     showEl("registerBtn", false);
     showEl("logoutBtn", true);
     showEl("requestOpsBtn", !isOps && role === "public");
-    showEl("adminBtn", role === "admin");
     showEl("audioBtn", isOps);
     showEl("briefingBtn", isOps);
     window.firewatchOpsRadioSetVisible?.(talkPanelOpen);
@@ -2820,16 +2847,21 @@ async function refreshMe() {
     showEl("registerBtn", true);
     showEl("logoutBtn", false);
     showEl("requestOpsBtn", false);
-    showEl("adminBtn", false);
     showEl("audioBtn", false);
     showEl("briefingBtn", false);
     window.firewatchOpsRadioSetVisible?.(false);
   }
 
+  syncAdminVisibility();
   syncPublicGuestUi();
 }
 
 function openModal(which) {
+  if (which === "admin" && !isCurrentUserAdmin()) {
+    alert("Admin panel je dostupný pouze pro uživatele s rolí admin.");
+    return;
+  }
+
   const back = document.getElementById("modalBackdrop");
   const login = document.getElementById("loginModal");
   const reg = document.getElementById("registerModal");
