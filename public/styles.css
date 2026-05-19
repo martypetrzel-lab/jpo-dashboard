@@ -2218,3 +2218,40 @@ tr.majorEventRow {
 [data-admin-only="true"] {
   display: none;
 }
+
+
+.majorEventsControls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0 12px;
+}
+
+.majorBackfillAdminBox {
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 18px;
+  background: rgba(255,255,255,0.035);
+}
+
+.majorBackfillAdminBox .sectionHead {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.majorBackfillAdminBox h3 {
+  margin: 0 0 4px;
+}
+
+.majorBackfillAdminBox p {
+  margin: 0;
+  color: rgba(235,245,255,0.65);
+}
+
+.adminOnly {
+  display: none;
+}
