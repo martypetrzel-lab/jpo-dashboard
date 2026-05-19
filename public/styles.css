@@ -2667,3 +2667,32 @@ tr.majorEventRow {
   min-width: 94px;
   text-align: right;
 }
+
+
+/* manual modal action fixed */
+#manualEventEnd:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+#manualEventEndLabel.is-disabled {
+  opacity: 0.78;
+}
+
+.manualInputHint {
+  display: block;
+  margin-top: 3px;
+  color: rgba(235,245,255,0.55);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+#manualEventSaveBtn {
+  background: rgba(47,109,246,0.28);
+  border-color: rgba(90,160,255,0.45);
+}
+
+#manualEventCancelBtn,
+#manualEventCloseBtn {
+  cursor: pointer;
+}

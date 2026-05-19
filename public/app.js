@@ -2666,7 +2666,29 @@ function fromLocalDateTimeInput(value) {
   return d.toISOString();
 }
 
+function syncManualEndInput() {
+  const mode = document.getElementById("manualEventStatusMode")?.value || "auto";
+  const end = document.getElementById("manualEventEnd");
+  const endLabel = document.getElementById("manualEventEndLabel");
+  const endHint = document.getElementById("manualEventEndHint");
+
+  if (!end) return;
+
+  if (mode === "open") {
+    end.value = "";
+    end.disabled = true;
+    endLabel?.classList.add("is-disabled");
+    if (endHint) endHint.textContent = "Aktivní zásah nemá konec. Délka se počítá průběžně od začátku do aktuálního času.";
+  } else {
+    end.disabled = false;
+    endLabel?.classList.remove("is-disabled");
+    if (endHint) endHint.textContent = "U aktivního zásahu se konec nevyplňuje. Doplní se až po ukončení.";
+  }
+}
+
 function updateManualEventComputed() {
+  syncManualEndInput();
+
   const box = document.getElementById("manualEventComputed");
   if (!box) return;
 
@@ -2684,13 +2706,13 @@ function updateManualEventComputed() {
 
   if (mode === "open") {
     const minutes = Math.max(0, Math.round((new Date() - start) / 60000));
-    box.textContent = `Průběžná délka aktivního zásahu: ${formatDuration(minutes)}. Konec zůstane prázdný.`;
+    box.textContent = `Zásah je nastavený jako AKTIVNÍ. Konec není potřeba zadávat. Průběžná délka: ${formatDuration(minutes)}.`;
     return;
   }
 
   if (mode === "closed") {
     if (!end || Number.isNaN(end.getTime())) {
-      box.textContent = "U ukončeného zásahu zadej konec, nebo se při uložení použije aktuální čas.";
+      box.textContent = "U ukončeného zásahu můžeš zadat konec. Když ho necháš prázdný, při uložení se použije aktuální čas.";
       return;
     }
     if (end < start) {
@@ -2702,7 +2724,7 @@ function updateManualEventComputed() {
     return;
   }
 
-  box.textContent = "Při režimu automatika zůstane stav podle aktuálních dat, ručně se uloží hlavně stupeň a významnost.";
+  box.textContent = "Automatika ponechá aktuální stav, ručně se uloží hlavně stupeň poplachu a významnost.";
 }
 
 async function openManualEventEditor(id) {
@@ -2747,6 +2769,7 @@ async function openManualEventEditor(id) {
     document.getElementById("manualEventEnd").value = toLocalDateTimeInput(ev.end_time_iso);
 
     if (status) status.textContent = "";
+    syncManualEndInput();
     updateManualEventComputed();
   } catch (e) {
     if (status) status.textContent = `Nepodařilo se načíst událost: ${String(e.message || e)}`;
@@ -2773,13 +2796,14 @@ async function saveManualEventEditor() {
     }
     if (status) status.textContent = "Ukládám ruční úpravu…";
 
+    const manualStatusMode = document.getElementById("manualEventStatusMode")?.value || "auto";
     const payload = {
-      statusMode: document.getElementById("manualEventStatusMode")?.value || "auto",
+      statusMode: manualStatusMode,
       alarmLevel: document.getElementById("manualEventAlarmLevel")?.value || "",
       isMajorEvent: !!document.getElementById("manualEventIsMajor")?.checked,
       majorReason: document.getElementById("manualEventMajorReason")?.value || "",
       startTimeIso: fromLocalDateTimeInput(document.getElementById("manualEventStart")?.value || ""),
-      endTimeIso: fromLocalDateTimeInput(document.getElementById("manualEventEnd")?.value || "")
+      endTimeIso: manualStatusMode === "open" ? null : fromLocalDateTimeInput(document.getElementById("manualEventEnd")?.value || "")
     };
 
     const r = await fetch(`/api/admin/events/${encodeURIComponent(__manualEventCurrentId)}/manual`, {
@@ -2805,10 +2829,52 @@ async function saveManualEventEditor() {
   }
 }
 
+
+
+function wireManualEventEditorDelegated() {
+  if (window.__manualEventDelegatedBound) return;
+  window.__manualEventDelegatedBound = true;
+
+  document.addEventListener("click", (ev) => {
+    const target = ev.target;
+    if (!target) return;
+
+    if (target.closest?.("#manualEventCloseBtn") || target.closest?.("#manualEventCancelBtn")) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      closeManualEventEditor();
+      return;
+    }
+
+    if (target.closest?.("#manualEventSaveBtn")) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      saveManualEventEditor();
+      return;
+    }
+  });
+
+  document.addEventListener("change", (ev) => {
+    const id = ev.target?.id;
+    if (["manualEventStatusMode", "manualEventStart", "manualEventEnd"].includes(id)) {
+      updateManualEventComputed();
+    }
+  });
+
+  document.addEventListener("input", (ev) => {
+    const id = ev.target?.id;
+    if (["manualEventStart", "manualEventEnd"].includes(id)) {
+      updateManualEventComputed();
+    }
+  });
+}
+
+
 function wireManualEventEditor() {
-  document.getElementById("manualEventCloseBtn")?.addEventListener("click", closeManualEventEditor);
-  document.getElementById("manualEventCancelBtn")?.addEventListener("click", closeManualEventEditor);
-  document.getElementById("manualEventSaveBtn")?.addEventListener("click", saveManualEventEditor);
+  wireManualEventEditorDelegated();
+  document.getElementById("manualEventCloseBtn")?.addEventListener("click", (ev) => { ev.preventDefault(); closeManualEventEditor(); });
+  document.getElementById("manualEventCancelBtn")?.addEventListener("click", (ev) => { ev.preventDefault(); closeManualEventEditor(); });
+  document.getElementById("manualEventSaveBtn")?.addEventListener("click", (ev) => { ev.preventDefault(); saveManualEventEditor(); });
 
   ["manualEventStatusMode", "manualEventStart", "manualEventEnd"].forEach((id) => {
     document.getElementById(id)?.addEventListener("change", updateManualEventComputed);

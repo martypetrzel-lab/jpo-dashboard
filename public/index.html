@@ -984,7 +984,7 @@ Události bez souřadnic</div>
           Stav zásahu
           <select id="manualEventStatusMode">
             <option value="auto">Nechat aktuální / automatiku</option>
-            <option value="open">Probíhá zásah</option>
+            <option value="open">Probíhá zásah / aktivní bez konce</option>
             <option value="closed">Ukončená</option>
           </select>
         </label>
@@ -1015,9 +1015,10 @@ Události bez souřadnic</div>
             Začátek zásahu
             <input id="manualEventStart" type="datetime-local" />
           </label>
-          <label>
+          <label id="manualEventEndLabel">
             Konec zásahu
             <input id="manualEventEnd" type="datetime-local" />
+            <small id="manualEventEndHint" class="manualInputHint">U aktivního zásahu se konec nevyplňuje. Doplní se až po ukončení.</small>
           </label>
         </div>
 
