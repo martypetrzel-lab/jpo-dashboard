@@ -633,7 +633,19 @@
 <section id="eventsTableCard" class="card tableCard v28EventsCard">
       <div class="cardHeader">
         <h2>Poslední výjezdy</h2><div id="tableEditHelp" class="tableEditHelp adminOnly">Admin režim: události upravíš tlačítkem <b>Upravit</b> v posledním sloupci.</div>
-        <div class="hint">Tabulka (scroll na mobilu)</div>
+        <div class="tableHeaderControls">
+          <label class="miniInlineControl">
+            <span>Počet řádků</span>
+            <select id="eventsLimitSelect" class="miniSelect">
+              <option value="10">10</option>
+              <option value="25" selected>25</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+              <option value="200">200</option>
+            </select>
+          </label>
+          <div class="hint">Tabulka (scroll na mobilu)</div>
+        </div>
       </div>
 
       <div class="tableWrap" role="region" aria-label="Tabulka výjezdů" tabindex="0">
@@ -654,6 +666,7 @@
           <tbody id="eventsTbody"></tbody>
         </table>
       </div>
+      <div id="eventsTableCountInfo" class="eventsTableCountInfo"></div>
     </section>
   </main>
 
