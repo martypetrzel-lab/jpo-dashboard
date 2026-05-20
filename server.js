@@ -50,6 +50,7 @@ import {
   recomputeObservedDurationsForClosedEvents,
   listEventsForMajorBackfill,
   updateEventMajorAnalysis,
+  updateEventStatusFromRecheck,
   getMajorEventsSummary,
   getEventForManualEdit,
   updateEventManualMeta,
@@ -2702,20 +2703,81 @@ function parseAlarmLevelFromText(...parts) {
   return { level: null, text: null };
 }
 
+
+function extractStatusLineFromDescription(description = "") {
+  const raw = String(description || "")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&amp;", "&");
+
+  const lines = raw
+    .split(/<br\s*\/?>|\n|\r/g)
+    .map(s => s.trim())
+    .filter(Boolean);
+
+  const line = lines.find(l => /^stav\s*:/i.test(l));
+  return line ? line.replace(/^stav\s*:\s*/i, "").trim() : "";
+}
+
+function normalizeStatusValue(value = "") {
+  return majorNormText(String(value || "")
+    .replace(/^stav\s*:\s*/i, "")
+    .replace(/\s+/g, " ")
+    .trim());
+}
+
+function classifyExplicitStatus({ statusText = "", description = "" } = {}) {
+  const direct = normalizeStatusValue(statusText);
+  const fromDesc = normalizeStatusValue(extractStatusLineFromDescription(description));
+  const candidates = [direct, fromDesc].filter(Boolean);
+
+  for (const s of candidates) {
+    // Hodnotíme jen samostatný statusText nebo řádek "stav:" z RSS.
+    // Nehodnotíme název události, aby např. "Nová Ves" nebyla omylem aktivní.
+    if (
+      s === "nova" ||
+      s === "novy" ||
+      s === "neupresneno" ||
+      s === "neupresnena" ||
+      s === "neupresneny" ||
+      s.includes("probiha zasah") ||
+      s.includes("probihajici zasah") ||
+      s === "probiha"
+    ) {
+      return { isClosed: false, source: "explicit_open", label: "probíhá zásah" };
+    }
+
+    if (
+      s.includes("ukoncena") ||
+      s.includes("ukoncen") ||
+      s.includes("ukonceno") ||
+      s.includes("ukonceny")
+    ) {
+      return { isClosed: true, source: "explicit_closed", label: "ukončená" };
+    }
+  }
+
+  const descNorm = majorNormText(description);
+  if (descNorm.includes("ukonceni")) {
+    return { isClosed: true, source: "explicit_closed", label: "ukončená" };
+  }
+
+  return { isClosed: null, source: "unknown", label: "" };
+}
+
+
 function analyzeStatusFromText({ statusText = "", description = "", title = "" } = {}) {
+  const explicit = classifyExplicitStatus({ statusText, description });
+  if (explicit.source !== "unknown") return explicit;
+
+  // Fallback pro ruční/starší texty bez řádku "stav:".
+  // Aktivní fallback nesmí používat samotné slovo "nová", protože to může být město/část názvu.
   const text = majorNormText(`${statusText} ${description} ${title}`);
 
-  // Aktivní explicitní stav má nejvyšší prioritu.
-  // RSS používá i „stav: nová“ a „stav: neupřesněno“ – to bereme jako událost, kterou FireWatch vidí aktivní.
   if (
     text.includes("probiha zasah") ||
-    text.includes("probíha zasah") ||
     text.includes("probihajici zasah") ||
-    text.includes("probiha") ||
-    text.includes("probíhá") ||
-    text.includes("stav nova") ||
-    text.includes("stav neupresneno") ||
-    text.includes("stav neupřesněno")
+    text.includes("probiha")
   ) {
     return { isClosed: false, source: "explicit_open", label: "probíhá zásah" };
   }
@@ -2929,7 +2991,7 @@ if (Number.isFinite(it.durationMin)) {
         pubDate: it.pubDate || null,
         placeText,
         cityText,
-        statusText: it.statusText || null,
+        statusText: statusAnalysis.label || it.statusText || null,
         eventType,
         descriptionRaw: desc || null,
         startTimeIso: startIso,
@@ -3043,6 +3105,59 @@ function computeManualDurationMin(startIso, endIso, isClosed) {
 
 
 // ---------------- MAJOR EVENTS BACKFILL ----------------
+
+app.post("/api/admin/recheck-event-statuses", requireAdmin, async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(Number(req.body?.limit || req.query?.limit || 5000), 20000));
+    const rows = await listEventsForMajorBackfill(limit);
+
+    let scanned = 0;
+    let changed = 0;
+    let reopened = 0;
+    let closed = 0;
+
+    for (const row of rows) {
+      scanned++;
+      const status = analyzeStatusFromText({
+        statusText: row.status_text || "",
+        description: row.description_raw || "",
+        title: row.title || ""
+      });
+
+      if (status.source === "unknown") continue;
+
+      const shouldClosed = status.isClosed === true;
+      const oldClosed = row.is_closed === true;
+      const oldSource = String(row.status_source || "");
+
+      if (oldClosed !== shouldClosed || oldSource !== status.source || String(row.status_text || "") !== String(status.label || "")) {
+        await updateEventStatusFromRecheck(row.id, {
+          isClosed: shouldClosed,
+          statusSource: status.source,
+          statusText: status.label || null
+        });
+        changed++;
+        if (!shouldClosed) reopened++;
+        if (shouldClosed) closed++;
+      }
+    }
+
+    await insertAudit({
+      userId: req.auth?.user?.id || null,
+      username: req.auth?.user?.username || null,
+      action: "recheck_event_statuses",
+      details: `scanned=${scanned}; changed=${changed}; reopened=${reopened}; closed=${closed}`,
+      ip: getClientIp(req)
+    });
+
+    return res.json({ ok: true, scanned, changed, reopened, closed });
+  } catch (e) {
+    console.error("[recheck-event-statuses]", e);
+    return res.status(500).json({ ok: false, error: "recheck_event_statuses_failed", detail: String(e?.message || e) });
+  }
+});
+
+
 app.post("/api/admin/major-events/backfill", requireAdmin, async (req, res) => {
   try {
     const limit = Math.max(1, Math.min(Number(req.body?.limit || req.query?.limit || 5000), 20000));

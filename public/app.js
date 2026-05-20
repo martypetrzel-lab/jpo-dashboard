@@ -3560,6 +3560,50 @@ function wireEventDetailModal() {
 
 
 
+
+
+async function recheckEventStatusesAdmin() {
+  const status = document.getElementById("adminMajorBackfillStatus") || document.getElementById("adminDurationRecomputeStatus");
+  const btn = document.getElementById("adminRecheckStatusesBtn");
+  const old = btn?.textContent || "Překontrolovat stavy z RSS";
+
+  try {
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "Kontroluji…";
+    }
+    if (status) status.textContent = "Překontrolovávám stavy podle uloženého RSS textu…";
+
+    const r = await fetch("/api/admin/recheck-event-statuses", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ limit: 10000 })
+    });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.detail || j.error || "recheck failed");
+
+    if (status) {
+      status.textContent = `Hotovo: zkontrolováno ${Number(j.scanned || 0)}, opraveno ${Number(j.changed || 0)}, znovu otevřeno ${Number(j.reopened || 0)}.`;
+    }
+    await loadAll(true);
+  } catch (e) {
+    if (status) status.textContent = `Kontrola stavů selhala: ${String(e.message || e)}`;
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = old;
+    }
+  }
+}
+
+function wireStatusRecheckAdminButton() {
+  document.getElementById("adminRecheckStatusesBtn")?.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    recheckEventStatusesAdmin();
+  });
+}
+
 async function recomputeObservedDurationsAdmin() {
   const status = document.getElementById("adminDurationRecomputeStatus");
   const btn = document.getElementById("adminRecomputeDurationsBtn");
@@ -3909,6 +3953,7 @@ wireCommandOverviewNav();
 wireManualEventEditor();
 wireManualCreateAndDiagnostics();
 wireDurationAdminButtons();
+wireStatusRecheckAdminButton();
 wireEventDetailModal();
 wireManualQuickEditList();
 wireRegionalWeather();

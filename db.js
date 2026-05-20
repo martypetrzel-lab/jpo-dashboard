@@ -671,6 +671,37 @@ export async function repairClosedEventsMissingEndTime({ limit = 500 } = {}) {
 
 
 
+
+export async function updateEventStatusFromRecheck(id, { isClosed = null, statusSource = null, statusText = null } = {}) {
+  await pool.query(
+    `
+    UPDATE events
+    SET
+      is_closed = CASE
+        WHEN $2::boolean IS NULL THEN is_closed
+        ELSE $2::boolean
+      END,
+      status_source = COALESCE($3, status_source),
+      status_text = COALESCE($4, status_text),
+      end_time_iso = CASE
+        WHEN $2::boolean = FALSE THEN NULL
+        ELSE end_time_iso
+      END,
+      duration_min = CASE
+        WHEN $2::boolean = FALSE THEN NULL
+        ELSE duration_min
+      END,
+      duration_source = CASE
+        WHEN $2::boolean = FALSE THEN NULL
+        ELSE duration_source
+      END
+    WHERE id = $1
+    `,
+    [id, isClosed, statusSource, statusText]
+  );
+}
+
+
 export async function insertManualEvent(ev) {
   const id = ev.id || `MANUAL_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
   const dur = clampDuration(ev.durationMin);
