@@ -1643,9 +1643,9 @@ export async function getEventsForPeriod(startIso, endExclusiveIso) {
       lat, lon,
       first_seen_at, last_seen_at, created_at
     FROM events
-    WHERE COALESCE((CASE WHEN NULLIF(pub_date, '') ~ '^\d{4}-\d{2}-\d{2}' THEN NULLIF(pub_date, '')::timestamptz ELSE NULL END), created_at) >= $1::date
-      AND COALESCE((CASE WHEN NULLIF(pub_date, '') ~ '^\d{4}-\d{2}-\d{2}' THEN NULLIF(pub_date, '')::timestamptz ELSE NULL END), created_at) < $2::date
-    ORDER BY COALESCE((CASE WHEN NULLIF(pub_date, '') ~ '^\d{4}-\d{2}-\d{2}' THEN NULLIF(pub_date, '')::timestamptz ELSE NULL END), created_at) DESC
+    WHERE (${eventTimeSql()} AT TIME ZONE 'Europe/Prague')::date >= $1::date
+      AND (${eventTimeSql()} AT TIME ZONE 'Europe/Prague')::date < $2::date
+    ORDER BY ${eventTimeSql()} DESC
     `,
     [startIso, endExclusiveIso]
   );

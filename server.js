@@ -1045,7 +1045,7 @@ function reportJson(row) {
 }
 
 function reportKeysToEnsure(date = new Date()) {
-  const today = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const today = pragueTodayUtcMidnight(date);
 
   const yesterday = addDays(today, -1);
   const lastWeekDate = addDays(startOfIsoWeek(today), -1);
@@ -1079,6 +1079,12 @@ async function runArchivedReportsAutomation(reason = "interval") {
   }
 }
 
+
+
+function pragueTodayUtcMidnight(date = new Date()) {
+  const key = pragueDateKey(date);
+  return new Date(`${key}T00:00:00.000Z`);
+}
 
 function formatReportDateCs(value) {
   const d = new Date(value);
@@ -1341,10 +1347,43 @@ function dateOnlyIso(value) {
   return new Date(value).toISOString().slice(0, 10);
 }
 
-function hourFromEvent(ev) {
-  const d = new Date(ev.pub_date || ev.created_at || ev.first_seen_at || Date.now());
+function eventTimeValue(ev, fallback = Date.now()) {
+  return ev?.pub_date || ev?.start_time_iso || ev?.created_at || ev?.first_seen_at || fallback;
+}
+
+function pragueDateKey(value) {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "";
+  const parts = new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "Europe/Prague",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(d);
+  const y = parts.find(p => p.type === "year")?.value;
+  const m = parts.find(p => p.type === "month")?.value;
+  const day = parts.find(p => p.type === "day")?.value;
+  return y && m && day ? `${y}-${m}-${day}` : d.toISOString().slice(0, 10);
+}
+
+function pragueHour(value) {
+  const d = new Date(value);
   if (Number.isNaN(d.getTime())) return 0;
-  return d.getHours();
+  const h = new Intl.DateTimeFormat("cs-CZ", {
+    timeZone: "Europe/Prague",
+    hour: "2-digit",
+    hour12: false
+  }).format(d);
+  const n = Number(String(h).replace(/\D/g, ""));
+  return Number.isFinite(n) ? Math.max(0, Math.min(23, n)) : 0;
+}
+
+function eventDayKeyForStats(ev) {
+  return pragueDateKey(eventTimeValue(ev));
+}
+
+function hourFromEvent(ev) {
+  return pragueHour(eventTimeValue(ev));
 }
 
 function typeNameForStats(ev) {
@@ -1389,7 +1428,7 @@ function buildHourStats(items) {
 }
 
 function buildHeatmap(items, start, end) {
-  const dayMap = countBy(items, ev => dateOnlyIso(ev.pub_date || ev.created_at || ev.first_seen_at || start));
+  const dayMap = countBy(items, ev => eventDayKeyForStats(ev) || dateOnlyIso(start));
   const out = [];
   let d = new Date(start);
   while (d < end) {
@@ -1419,7 +1458,7 @@ function buildStatsProPayload({ preset, currentRows, previousRows, range }) {
   const hourStats = buildHourStats(currentRows);
   const busiestHour = [...hourStats].sort((a, b) => b.count - a.count)[0] || { hour: 0, count: 0 };
 
-  const busiestDays = mapToSortedList(countBy(currentRows, ev => dateOnlyIso(ev.pub_date || ev.created_at || ev.first_seen_at)), 10)
+  const busiestDays = mapToSortedList(countBy(currentRows, ev => eventDayKeyForStats(ev)), 10)
     .map(x => ({ day: x.name, count: x.count }));
 
   return {
