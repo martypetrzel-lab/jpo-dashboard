@@ -468,7 +468,7 @@ export async function upsertEvent(ev) {
       source_kind, source_note,
       first_seen_at, last_seen_at
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,CASE WHEN $12 IS NOT NULL AND $11 IS NOT NULL THEN 'explicit' ELSE NULL END,$13,$14,$15,$16,$17,$18,$20,$21, NOW(), NOW())
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,CASE WHEN $12::integer IS NOT NULL AND NULLIF($11::text,'' ) IS NOT NULL THEN 'explicit' ELSE NULL END,$13,$14,$15,$16,$17,$18,$20,$21, NOW(), NOW())
     ON CONFLICT (id) DO UPDATE SET
       title = EXCLUDED.title,
       link = EXCLUDED.link,
@@ -681,8 +681,8 @@ export async function updateEventStatusFromRecheck(id, { isClosed = null, status
         WHEN $2::boolean IS NULL THEN is_closed
         ELSE $2::boolean
       END,
-      status_source = COALESCE($3, status_source),
-      status_text = COALESCE($4, status_text),
+      status_source = COALESCE($3::text, status_source),
+      status_text = COALESCE($4::text, status_text),
       end_time_iso = CASE
         WHEN $2::boolean = FALSE THEN NULL
         ELSE end_time_iso
