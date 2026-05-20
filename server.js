@@ -46,6 +46,7 @@ import {
   autoCloseStaleOpenEvents,
   repairClosedEventsMissingEndTime,
   clearEstimatedDurationsForAlreadyClosedEvents,
+  clearObservedDurations,
   recomputeObservedDurationsForClosedEvents,
   listEventsForMajorBackfill,
   updateEventMajorAnalysis,
@@ -261,6 +262,37 @@ function classifyType(title) {
   return "other";
 }
 
+
+function pragueLocalToUtcIso(year, monthIndex, day, hour, minute) {
+  // Převod lokálního času Europe/Prague na UTC bez externí knihovny.
+  // Vezmeme hrubý UTC čas a přes Intl zjistíme, o kolik se liší lokální Praha.
+  const approx = new Date(Date.UTC(year, monthIndex, day, hour, minute, 0));
+  const fmt = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/Prague",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  });
+
+  const parts = Object.fromEntries(fmt.formatToParts(approx).map(p => [p.type, p.value]));
+  const seenAsUtc = Date.UTC(
+    Number(parts.year),
+    Number(parts.month) - 1,
+    Number(parts.day),
+    Number(parts.hour),
+    Number(parts.minute),
+    Number(parts.second || 0)
+  );
+
+  const wantedAsUtc = Date.UTC(year, monthIndex, day, hour, minute, 0);
+  const offsetMs = seenAsUtc - approx.getTime();
+  return new Date(wantedAsUtc - offsetMs).toISOString();
+}
+
 // popis v RSS bývá: "stav: ...<br>ukončení: ...<br>Město<br>okres ..."
 function parseTimesFromDescription(descRaw) {
   const desc = String(descRaw || "");
@@ -288,8 +320,7 @@ function parseTimesFromDescription(descRaw) {
     };
     const mo = months[monthName];
     if (Number.isFinite(mo)) {
-      const d = new Date(Date.UTC(year, mo, day, hh - 1, mm, 0)); // Prague ~ UTC+1/2 (hrubé, pro pořadí stačí)
-      out.endIso = d.toISOString();
+      out.endIso = pragueLocalToUtcIso(year, mo, day, hh, mm);
     }
   }
 
@@ -309,8 +340,7 @@ function parseTimesFromDescription(descRaw) {
     };
     const mo = months[monthName];
     if (Number.isFinite(mo)) {
-      const d = new Date(Date.UTC(year, mo, day, hh - 1, mm, 0));
-      out.startIso = d.toISOString();
+      out.startIso = pragueLocalToUtcIso(year, mo, day, hh, mm);
     }
   }
 
@@ -2676,12 +2706,16 @@ function analyzeStatusFromText({ statusText = "", description = "", title = "" }
   const text = majorNormText(`${statusText} ${description} ${title}`);
 
   // Aktivní explicitní stav má nejvyšší prioritu.
+  // RSS používá i „stav: nová“ a „stav: neupřesněno“ – to bereme jako událost, kterou FireWatch vidí aktivní.
   if (
     text.includes("probiha zasah") ||
     text.includes("probíha zasah") ||
     text.includes("probihajici zasah") ||
     text.includes("probiha") ||
-    text.includes("probíhá")
+    text.includes("probíhá") ||
+    text.includes("stav nova") ||
+    text.includes("stav neupresneno") ||
+    text.includes("stav neupřesněno")
   ) {
     return { isClosed: false, source: "explicit_open", label: "probíhá zásah" };
   }
@@ -2846,23 +2880,33 @@ let endIso =
   prev?.end_time_iso ||
   null;
 
-// When we see the event transition to closed for the first time and we don't have end time,
-// set end time to "now" (we only know it ended sometime before we noticed – best available).
-const closingNow = isClosed && (!prev || !prev.is_closed);
-if (closingNow && !endIso) {
+// Délku automaticky počítáme jen tehdy, když FireWatch z databáze ví,
+// že událost předtím opravdu viděl jako aktivní/otevřenou.
+// Pokud událost přišla do DB už rovnou ukončená, délku neodhadujeme.
+const wasKnownOpen = !!(prev && prev.is_closed === false && prev.status_source === "explicit_open");
+const closingKnownOpen = isClosed && wasKnownOpen;
+
+if (closingKnownOpen && !endIso) {
   endIso = new Date().toISOString();
 }
 
 let durationMin = null;
 
-// If ESP provided duration explicitly, trust it (within sanity bounds).
+// Pokud ESP někdy pošle délku explicitně, přijmeme ji.
 if (Number.isFinite(it.durationMin)) {
   const candidate = Math.round(it.durationMin);
   durationMin = (candidate > 0 && candidate <= MAX_DURATION_MINUTES) ? candidate : null;
-} else if (isClosed && endIso) {
-  // Compute only for "new" events (cutoff to avoid insane historical durations)
-  const cutoffIso = await getDurationCutoffIso();
-  durationMin = await computeDurationMin(it.id, startIso, endIso, prev?.first_seen_at || null, cutoffIso);
+} else if (closingKnownOpen) {
+  const startObserved = prev?.first_seen_at || prev?.created_at || null;
+  const endObserved = endIso || new Date().toISOString();
+
+  const s = startObserved ? new Date(startObserved).getTime() : NaN;
+  const e = new Date(endObserved).getTime();
+
+  if (Number.isFinite(s) && Number.isFinite(e) && e > s) {
+    const candidate = Math.round((e - s) / 60000);
+    durationMin = (candidate > 0 && candidate <= MAX_DURATION_MINUTES) ? candidate : null;
+  }
 }
 
       const placeText = it.placeText || null;
@@ -3128,6 +3172,29 @@ app.post("/api/admin/repair-closed-times", requireAdmin, async (req, res) => {
 });
 
 
+
+
+
+app.post("/api/admin/clear-observed-durations", requireAdmin, async (req, res) => {
+  try {
+    const rows = await clearObservedDurations({
+      limit: Number(req.body?.limit || req.query?.limit || 10000)
+    });
+
+    await insertAudit({
+      userId: req.auth?.user?.id || null,
+      username: req.auth?.user?.username || null,
+      action: "clear_observed_durations",
+      details: `cleared=${rows.length}`,
+      ip: getClientIp(req)
+    });
+
+    return res.json({ ok: true, cleared: rows.length, rows });
+  } catch (e) {
+    console.error("[clear-observed-durations]", e);
+    return res.status(500).json({ ok: false, error: "clear_observed_durations_failed", detail: String(e?.message || e) });
+  }
+});
 
 
 app.post("/api/admin/recompute-observed-durations", requireAdmin, async (req, res) => {

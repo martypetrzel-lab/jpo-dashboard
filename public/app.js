@@ -3588,7 +3588,7 @@ async function recomputeObservedDurationsAdmin() {
     const j = await r.json();
     if (!r.ok || !j.ok) throw new Error(j.detail || j.error || "recompute failed");
 
-    if (status) status.textContent = `Hotovo: přepočítáno ${Number(j.recomputed || 0)} událostí.`;
+    if (status) status.textContent = `Hotovo: zpětný bezpečný přepočet ${Number(j.recomputed || 0)} událostí. Nové délky se budou počítat při přechodu aktivní → ukončená.`;
     await loadAll(true);
   } catch (e) {
     if (status) status.textContent = `Přepočet se nepodařil: ${String(e.message || e)}`;
@@ -3610,9 +3610,9 @@ async function clearBogusDurationsAdmin() {
       btn.disabled = true;
       btn.textContent = "Čistím…";
     }
-    if (status) status.textContent = "Čistím starší podezřelé krátké délky…";
+    if (status) status.textContent = "Mažu chybně dopočítané sledované délky z předchozí verze…";
 
-    const r = await fetch("/api/admin/clear-bogus-durations", {
+    const r = await fetch("/api/admin/clear-observed-durations", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",

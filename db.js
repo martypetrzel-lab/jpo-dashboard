@@ -496,6 +496,7 @@ export async function upsertEvent(ev) {
         WHEN events.duration_min IS NOT NULL AND events.duration_min > $19 THEN NULL
         WHEN (EXCLUDED.status_source = 'explicit_closed' OR EXCLUDED.is_closed = TRUE)
              AND events.is_closed = FALSE
+             AND events.status_source = 'explicit_open'
              AND events.duration_min IS NULL THEN
           (
             CASE
@@ -512,7 +513,7 @@ export async function upsertEvent(ev) {
       duration_source = CASE
         WHEN EXCLUDED.status_source = 'explicit_open' THEN NULL
         WHEN EXCLUDED.duration_min IS NOT NULL AND NULLIF(EXCLUDED.end_time_iso,'' ) IS NOT NULL THEN 'manual'
-        WHEN (EXCLUDED.status_source = 'explicit_closed' OR EXCLUDED.is_closed = TRUE) AND events.is_closed = FALSE AND events.duration_min IS NULL THEN 'observed_first_seen_to_close_update'
+        WHEN (EXCLUDED.status_source = 'explicit_closed' OR EXCLUDED.is_closed = TRUE) AND events.is_closed = FALSE AND events.status_source = 'explicit_open' AND events.duration_min IS NULL THEN 'observed_first_seen_to_close_update'
         ELSE events.duration_source
       END,
 
@@ -891,42 +892,35 @@ export async function clearEstimatedDurationsForAlreadyClosedEvents({ maxMinutes
 
 
 export async function recomputeObservedDurationsForClosedEvents({ limit = 1000 } = {}) {
-  const lim = Math.max(1, Math.min(Number(limit || 1000), 10000));
+  // Bez historického záznamu, že událost byla skutečně viděná jako aktivní,
+  // není bezpečné zpětně dopočítávat délku. Nové události se počítají při přechodu aktivní -> ukončená.
+  return [];
+}
+
+
+
+export async function clearObservedDurations({ limit = 10000 } = {}) {
+  const lim = Math.max(1, Math.min(Number(limit || 10000), 50000));
   const r = await pool.query(
     `
     WITH candidates AS (
-      SELECT
-        id,
-        COALESCE(first_seen_at, created_at) AS observed_start,
-        COALESCE(NULLIF(end_time_iso,'' )::timestamptz, last_seen_at, updated.last_seen_at, NOW()) AS observed_end
-      FROM events updated
-      WHERE is_closed = TRUE
-        AND first_seen_at IS NOT NULL
-        AND (
-          duration_min IS NULL
-          OR COALESCE(duration_source, '') = ''
-          OR COALESCE(duration_source, '') = 'estimated_close_seen'
-        )
+      SELECT id
+      FROM events
+      WHERE duration_source IN ('observed_first_seen_to_close_update', 'estimated_close_seen')
       ORDER BY last_seen_at DESC
       LIMIT $1
     )
     UPDATE events e
-    SET
-      duration_min = CASE
-        WHEN ROUND(EXTRACT(EPOCH FROM (c.observed_end - c.observed_start)) / 60.0)::int <= 0 THEN NULL
-        WHEN ROUND(EXTRACT(EPOCH FROM (c.observed_end - c.observed_start)) / 60.0)::int > $2 THEN NULL
-        ELSE ROUND(EXTRACT(EPOCH FROM (c.observed_end - c.observed_start)) / 60.0)::int
-      END,
-      duration_source = 'observed_first_seen_to_close_update'
+    SET duration_min = NULL,
+        duration_source = NULL
     FROM candidates c
     WHERE e.id = c.id
-    RETURNING e.id, e.title, e.duration_min, e.duration_source
+    RETURNING e.id, e.title
     `,
-    [lim, MAX_DURATION_MINUTES]
+    [lim]
   );
   return r.rows || [];
 }
-
 
 export async function getCachedGeocode(placeText) {
   const res = await pool.query(
