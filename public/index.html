@@ -964,6 +964,20 @@
           <div id="adminManualQuickList" class="manualQuickList adminManualQuickList"></div>
         </section>
 
+        <section class="adminSection durationRecomputeAdminBox">
+          <div class="sectionHead">
+            <div>
+              <h3>Přepočet délky zásahů</h3>
+              <p>Přepočítá uložené délky podle pravidla: první zjištění události → změna na ukončeno.</p>
+            </div>
+          </div>
+          <div class="majorEventsControls">
+            <button id="adminRecomputeDurationsBtn" class="btn primary" type="button">Přepočítat sledované délky</button>
+            <button id="adminClearBogusDurationsBtn" class="btn" type="button">Vyčistit krátké falešné délky</button>
+            <span id="adminDurationRecomputeStatus" class="hint"></span>
+          </div>
+        </section>
+
 
 Události bez souřadnic</div>
           <div class="hint">Doplnění souřadnic ručně nebo kliknutím do mapy. Projeví se všude (mapa, simulace, export, statistiky).</div>

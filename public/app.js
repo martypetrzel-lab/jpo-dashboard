@@ -3565,6 +3565,86 @@ function wireEventDetailModal() {
 
 
 
+
+
+async function recomputeObservedDurationsAdmin() {
+  const status = document.getElementById("adminDurationRecomputeStatus");
+  const btn = document.getElementById("adminRecomputeDurationsBtn");
+  const old = btn?.textContent || "Přepočítat sledované délky";
+
+  try {
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "Přepočítávám…";
+    }
+    if (status) status.textContent = "Přepočítávám sledované délky zásahů…";
+
+    const r = await fetch("/api/admin/recompute-observed-durations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ limit: 5000 })
+    });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.detail || j.error || "recompute failed");
+
+    if (status) status.textContent = `Hotovo: přepočítáno ${Number(j.recomputed || 0)} událostí.`;
+    await loadAll(true);
+  } catch (e) {
+    if (status) status.textContent = `Přepočet se nepodařil: ${String(e.message || e)}`;
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = old;
+    }
+  }
+}
+
+async function clearBogusDurationsAdmin() {
+  const status = document.getElementById("adminDurationRecomputeStatus");
+  const btn = document.getElementById("adminClearBogusDurationsBtn");
+  const old = btn?.textContent || "Vyčistit krátké falešné délky";
+
+  try {
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "Čistím…";
+    }
+    if (status) status.textContent = "Čistím starší podezřelé krátké délky…";
+
+    const r = await fetch("/api/admin/clear-bogus-durations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ maxMinutes: 20 })
+    });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.detail || j.error || "clear failed");
+
+    if (status) status.textContent = `Hotovo: vyčištěno ${Number(j.cleared || 0)} událostí.`;
+    await loadAll(true);
+  } catch (e) {
+    if (status) status.textContent = `Čištění se nepodařilo: ${String(e.message || e)}`;
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = old;
+    }
+  }
+}
+
+function wireDurationAdminButtons() {
+  document.getElementById("adminRecomputeDurationsBtn")?.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    recomputeObservedDurationsAdmin();
+  });
+
+  document.getElementById("adminClearBogusDurationsBtn")?.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    clearBogusDurationsAdmin();
+  });
+}
+
 // ==============================
 // FireWatchCZ – ruční doplnění výjezdu + diagnostika příjmu
 // ==============================
@@ -3835,6 +3915,7 @@ wireProfessionalLayout();
 wireCommandOverviewNav();
 wireManualEventEditor();
 wireManualCreateAndDiagnostics();
+wireDurationAdminButtons();
 wireEventDetailModal();
 wireManualQuickEditList();
 wireRegionalWeather();
