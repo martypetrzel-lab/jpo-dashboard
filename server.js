@@ -45,6 +45,8 @@ import {
   getLongestCutoffIso,
   autoCloseStaleOpenEvents,
   repairClosedEventsMissingEndTime,
+  clearEstimatedDurationsForAlreadyClosedEvents,
+  recomputeObservedDurationsForClosedEvents,
   listEventsForMajorBackfill,
   updateEventMajorAnalysis,
   getMajorEventsSummary,
@@ -3122,6 +3124,52 @@ app.post("/api/admin/repair-closed-times", requireAdmin, async (req, res) => {
   } catch (e) {
     console.error("[repair-closed-times]", e);
     return res.status(500).json({ ok: false, error: "repair_closed_times_failed", detail: String(e?.message || e) });
+  }
+});
+
+
+
+
+app.post("/api/admin/recompute-observed-durations", requireAdmin, async (req, res) => {
+  try {
+    const rows = await recomputeObservedDurationsForClosedEvents({
+      limit: Number(req.body?.limit || req.query?.limit || 1000)
+    });
+
+    await insertAudit({
+      userId: req.auth?.user?.id || null,
+      username: req.auth?.user?.username || null,
+      action: "recompute_observed_durations",
+      details: `recomputed=${rows.length}`,
+      ip: getClientIp(req)
+    });
+
+    return res.json({ ok: true, recomputed: rows.length, rows });
+  } catch (e) {
+    console.error("[recompute-observed-durations]", e);
+    return res.status(500).json({ ok: false, error: "recompute_observed_durations_failed", detail: String(e?.message || e) });
+  }
+});
+
+
+app.post("/api/admin/clear-bogus-durations", requireAdmin, async (req, res) => {
+  try {
+    const rows = await clearEstimatedDurationsForAlreadyClosedEvents({
+      maxMinutes: Number(req.body?.maxMinutes || req.query?.maxMinutes || 20)
+    });
+
+    await insertAudit({
+      userId: req.auth?.user?.id || null,
+      username: req.auth?.user?.username || null,
+      action: "clear_bogus_durations",
+      details: `cleared=${rows.length}`,
+      ip: getClientIp(req)
+    });
+
+    return res.json({ ok: true, cleared: rows.length, rows });
+  } catch (e) {
+    console.error("[clear-bogus-durations]", e);
+    return res.status(500).json({ ok: false, error: "clear_bogus_durations_failed", detail: String(e?.message || e) });
   }
 });
 

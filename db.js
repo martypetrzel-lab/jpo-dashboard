@@ -41,6 +41,7 @@ export async function initDb() {
       start_time_iso TEXT,
       end_time_iso TEXT,
       duration_min INTEGER,
+      duration_source TEXT,
       is_closed BOOLEAN NOT NULL DEFAULT FALSE,
 
       alarm_level INTEGER,
@@ -221,6 +222,7 @@ export async function initDb() {
     ["events", "start_time_iso", "TEXT"],
     ["events", "end_time_iso", "TEXT"],
     ["events", "duration_min", "INTEGER"],
+    ["events", "duration_source", "TEXT"],
     ["events", "is_closed", "BOOLEAN"],
     ["events", "first_seen_at", "TIMESTAMPTZ"],
     ["events", "last_seen_at", "TIMESTAMPTZ"],
@@ -435,12 +437,16 @@ export async function getEventMeta(id) {
 
 export async function upsertEvent(ev) {
   const isIncomingClosed = ev.statusSource === "explicit_closed" || ev.isClosed === true;
-  const normalizedEndTimeIso = isIncomingClosed
-    ? (ev.endTimeIso || new Date().toISOString())
-    : (ev.endTimeIso || null);
+
+  // DŮLEŽITÉ:
+  // Pokud RSS pošle událost už rovnou jako ukončenou a nedodá skutečný čas konce,
+  // nesmíme si konec vymýšlet podle aktuálního času. Vznikaly tím falešné délky 10–14 minut.
+  // Konec doplníme jen tehdy, když ho zdroj/ruční editace opravdu pošle.
+  const normalizedEndTimeIso = ev.endTimeIso || null;
 
   let normalizedDurationMin = clampDuration(ev.durationMin);
-  if (isIncomingClosed && normalizedDurationMin == null) {
+  const hasRealEndTime = !!normalizedEndTimeIso;
+  if (isIncomingClosed && hasRealEndTime && normalizedDurationMin == null) {
     const startRaw = ev.startTimeIso || ev.pubDate || null;
     const start = startRaw ? new Date(startRaw) : null;
     const end = normalizedEndTimeIso ? new Date(normalizedEndTimeIso) : null;
@@ -457,12 +463,12 @@ export async function upsertEvent(ev) {
       id, title, link, pub_date,
       place_text, city_text, status_text, event_type,
       description_raw,
-      start_time_iso, end_time_iso, duration_min, is_closed,
+      start_time_iso, end_time_iso, duration_min, duration_source, is_closed,
       alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
       source_kind, source_note,
       first_seen_at, last_seen_at
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$20,$21, NOW(), NOW())
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,CASE WHEN $12 IS NOT NULL AND $11 IS NOT NULL THEN 'explicit' ELSE NULL END,$13,$14,$15,$16,$17,$18,$20,$21, NOW(), NOW())
     ON CONFLICT (id) DO UPDATE SET
       title = EXCLUDED.title,
       link = EXCLUDED.link,
@@ -478,67 +484,36 @@ export async function upsertEvent(ev) {
       start_time_iso = COALESCE(EXCLUDED.start_time_iso, events.start_time_iso),
       end_time_iso   = CASE
         WHEN EXCLUDED.status_source = 'explicit_open' THEN NULL
-        WHEN EXCLUDED.status_source = 'explicit_closed' OR EXCLUDED.is_closed = TRUE THEN
-          COALESCE(
-            EXCLUDED.end_time_iso,
-            events.end_time_iso,
-            to_char((NOW() AT TIME ZONE 'UTC'), 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
-          )
-        ELSE COALESCE(EXCLUDED.end_time_iso, events.end_time_iso)
+        WHEN NULLIF(EXCLUDED.end_time_iso,'' ) IS NOT NULL THEN EXCLUDED.end_time_iso
+        WHEN (EXCLUDED.status_source = 'explicit_closed' OR EXCLUDED.is_closed = TRUE) AND events.is_closed = FALSE THEN
+          to_char((NOW() AT TIME ZONE 'UTC'), 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+        ELSE events.end_time_iso
       END,
 
       duration_min = CASE
         WHEN EXCLUDED.status_source = 'explicit_open' THEN NULL
         WHEN EXCLUDED.duration_min IS NOT NULL THEN EXCLUDED.duration_min
         WHEN events.duration_min IS NOT NULL AND events.duration_min > $19 THEN NULL
-        WHEN (EXCLUDED.status_source = 'explicit_closed' OR EXCLUDED.is_closed = TRUE) AND events.duration_min IS NULL THEN
+        WHEN (EXCLUDED.status_source = 'explicit_closed' OR EXCLUDED.is_closed = TRUE)
+             AND events.is_closed = FALSE
+             AND events.duration_min IS NULL THEN
           (
             CASE
-              WHEN ROUND(EXTRACT(EPOCH FROM (
-                COALESCE(
-                  NULLIF(EXCLUDED.end_time_iso,'' )::timestamptz,
-                  NULLIF(events.end_time_iso,'' )::timestamptz,
-                  NOW()
-                )
-                -
-                COALESCE(
-                  NULLIF(EXCLUDED.start_time_iso,'' )::timestamptz,
-                  NULLIF(events.start_time_iso,'' )::timestamptz,
-                  events.first_seen_at,
-                  events.created_at
-                )
-              )) / 60.0)::int <= 0 THEN NULL
-              WHEN ROUND(EXTRACT(EPOCH FROM (
-                COALESCE(
-                  NULLIF(EXCLUDED.end_time_iso,'' )::timestamptz,
-                  NULLIF(events.end_time_iso,'' )::timestamptz,
-                  NOW()
-                )
-                -
-                COALESCE(
-                  NULLIF(EXCLUDED.start_time_iso,'' )::timestamptz,
-                  NULLIF(events.start_time_iso,'' )::timestamptz,
-                  events.first_seen_at,
-                  events.created_at
-                )
-              )) / 60.0)::int > $19 THEN NULL
-              ELSE ROUND(EXTRACT(EPOCH FROM (
-                COALESCE(
-                  NULLIF(EXCLUDED.end_time_iso,'' )::timestamptz,
-                  NULLIF(events.end_time_iso,'' )::timestamptz,
-                  NOW()
-                )
-                -
-                COALESCE(
-                  NULLIF(EXCLUDED.start_time_iso,'' )::timestamptz,
-                  NULLIF(events.start_time_iso,'' )::timestamptz,
-                  events.first_seen_at,
-                  events.created_at
-                )
-              )) / 60.0)::int
+              -- FireWatch měří sledovanou délku:
+              -- první chvíle, kdy jsme událost viděli v DB -> chvíle, kdy přišel update "ukončená".
+              WHEN ROUND(EXTRACT(EPOCH FROM (NOW() - COALESCE(events.first_seen_at, events.created_at))) / 60.0)::int <= 0 THEN NULL
+              WHEN ROUND(EXTRACT(EPOCH FROM (NOW() - COALESCE(events.first_seen_at, events.created_at))) / 60.0)::int > $19 THEN NULL
+              ELSE ROUND(EXTRACT(EPOCH FROM (NOW() - COALESCE(events.first_seen_at, events.created_at))) / 60.0)::int
             END
           )
         ELSE events.duration_min
+      END,
+
+      duration_source = CASE
+        WHEN EXCLUDED.status_source = 'explicit_open' THEN NULL
+        WHEN EXCLUDED.duration_min IS NOT NULL AND NULLIF(EXCLUDED.end_time_iso,'' ) IS NOT NULL THEN 'manual'
+        WHEN (EXCLUDED.status_source = 'explicit_closed' OR EXCLUDED.is_closed = TRUE) AND events.is_closed = FALSE AND events.duration_min IS NULL THEN 'observed_first_seen_to_close_update'
+        ELSE events.duration_source
       END,
 
       is_closed = CASE
@@ -635,6 +610,7 @@ export async function autoCloseStaleOpenEvents({ staleMinutes = 20, limit = 200 
           ELSE ROUND(EXTRACT(EPOCH FROM (c.last_seen_at - c.start_ts)) / 60.0)::int
         END
       ),
+      duration_source = 'estimated_stale_close',
       status_text = CASE
         WHEN e.status_text IS NULL OR LOWER(e.status_text) LIKE '%prob%' OR LOWER(e.status_text) LIKE '%aktiv%' THEN 'ukončená'
         ELSE e.status_text
@@ -704,7 +680,7 @@ export async function insertManualEvent(ev) {
       id, title, link, pub_date,
       place_text, city_text, status_text, event_type,
       description_raw,
-      start_time_iso, end_time_iso, duration_min, is_closed,
+      start_time_iso, end_time_iso, duration_min, duration_source, is_closed,
       alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
       source_kind, source_note,
       lat, lon, geo_source, geo_note, geo_updated_at,
@@ -873,7 +849,7 @@ export async function searchEventsAdmin({ q = "", limit = 50 } = {}) {
     `
     SELECT
       id, title, pub_date, city_text, place_text, status_text, event_type,
-      start_time_iso, end_time_iso, duration_min, is_closed,
+      start_time_iso, end_time_iso, duration_min, duration_source, is_closed,
       alarm_level, alarm_level_text, is_major_event, major_reason,
       source_kind, source_note, lat, lon, created_at, last_seen_at
     FROM events
@@ -884,6 +860,70 @@ export async function searchEventsAdmin({ q = "", limit = 50 } = {}) {
     params
   );
 
+  return r.rows || [];
+}
+
+
+
+export async function clearEstimatedDurationsForAlreadyClosedEvents({ maxMinutes = 20 } = {}) {
+  const max = Math.max(1, Math.min(Number(maxMinutes || 20), 240));
+  const r = await pool.query(
+    `
+    UPDATE events
+    SET
+      duration_min = NULL,
+      duration_source = NULL,
+      end_time_iso = CASE
+        WHEN duration_source IS NULL OR duration_source = '' THEN NULL
+        ELSE end_time_iso
+      END
+    WHERE is_closed = TRUE
+      AND COALESCE(duration_source, '') NOT IN ('explicit', 'manual', 'estimated_stale_close', 'estimated_close_seen')
+      AND duration_min IS NOT NULL
+      AND duration_min <= $1
+    RETURNING id, title, duration_min
+    `,
+    [max]
+  );
+  return r.rows || [];
+}
+
+
+
+export async function recomputeObservedDurationsForClosedEvents({ limit = 1000 } = {}) {
+  const lim = Math.max(1, Math.min(Number(limit || 1000), 10000));
+  const r = await pool.query(
+    `
+    WITH candidates AS (
+      SELECT
+        id,
+        COALESCE(first_seen_at, created_at) AS observed_start,
+        COALESCE(NULLIF(end_time_iso,'' )::timestamptz, last_seen_at, updated.last_seen_at, NOW()) AS observed_end
+      FROM events updated
+      WHERE is_closed = TRUE
+        AND first_seen_at IS NOT NULL
+        AND (
+          duration_min IS NULL
+          OR COALESCE(duration_source, '') = ''
+          OR COALESCE(duration_source, '') = 'estimated_close_seen'
+        )
+      ORDER BY last_seen_at DESC
+      LIMIT $1
+    )
+    UPDATE events e
+    SET
+      duration_min = CASE
+        WHEN ROUND(EXTRACT(EPOCH FROM (c.observed_end - c.observed_start)) / 60.0)::int <= 0 THEN NULL
+        WHEN ROUND(EXTRACT(EPOCH FROM (c.observed_end - c.observed_start)) / 60.0)::int > $2 THEN NULL
+        ELSE ROUND(EXTRACT(EPOCH FROM (c.observed_end - c.observed_start)) / 60.0)::int
+      END,
+      duration_source = 'observed_first_seen_to_close_update'
+    FROM candidates c
+    WHERE e.id = c.id
+    RETURNING e.id, e.title, e.duration_min, e.duration_source
+    `,
+    [lim, MAX_DURATION_MINUTES]
+  );
   return r.rows || [];
 }
 
@@ -1030,7 +1070,7 @@ export async function getEventsFiltered(filters, limit = 400) {
       place_text, city_text,
       status_text, event_type,
       description_raw,
-      start_time_iso, end_time_iso, duration_min, is_closed,
+      start_time_iso, end_time_iso, duration_min, duration_source, is_closed,
       alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
       manual_detail_text, manual_detail_source, manual_detail_updated_at,
       (
@@ -1621,7 +1661,7 @@ export async function getEventsForPeriod(startIso, endExclusiveIso) {
       place_text, city_text,
       status_text, event_type,
       description_raw,
-      start_time_iso, end_time_iso, duration_min, is_closed,
+      start_time_iso, end_time_iso, duration_min, duration_source, is_closed,
       alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
       manual_detail_text, manual_detail_source, manual_detail_updated_at,
       (
@@ -1657,7 +1697,7 @@ export async function getEventsForPeriod(startIso, endExclusiveIso) {
 export async function getEventById(id) {
   const r = await pool.query(
     `SELECT id, title, link, pub_date, place_text, city_text, status_text, event_type,
-            description_raw, start_time_iso, end_time_iso, duration_min, is_closed,
+            description_raw, start_time_iso, end_time_iso, duration_min, duration_source, is_closed,
             alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
             manual_detail_text, manual_detail_source, manual_detail_updated_at,
             lat, lon, first_seen_at, last_seen_at, created_at, geo_source, geo_note, geo_updated_at
@@ -1694,7 +1734,7 @@ export async function listEventsForMajorBackfill(limit = 5000) {
       id, title, link, pub_date,
       place_text, city_text, status_text, event_type,
       description_raw,
-      start_time_iso, end_time_iso, duration_min, is_closed,
+      start_time_iso, end_time_iso, duration_min, duration_source, is_closed,
       alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
       first_seen_at, last_seen_at, created_at
     FROM events
@@ -1773,7 +1813,7 @@ export async function getEventForManualEdit(id) {
       id, title, link, pub_date,
       place_text, city_text, status_text, event_type,
       description_raw,
-      start_time_iso, end_time_iso, duration_min, is_closed,
+      start_time_iso, end_time_iso, duration_min, duration_source, is_closed,
       alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
       manual_detail_text, manual_detail_source, manual_detail_updated_at,
       lat, lon,
@@ -1861,7 +1901,7 @@ export async function getEventDetailById(id) {
       id, title, link, pub_date,
       place_text, city_text, status_text, event_type,
       description_raw,
-      start_time_iso, end_time_iso, duration_min, is_closed,
+      start_time_iso, end_time_iso, duration_min, duration_source, is_closed,
       alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
       manual_detail_text, manual_detail_source, manual_detail_updated_at,
       lat, lon,
@@ -1888,7 +1928,7 @@ export async function updateEventManualDetail(id, patch = {}) {
       id, title, link, pub_date,
       place_text, city_text, status_text, event_type,
       description_raw,
-      start_time_iso, end_time_iso, duration_min, is_closed,
+      start_time_iso, end_time_iso, duration_min, duration_source, is_closed,
       alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
       manual_detail_text, manual_detail_source, manual_detail_updated_at,
       lat, lon,

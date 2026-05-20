@@ -961,7 +961,10 @@ function carryoverBadgeHtml(it) {
 
 function liveDurationForEvent(it) {
   if (!it || it.is_closed) return it?.duration_min;
-  const start = it.start_time_iso || it.pub_date || it.first_seen_at || it.created_at;
+
+  // Sledovaná délka: od první chvíle, kdy FireWatch událost uviděl,
+  // do aktuální chvíle. Po ukončení backend uloží stejný princip do duration_min.
+  const start = it.first_seen_at || it.created_at || it.start_time_iso || it.pub_date;
   if (!start) return it.duration_min;
   const d = new Date(start);
   if (Number.isNaN(d.getTime())) return it.duration_min;
@@ -1079,6 +1082,20 @@ function tableEditButtonHtml(it) {
   return `<button type="button" class="btn miniBtn tableManualEditBtn" data-event-id="${id}">Upravit</button>`;
 }
 
+
+function durationBadgeHtml(it) {
+  const src = String(it?.duration_source || "");
+  if (!src) return "";
+  if (src === "explicit" || src === "manual") return "";
+  if (!Number.isFinite(Number(it?.duration_min)) || Number(it?.duration_min) <= 0) return "";
+
+  if (src === "observed_first_seen_to_close_update") {
+    return ` <span class="durationApprox" title="Délka je měřená od chvíle, kdy FireWatch událost poprvé viděl, do chvíle, kdy přišla změna na ukončeno">sledováno</span>`;
+  }
+
+  return ` <span class="durationApprox" title="Délka je orientační podle dostupných dat">odhad</span>`;
+}
+
 function renderTable(items) {
   const tbody = document.getElementById("eventsTbody");
   if (!tbody) return;
@@ -1113,7 +1130,7 @@ function renderTable(items) {
       <td>${escapeHtml(city)}</td>
       <td>${statusEmoji(it.is_closed)} ${escapeHtml(statusText)} ${carryHtml}</td>
       <td>${alarmHtml}</td>
-      <td>${escapeHtml(formatDuration(durationValue))}</td>
+      <td>${escapeHtml(formatDuration(durationValue))}${durationBadgeHtml(it)}</td>
       <td>${eventDetailButtonHtml(it)}</td>
       <td>${tableEditButtonHtml(it)}</td>
     `;
