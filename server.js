@@ -43,6 +43,7 @@ import {
   getDurationCutoffIso,
   getLongestCutoffIso,
   autoCloseStaleOpenEvents,
+  repairClosedEventsMissingEndTime,
   listEventsForMajorBackfill,
   updateEventMajorAnalysis,
   getMajorEventsSummary,
@@ -2986,6 +2987,25 @@ app.get("/api/admin/major-events", requireAdmin, async (req, res) => {
 });
 
 
+
+
+
+app.post("/api/admin/repair-closed-times", requireAdmin, async (req, res) => {
+  try {
+    const rows = await repairClosedEventsMissingEndTime({ limit: Number(req.body?.limit || req.query?.limit || 1000) });
+    await insertAudit({
+      userId: req.auth?.user?.id || null,
+      username: req.auth?.user?.username || null,
+      action: "repair_closed_times",
+      details: `repaired=${rows.length}`,
+      ip: getClientIp(req)
+    });
+    return res.json({ ok: true, repaired: rows.length, rows });
+  } catch (e) {
+    console.error("[repair-closed-times]", e);
+    return res.status(500).json({ ok: false, error: "repair_closed_times_failed", detail: String(e?.message || e) });
+  }
+});
 
 
 // ---------------- OWN EVENT DETAIL / MANUAL NOTES ----------------

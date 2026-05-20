@@ -410,7 +410,22 @@ export async function getEventMeta(id) {
 }
 
 export async function upsertEvent(ev) {
-  const dur = clampDuration(ev.durationMin);
+  const isIncomingClosed = ev.statusSource === "explicit_closed" || ev.isClosed === true;
+  const normalizedEndTimeIso = isIncomingClosed
+    ? (ev.endTimeIso || new Date().toISOString())
+    : (ev.endTimeIso || null);
+
+  let normalizedDurationMin = clampDuration(ev.durationMin);
+  if (isIncomingClosed && normalizedDurationMin == null) {
+    const startRaw = ev.startTimeIso || ev.pubDate || null;
+    const start = startRaw ? new Date(startRaw) : null;
+    const end = normalizedEndTimeIso ? new Date(normalizedEndTimeIso) : null;
+    if (start && end && !Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime())) {
+      normalizedDurationMin = clampDuration((end.getTime() - start.getTime()) / 60000);
+    }
+  }
+
+  const dur = normalizedDurationMin;
 
   await pool.query(
     `
@@ -438,6 +453,12 @@ export async function upsertEvent(ev) {
       start_time_iso = COALESCE(EXCLUDED.start_time_iso, events.start_time_iso),
       end_time_iso   = CASE
         WHEN EXCLUDED.status_source = 'explicit_open' THEN NULL
+        WHEN EXCLUDED.status_source = 'explicit_closed' OR EXCLUDED.is_closed = TRUE THEN
+          COALESCE(
+            EXCLUDED.end_time_iso,
+            events.end_time_iso,
+            to_char((NOW() AT TIME ZONE 'UTC'), 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+          )
         ELSE COALESCE(EXCLUDED.end_time_iso, events.end_time_iso)
       END,
 
@@ -445,6 +466,53 @@ export async function upsertEvent(ev) {
         WHEN EXCLUDED.status_source = 'explicit_open' THEN NULL
         WHEN EXCLUDED.duration_min IS NOT NULL THEN EXCLUDED.duration_min
         WHEN events.duration_min IS NOT NULL AND events.duration_min > $19 THEN NULL
+        WHEN (EXCLUDED.status_source = 'explicit_closed' OR EXCLUDED.is_closed = TRUE) AND events.duration_min IS NULL THEN
+          (
+            CASE
+              WHEN ROUND(EXTRACT(EPOCH FROM (
+                COALESCE(
+                  NULLIF(EXCLUDED.end_time_iso,'' )::timestamptz,
+                  NULLIF(events.end_time_iso,'' )::timestamptz,
+                  NOW()
+                )
+                -
+                COALESCE(
+                  NULLIF(EXCLUDED.start_time_iso,'' )::timestamptz,
+                  NULLIF(events.start_time_iso,'' )::timestamptz,
+                  events.first_seen_at,
+                  events.created_at
+                )
+              )) / 60.0)::int <= 0 THEN NULL
+              WHEN ROUND(EXTRACT(EPOCH FROM (
+                COALESCE(
+                  NULLIF(EXCLUDED.end_time_iso,'' )::timestamptz,
+                  NULLIF(events.end_time_iso,'' )::timestamptz,
+                  NOW()
+                )
+                -
+                COALESCE(
+                  NULLIF(EXCLUDED.start_time_iso,'' )::timestamptz,
+                  NULLIF(events.start_time_iso,'' )::timestamptz,
+                  events.first_seen_at,
+                  events.created_at
+                )
+              )) / 60.0)::int > $19 THEN NULL
+              ELSE ROUND(EXTRACT(EPOCH FROM (
+                COALESCE(
+                  NULLIF(EXCLUDED.end_time_iso,'' )::timestamptz,
+                  NULLIF(events.end_time_iso,'' )::timestamptz,
+                  NOW()
+                )
+                -
+                COALESCE(
+                  NULLIF(EXCLUDED.start_time_iso,'' )::timestamptz,
+                  NULLIF(events.start_time_iso,'' )::timestamptz,
+                  events.first_seen_at,
+                  events.created_at
+                )
+              )) / 60.0)::int
+            END
+          )
         ELSE events.duration_min
       END,
 
@@ -474,7 +542,7 @@ export async function upsertEvent(ev) {
       ev.eventType || null,
       ev.descriptionRaw || null,
       ev.startTimeIso || null,
-      ev.endTimeIso || null,
+      normalizedEndTimeIso,
       dur,
       !!ev.isClosed,
       Number.isFinite(Number(ev.alarmLevel)) ? Number(ev.alarmLevel) : null,
@@ -538,7 +606,10 @@ export async function autoCloseStaleOpenEvents({ staleMinutes = 20, limit = 200 
           ELSE ROUND(EXTRACT(EPOCH FROM (c.last_seen_at - c.start_ts)) / 60.0)::int
         END
       ),
-      status_text = COALESCE(e.status_text, 'ukončená')
+      status_text = CASE
+        WHEN e.status_text IS NULL OR LOWER(e.status_text) LIKE '%prob%' OR LOWER(e.status_text) LIKE '%aktiv%' THEN 'ukončená'
+        ELSE e.status_text
+      END
     FROM candidates c
     WHERE e.id = c.id
     RETURNING e.id, e.duration_min, e.end_time_iso;
@@ -547,6 +618,49 @@ export async function autoCloseStaleOpenEvents({ staleMinutes = 20, limit = 200 
   );
 
   return res.rows;
+}
+
+
+export async function repairClosedEventsMissingEndTime({ limit = 500 } = {}) {
+  const lim = Math.max(1, Math.min(Number(limit || 0) || 500, 5000));
+
+  const res = await pool.query(
+    `
+    WITH candidates AS (
+      SELECT
+        id,
+        COALESCE(NULLIF(start_time_iso,'' )::timestamptz, first_seen_at, created_at) AS start_ts,
+        COALESCE(NULLIF(end_time_iso,'' )::timestamptz, last_seen_at, NOW()) AS end_ts
+      FROM events
+      WHERE is_closed = TRUE
+        AND (end_time_iso IS NULL OR end_time_iso = '' OR duration_min IS NULL)
+      ORDER BY last_seen_at DESC
+      LIMIT $1
+    )
+    UPDATE events e
+    SET
+      end_time_iso = CASE
+        WHEN e.end_time_iso IS NULL OR e.end_time_iso = '' THEN to_char((c.end_ts AT TIME ZONE 'UTC'), 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+        ELSE e.end_time_iso
+      END,
+      duration_min = CASE
+        WHEN e.duration_min IS NOT NULL THEN e.duration_min
+        WHEN ROUND(EXTRACT(EPOCH FROM (c.end_ts - c.start_ts)) / 60.0)::int <= 0 THEN NULL
+        WHEN ROUND(EXTRACT(EPOCH FROM (c.end_ts - c.start_ts)) / 60.0)::int > $2 THEN NULL
+        ELSE ROUND(EXTRACT(EPOCH FROM (c.end_ts - c.start_ts)) / 60.0)::int
+      END,
+      status_text = CASE
+        WHEN e.status_text IS NULL OR LOWER(e.status_text) LIKE '%prob%' OR LOWER(e.status_text) LIKE '%aktiv%' THEN 'ukončená'
+        ELSE e.status_text
+      END
+    FROM candidates c
+    WHERE e.id = c.id
+    RETURNING e.id, e.end_time_iso, e.duration_min;
+    `,
+    [lim, MAX_DURATION_MINUTES]
+  );
+
+  return res.rows || [];
 }
 
 
