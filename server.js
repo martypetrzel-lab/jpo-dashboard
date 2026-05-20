@@ -64,6 +64,10 @@ import {
   deleteExpiredSessions,
   getSessionUserByTokenSha,
   insertAudit,
+  searchEventsAdmin,
+  getIngestDiagnostics,
+  insertIngestLog,
+  insertManualEvent,
   setSetting,
   getSetting,
   incPageVisit,
@@ -2692,6 +2696,52 @@ function analyzeMajorEvent(it = {}, desc = "") {
 }
 
 
+
+function makeManualEventId({ startIso, title, city }) {
+  const d = startIso ? new Date(startIso) : new Date();
+  const stamp = Number.isNaN(d.getTime())
+    ? new Date().toISOString()
+    : d.toISOString();
+  const compact = stamp.replace(/[-:.TZ]/g, "").slice(0, 14);
+  const slug = String(`${city || ""}-${title || ""}`)
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 44) || "EVENT";
+  return `MANUAL_${compact}_${slug}`;
+}
+
+function parseManualEventCoords(rawLat, rawLon) {
+  if ((rawLat === "" || rawLat == null) && (rawLon === "" || rawLon == null)) {
+    return { lat: null, lon: null };
+  }
+
+  const lat = Number(String(rawLat ?? "").replace(",", "."));
+  const lon = Number(String(rawLon ?? "").replace(",", "."));
+
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+    const e = new Error("bad_coords");
+    e.statusCode = 400;
+    throw e;
+  }
+
+  if (lat < 48 || lat > 52 || lon < 12 || lon > 19) {
+    const e = new Error("coords_outside_cz");
+    e.statusCode = 400;
+    throw e;
+  }
+
+  return { lat, lon };
+}
+
+function publicSafeManualSourceNote() {
+  // Záměrně se nikde veřejně nevypisuje, že událost byla zadána ručně.
+  // source_kind/source_note slouží jen pro admin diagnostiku.
+  return "Ručně doplněno přes admin";
+}
+
+
 // ingest (data z ESP)
 app.post("/api/ingest", requireKey, async (req, res) => {
   try {
@@ -2703,6 +2753,8 @@ app.post("/api/ingest", requireKey, async (req, res) => {
     let accepted = 0;
     let updatedClosed = 0;
     let geocoded = 0;
+    let inserted = 0;
+    let updated = 0;
 
     for (const it of items) {
       if (!it?.id || !it?.title || !it?.link) continue;
@@ -2807,6 +2859,7 @@ if (Number.isFinite(it.durationMin)) {
 
       await upsertEvent(ev);
       accepted++;
+      if (prev) updated++; else inserted++;
 
       if (ev.isClosed) updatedClosed++;
 
@@ -2827,15 +2880,40 @@ if (Number.isFinite(it.durationMin)) {
       }
     }
 
+    await insertIngestLog({
+      source: source || "unknown",
+      sourceKind: "esp",
+      receivedCount: items.length,
+      acceptedCount: accepted,
+      newCount: inserted,
+      updatedCount: updated,
+      closedCount: updatedClosed,
+      geocodedCount: geocoded,
+      ip: getClientIp(req),
+      userAgent: req.get("user-agent") || null
+    });
+
     res.json({
       ok: true,
       source: source || "unknown",
       accepted,
+      inserted,
+      updated,
       closed_seen_in_batch: updatedClosed,
       geocoded
     });
   } catch (e) {
     console.error(e);
+    try {
+      await insertIngestLog({
+        source: req.body?.source || "unknown",
+        sourceKind: "esp",
+        receivedCount: Array.isArray(req.body?.items) ? req.body.items.length : 0,
+        errorText: e?.message || String(e),
+        ip: getClientIp(req),
+        userAgent: req.get("user-agent") || null
+      });
+    } catch {}
     res.status(500).json({ ok: false, error: "server error" });
   }
 });
@@ -3041,6 +3119,130 @@ app.post("/api/admin/events/:id/detail", requireAdmin, async (req, res) => {
   } catch (e) {
     console.error("[event-detail-save]", e);
     return res.status(500).json({ ok: false, error: "event_detail_save_failed", detail: String(e?.message || e) });
+  }
+});
+
+
+
+// ---------------- MANUAL EVENT CREATE + INGEST DIAGNOSTICS ----------------
+app.post("/api/admin/events/manual-create", requireAdmin, async (req, res) => {
+  try {
+    const title = String(req.body?.title || "").trim();
+    if (!title) return res.status(400).json({ ok: false, error: "title_required" });
+
+    const cityText = String(req.body?.cityText || req.body?.city_text || "").trim() || null;
+    const placeText = String(req.body?.placeText || req.body?.place_text || "").trim() || cityText;
+    const eventType = String(req.body?.eventType || req.body?.event_type || classifyType(title) || "other").trim();
+
+    const statusMode = String(req.body?.statusMode || "open").toLowerCase();
+    const isClosed = statusMode === "closed";
+    const statusText = isClosed ? "ukončená" : "probíhá zásah";
+
+    const startTimeIso = parseManualIso(req.body?.startTimeIso || req.body?.pubDate) || new Date().toISOString();
+    const endTimeIso = isClosed
+      ? (parseManualIso(req.body?.endTimeIso) || new Date().toISOString())
+      : null;
+
+    const alarmLevelRaw = req.body?.alarmLevel;
+    const alarmLevel = alarmLevelRaw === "" || alarmLevelRaw == null ? null : Number(alarmLevelRaw);
+    const alarmLevelText = alarmLevelTextFromManual(alarmLevel);
+
+    const isMajorEvent =
+      req.body?.isMajorEvent === true ||
+      req.body?.isMajorEvent === "true" ||
+      Number(alarmLevel || 0) >= 3;
+
+    const majorReason = String(req.body?.majorReason || "").trim()
+      || (Number(alarmLevel || 0) >= 3 ? alarmLevelText : null);
+
+    const durationMin = computeManualDurationMin(startTimeIso, endTimeIso, isClosed);
+    const { lat, lon } = parseManualEventCoords(req.body?.lat, req.body?.lon);
+
+    const manualDetailText = String(req.body?.manualDetailText || "").trim();
+    const id = makeManualEventId({ startIso: startTimeIso, title, city: cityText || placeText });
+
+    await insertManualEvent({
+      id,
+      title,
+      link: `manual:${id}`,
+      pubDate: startTimeIso,
+      placeText,
+      cityText,
+      statusText,
+      eventType,
+      descriptionRaw: manualDetailText || null,
+      startTimeIso,
+      endTimeIso,
+      durationMin,
+      isClosed,
+      alarmLevel,
+      alarmLevelText,
+      isMajorEvent,
+      majorReason,
+      statusSource: "manual",
+      sourceNote: publicSafeManualSourceNote(),
+      lat,
+      lon
+    });
+
+    if (manualDetailText) {
+      await updateEventManualDetail(id, {
+        manualDetailText,
+        manualDetailSource: "Ručně doplněno administrátorem"
+      });
+    }
+
+    await insertIngestLog({
+      source: "manual_create",
+      sourceKind: "manual",
+      receivedCount: 1,
+      acceptedCount: 1,
+      newCount: 1,
+      updatedCount: 0,
+      closedCount: isClosed ? 1 : 0,
+      geocodedCount: lat != null && lon != null ? 1 : 0,
+      ip: getClientIp(req),
+      userAgent: req.get("user-agent") || null
+    });
+
+    await insertAudit({
+      userId: req.auth?.user?.id || null,
+      username: req.auth?.user?.username || null,
+      action: "manual_event_create",
+      details: `event=${id}; title=${title}; city=${cityText || placeText || ""}`,
+      ip: getClientIp(req)
+    });
+
+    return res.json({ ok: true, id });
+  } catch (e) {
+    console.error("[manual-event-create]", e);
+    return res.status(e.statusCode || 500).json({
+      ok: false,
+      error: e?.message || "manual_event_create_failed"
+    });
+  }
+});
+
+app.get("/api/admin/ingest-diagnostics", requireAdmin, async (req, res) => {
+  try {
+    const data = await getIngestDiagnostics({ limit: Number(req.query?.limit || 20) });
+    return res.json({ ok: true, ...data });
+  } catch (e) {
+    console.error("[ingest-diagnostics]", e);
+    return res.status(500).json({ ok: false, error: "ingest_diagnostics_failed", detail: String(e?.message || e) });
+  }
+});
+
+app.get("/api/admin/events/search", requireAdmin, async (req, res) => {
+  try {
+    const items = await searchEventsAdmin({
+      q: req.query?.q || "",
+      limit: Number(req.query?.limit || 50)
+    });
+    return res.json({ ok: true, items });
+  } catch (e) {
+    console.error("[admin-events-search]", e);
+    return res.status(500).json({ ok: false, error: "admin_events_search_failed", detail: String(e?.message || e) });
   }
 });
 

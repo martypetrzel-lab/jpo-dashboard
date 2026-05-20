@@ -3849,3 +3849,91 @@ button.btn:hover {
     max-width: 190px;
   }
 }
+
+
+/* FireWatchCZ – admin manual create + ingest diagnostics */
+.adminManualCreateCard,
+.adminDiagnosticsCard {
+  border-color: rgba(125,177,255,0.22) !important;
+  background:
+    radial-gradient(circle at 100% 0%, rgba(79,140,255,0.10), transparent 26rem),
+    rgba(255,255,255,0.035) !important;
+}
+
+.adminManualGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.adminManualGrid .span2 {
+  grid-column: 1 / -1;
+}
+
+.adminManualGrid label {
+  display: grid;
+  gap: 5px;
+  color: rgba(235,245,255,0.72);
+  font-weight: 850;
+}
+
+.adminManualGrid textarea {
+  resize: vertical;
+  min-height: 92px;
+}
+
+.manualCreateCheck {
+  min-height: 38px;
+  align-items: center;
+}
+
+.diagnosticsSummary {
+  display: grid;
+  gap: 6px;
+  padding: 11px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,0.09);
+  background: rgba(255,255,255,0.045);
+  color: rgba(235,245,255,0.82);
+}
+
+.ingestDiagnosticsLog,
+.adminSearchResults {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.ingestLogItem,
+.adminSearchItem {
+  display: grid;
+  gap: 4px;
+  padding: 10px 11px;
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,0.075);
+  background: rgba(0,0,0,0.12);
+}
+
+.ingestLogItem span,
+.adminSearchItem span,
+.adminSearchItem small {
+  color: rgba(235,245,255,0.64);
+}
+
+.mapPickMode {
+  cursor: crosshair !important;
+  outline: 4px solid rgba(80,180,255,0.55);
+  outline-offset: -4px;
+}
+
+@media (max-width: 760px) {
+  .adminManualGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .adminManualGrid .span2 {
+    grid-column: auto;
+  }
+}

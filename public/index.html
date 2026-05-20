@@ -1,13 +1,6 @@
 <!doctype html>
 <html lang="cs">
 <head>
-  <!-- Google Tag Manager -->
-  <script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
-  new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
-  j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
-  'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
-  })(window,document,'script','dataLayer','GTM-MZWM39PB');</script>
-  <!-- End Google Tag Manager -->
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <meta name="theme-color" content="#0b0f14" />
@@ -30,10 +23,6 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
 </head>
 <body>
-  <!-- Google Tag Manager (noscript) -->
-  <noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-MZWM39PB"
-  height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
-  <!-- End Google Tag Manager (noscript) -->
 
   <button id="mobileSidebarToggle" class="mobileSidebarToggle" type="button">☰ Menu</button>
 
@@ -759,6 +748,87 @@
             <button class="btn" id="adminSaveSettings">Uložit</button>
           </div>
           <div class="hint" id="adminSettingsMsg" style="min-height:18px;"></div>
+        </div>
+
+
+        <div class="adminCard adminManualCreateCard">
+          <div class="adminCardHeader">
+            <div class="adminCardTitle">Ruční doplnění výjezdu</div>
+            <div class="hint">Vidí pouze admin. Veřejnost neuvidí, že byl výjezd doplněn ručně.</div>
+          </div>
+
+          <div class="adminManualGrid">
+            <input id="manualCreateTitle" class="miniInput span2" placeholder="Název události / výjezdu" />
+            <input id="manualCreateCity" class="miniInput" placeholder="Město / obec" />
+            <input id="manualCreatePlace" class="miniInput" placeholder="Místo / upřesnění" />
+
+            <select id="manualCreateType" class="miniSelect">
+              <option value="other">Jiné / neurčeno</option>
+              <option value="fire">Požár</option>
+              <option value="traffic">Dopravní nehoda</option>
+              <option value="technical">Technická pomoc</option>
+              <option value="rescue">Záchrana osob/zvířat</option>
+              <option value="hazmat">Únik nebezpečných látek</option>
+            </select>
+
+            <select id="manualCreateStatus" class="miniSelect">
+              <option value="open">Probíhá zásah</option>
+              <option value="closed">Ukončená</option>
+            </select>
+
+            <select id="manualCreateAlarm" class="miniSelect">
+              <option value="">Bez stupně / neznámý</option>
+              <option value="1">I. stupeň</option>
+              <option value="2">II. stupeň</option>
+              <option value="3">III. stupeň</option>
+              <option value="4">IV. / zvláštní</option>
+            </select>
+
+            <label class="check manualCreateCheck">
+              <input id="manualCreateMajor" type="checkbox" />
+              <span>Významná událost</span>
+            </label>
+
+            <label>
+              Začátek
+              <input id="manualCreateStart" class="miniInput" type="datetime-local" />
+            </label>
+            <label>
+              Konec
+              <input id="manualCreateEnd" class="miniInput" type="datetime-local" />
+            </label>
+
+            <input id="manualCreateLat" class="miniInput" type="number" step="0.000001" placeholder="Latitude" />
+            <input id="manualCreateLon" class="miniInput" type="number" step="0.000001" placeholder="Longitude" />
+
+            <textarea id="manualCreateDetail" class="miniInput span2" rows="4" placeholder="Veřejný detail / poznámka k události"></textarea>
+          </div>
+
+          <div class="adminRow" style="margin-top:10px;">
+            <button id="manualCreatePickMapBtn" class="btn" type="button">Vybrat na mapě</button>
+            <button id="manualCreateSubmitBtn" class="btn primary" type="button">Přidat výjezd</button>
+            <span id="manualCreateMsg" class="hint"></span>
+          </div>
+        </div>
+
+        <div class="adminCard adminDiagnosticsCard">
+          <div class="adminCardHeader">
+            <div class="adminCardTitle">Diagnostika příjmu dat</div>
+            <div class="hint">Kontrola, jestli ESP/Railway opravdu něco přijímalo. Pouze admin.</div>
+          </div>
+
+          <div id="ingestDiagnosticsSummary" class="diagnosticsSummary">
+            Načti diagnostiku příjmu dat.
+          </div>
+
+          <div class="adminRow" style="margin-top:10px;">
+            <button id="loadIngestDiagnosticsBtn" class="btn" type="button">Načíst diagnostiku</button>
+            <input id="adminEventSearchInput" class="miniInput" placeholder="Hledat výjezd v DB: město, název, ID…" />
+            <button id="adminEventSearchBtn" class="btn" type="button">Hledat</button>
+          </div>
+
+          <div id="adminEventSearchResults" class="adminSearchResults"></div>
+          <div id="ingestDiagnosticsLog" class="ingestDiagnosticsLog"></div>
         </div>
 
         <div class="adminCard">

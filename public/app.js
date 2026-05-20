@@ -3522,6 +3522,255 @@ function wireEventDetailModal() {
 
 
 
+
+
+// ==============================
+// FireWatchCZ – ruční doplnění výjezdu + diagnostika příjmu
+// ==============================
+
+let __manualCreatePickMode = false;
+let __manualCreatePickMarker = null;
+
+function manualCreateToIso(value) {
+  if (!value) return null;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString();
+}
+
+function setManualCreateCoords(lat, lon) {
+  const latInput = document.getElementById("manualCreateLat");
+  const lonInput = document.getElementById("manualCreateLon");
+  if (latInput) latInput.value = Number(lat).toFixed(6);
+  if (lonInput) lonInput.value = Number(lon).toFixed(6);
+  const msg = document.getElementById("manualCreateMsg");
+  if (msg) msg.textContent = `Vybraná poloha: ${Number(lat).toFixed(6)}, ${Number(lon).toFixed(6)}`;
+
+  if (map && window.L) {
+    if (__manualCreatePickMarker) {
+      __manualCreatePickMarker.setLatLng([Number(lat), Number(lon)]);
+    } else {
+      __manualCreatePickMarker = L.marker([Number(lat), Number(lon)], { title: "Ručně přidávaný výjezd" }).addTo(map);
+    }
+  }
+}
+
+function startManualCreateMapPick() {
+  const adminModal = document.getElementById("adminModal");
+  if (adminModal) adminModal.style.display = "none";
+
+  const msg = document.getElementById("manualCreateMsg");
+  if (msg) msg.textContent = "Klikni na mapě na místo výjezdu.";
+
+  if (!map) {
+    if (adminModal) adminModal.style.display = "";
+    if (msg) msg.textContent = "Mapa zatím není připravená.";
+    return;
+  }
+
+  try {
+    map.getContainer().classList.add("mapPickMode");
+    map.once("click", (ev) => {
+      try { map.getContainer().classList.remove("mapPickMode"); } catch {}
+      setManualCreateCoords(ev.latlng.lat, ev.latlng.lng);
+      if (adminModal) adminModal.style.display = "";
+    });
+  } catch {
+    if (adminModal) adminModal.style.display = "";
+  }
+}
+
+function fillManualCreateStartDefault() {
+  const start = document.getElementById("manualCreateStart");
+  if (!start || start.value) return;
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  start.value = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+async function submitManualCreateEvent() {
+  const btn = document.getElementById("manualCreateSubmitBtn");
+  const msg = document.getElementById("manualCreateMsg");
+  const old = btn?.textContent || "Přidat výjezd";
+
+  try {
+    const title = document.getElementById("manualCreateTitle")?.value?.trim() || "";
+    if (!title) {
+      if (msg) msg.textContent = "Vyplň název události.";
+      return;
+    }
+
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "Ukládám…";
+    }
+    if (msg) msg.textContent = "Ukládám ručně doplněný výjezd…";
+
+    const payload = {
+      title,
+      cityText: document.getElementById("manualCreateCity")?.value || "",
+      placeText: document.getElementById("manualCreatePlace")?.value || "",
+      eventType: document.getElementById("manualCreateType")?.value || "other",
+      statusMode: document.getElementById("manualCreateStatus")?.value || "open",
+      alarmLevel: document.getElementById("manualCreateAlarm")?.value || "",
+      isMajorEvent: !!document.getElementById("manualCreateMajor")?.checked,
+      startTimeIso: manualCreateToIso(document.getElementById("manualCreateStart")?.value || ""),
+      endTimeIso: manualCreateToIso(document.getElementById("manualCreateEnd")?.value || ""),
+      lat: document.getElementById("manualCreateLat")?.value || "",
+      lon: document.getElementById("manualCreateLon")?.value || "",
+      manualDetailText: document.getElementById("manualCreateDetail")?.value || ""
+    };
+
+    const r = await fetch("/api/admin/events/manual-create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(payload)
+    });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || j.detail || "manual create failed");
+
+    if (msg) msg.textContent = `Výjezd uložen. ID: ${j.id}`;
+    ["manualCreateTitle", "manualCreateCity", "manualCreatePlace", "manualCreateLat", "manualCreateLon", "manualCreateDetail"].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.value = "";
+    });
+    await loadAll(true);
+    await loadIngestDiagnostics();
+  } catch (e) {
+    if (msg) msg.textContent = `Nepodařilo se uložit: ${String(e.message || e)}`;
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = old;
+    }
+  }
+}
+
+function formatDiagTime(value) {
+  if (!value) return "—";
+  try { return new Intl.DateTimeFormat("cs-CZ", { dateStyle: "short", timeStyle: "medium" }).format(new Date(value)); }
+  catch { return String(value); }
+}
+
+async function loadIngestDiagnostics() {
+  const summary = document.getElementById("ingestDiagnosticsSummary");
+  const log = document.getElementById("ingestDiagnosticsLog");
+
+  try {
+    if (summary) summary.textContent = "Načítám diagnostiku…";
+
+    const r = await fetch("/api/admin/ingest-diagnostics?limit=20", { credentials: "include", cache: "no-store" });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.detail || j.error || "diagnostics failed");
+
+    const latestEvent = j.latestEvent;
+    const latestIngestAt = j.latestIngestAt;
+    const counts = j.counts || {};
+
+    const lastEventTime = latestEvent?.created_at || latestEvent?.last_seen_at || latestEvent?.pub_date || null;
+    let gapText = "";
+    if (lastEventTime) {
+      const diffMin = Math.round((Date.now() - new Date(lastEventTime).getTime()) / 60000);
+      if (Number.isFinite(diffMin)) {
+        gapText = diffMin > 120 ? `⚠ možná mezera ${Math.floor(diffMin/60)} h ${diffMin%60} min` : `OK • poslední data před ${diffMin} min`;
+      }
+    }
+
+    if (summary) {
+      summary.innerHTML = `
+        <div><b>Poslední ingest:</b> ${escapeHtml(formatDiagTime(latestIngestAt))}</div>
+        <div><b>Poslední událost v DB:</b> ${escapeHtml(latestEvent?.title || "—")}</div>
+        <div><b>Čas poslední události:</b> ${escapeHtml(formatDiagTime(lastEventTime))}</div>
+        <div><b>Počty:</b> 1 h: ${Number(counts.last1h || 0)} • 6 h: ${Number(counts.last6h || 0)} • 24 h: ${Number(counts.last24h || 0)}</div>
+        <div><b>Stav:</b> ${escapeHtml(gapText || "—")}</div>
+      `;
+    }
+
+    if (log) {
+      const rows = Array.isArray(j.logs) ? j.logs : [];
+      log.innerHTML = rows.length
+        ? rows.map((x) => `
+          <div class="ingestLogItem">
+            <b>${escapeHtml(formatDiagTime(x.created_at))}</b>
+            <span>${escapeHtml(x.source || "unknown")} • přijato ${Number(x.received_count || 0)} • přijato do DB ${Number(x.accepted_count || 0)} • nové ${Number(x.new_count || 0)} • aktualizace ${Number(x.updated_count || 0)}${x.error_text ? ` • chyba: ${escapeHtml(x.error_text)}` : ""}</span>
+          </div>
+        `).join("")
+        : `<div class="muted">Zatím není žádný ingest log. Začne se plnit po nasazení této verze.</div>`;
+    }
+  } catch (e) {
+    if (summary) summary.textContent = `Diagnostiku se nepodařilo načíst: ${String(e.message || e)}`;
+  }
+}
+
+async function searchAdminEventsDb() {
+  const box = document.getElementById("adminEventSearchInput");
+  const results = document.getElementById("adminEventSearchResults");
+  const q = box?.value?.trim() || "";
+
+  if (!q) {
+    if (results) results.innerHTML = `<div class="muted">Zadej název, město nebo ID.</div>`;
+    return;
+  }
+
+  try {
+    if (results) results.innerHTML = `<div class="muted">Hledám…</div>`;
+    const r = await fetch(`/api/admin/events/search?q=${encodeURIComponent(q)}&limit=50`, {
+      credentials: "include",
+      cache: "no-store"
+    });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.detail || j.error || "search failed");
+
+    const items = Array.isArray(j.items) ? j.items : [];
+    if (!items.length) {
+      if (results) results.innerHTML = `<div class="muted">Nic nenalezeno.</div>`;
+      return;
+    }
+
+    if (results) {
+      results.innerHTML = items.map((it) => `
+        <div class="adminSearchItem">
+          <b>${escapeHtml(it.title || "")}</b>
+          <span>${escapeHtml(it.city_text || it.place_text || "")} • ${escapeHtml(formatDate(it.pub_date || it.start_time_iso || it.created_at))} • ${it.is_closed ? "ukončená" : "aktivní"} • GPS: ${it.lat != null && it.lon != null ? "ano" : "ne"}</span>
+          <small>ID: ${escapeHtml(it.id || "")}${it.source_kind === "manual" ? " • admin: ručně doplněno" : ""}</small>
+        </div>
+      `).join("");
+    }
+  } catch (e) {
+    if (results) results.innerHTML = `<div class="err">Vyhledávání selhalo: ${escapeHtml(String(e.message || e))}</div>`;
+  }
+}
+
+function wireManualCreateAndDiagnostics() {
+  document.getElementById("manualCreatePickMapBtn")?.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    startManualCreateMapPick();
+  });
+  document.getElementById("manualCreateSubmitBtn")?.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    submitManualCreateEvent();
+  });
+  document.getElementById("loadIngestDiagnosticsBtn")?.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    loadIngestDiagnostics();
+  });
+  document.getElementById("adminEventSearchBtn")?.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    searchAdminEventsDb();
+  });
+  document.getElementById("adminEventSearchInput")?.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      searchAdminEventsDb();
+    }
+  });
+  document.getElementById("adminBtn")?.addEventListener("click", () => {
+    fillManualCreateStartDefault();
+    setTimeout(() => loadIngestDiagnostics(), 150);
+  });
+}
+
 // UI events
 document.getElementById("refreshBtn").addEventListener("click", () => { resetFilters(); loadAll(); });
 document.getElementById("applyBtn").addEventListener("click", loadAll);
@@ -3542,6 +3791,7 @@ initLandingPage();
 wireProfessionalLayout();
 wireCommandOverviewNav();
 wireManualEventEditor();
+wireManualCreateAndDiagnostics();
 wireEventDetailModal();
 wireManualQuickEditList();
 wireRegionalWeather();

@@ -48,6 +48,8 @@ export async function initDb() {
       is_major_event BOOLEAN NOT NULL DEFAULT FALSE,
       major_reason TEXT,
       status_source TEXT,
+      source_kind TEXT,
+      source_note TEXT,
       manual_detail_text TEXT,
       manual_detail_source TEXT,
       manual_detail_updated_at TIMESTAMPTZ,
@@ -111,6 +113,26 @@ export async function initDb() {
     );
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_archived_reports_period ON archived_reports(period_type, period_key DESC);`);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ingest_log (
+      id BIGSERIAL PRIMARY KEY,
+      source TEXT,
+      source_kind TEXT,
+      received_count INTEGER NOT NULL DEFAULT 0,
+      accepted_count INTEGER NOT NULL DEFAULT 0,
+      new_count INTEGER NOT NULL DEFAULT 0,
+      updated_count INTEGER NOT NULL DEFAULT 0,
+      closed_count INTEGER NOT NULL DEFAULT 0,
+      geocoded_count INTEGER NOT NULL DEFAULT 0,
+      error_text TEXT,
+      ip TEXT,
+      user_agent TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_ingest_log_created_at ON ingest_log(created_at DESC);`);
+
 
   // ---------------- AUTH TABLES ----------------
   await pool.query(`
@@ -209,6 +231,8 @@ export async function initDb() {
     ["events", "is_major_event", "BOOLEAN"],
     ["events", "major_reason", "TEXT"],
     ["events", "status_source", "TEXT"],
+    ["events", "source_kind", "TEXT"],
+    ["events", "source_note", "TEXT"],
     ["events", "manual_detail_text", "TEXT"],
     ["events", "manual_detail_source", "TEXT"],
     ["events", "manual_detail_updated_at", "TIMESTAMPTZ"]
@@ -403,7 +427,7 @@ export async function getLongestCutoffIso() {
 
 export async function getEventMeta(id) {
   const res = await pool.query(
-    `SELECT id, is_closed, first_seen_at, start_time_iso, end_time_iso, duration_min, alarm_level, is_major_event, status_text FROM events WHERE id=$1`,
+    `SELECT id, is_closed, first_seen_at, start_time_iso, end_time_iso, duration_min, alarm_level, is_major_event, status_text, source_kind, source_note FROM events WHERE id=$1`,
     [id]
   );
   return res.rows[0] || null;
@@ -435,9 +459,10 @@ export async function upsertEvent(ev) {
       description_raw,
       start_time_iso, end_time_iso, duration_min, is_closed,
       alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
+      source_kind, source_note,
       first_seen_at, last_seen_at
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18, NOW(), NOW())
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$20,$21, NOW(), NOW())
     ON CONFLICT (id) DO UPDATE SET
       title = EXCLUDED.title,
       link = EXCLUDED.link,
@@ -528,6 +553,8 @@ export async function upsertEvent(ev) {
       is_major_event = (COALESCE(events.is_major_event, FALSE) OR COALESCE(EXCLUDED.is_major_event, FALSE)),
       major_reason = COALESCE(EXCLUDED.major_reason, events.major_reason),
       status_source = COALESCE(EXCLUDED.status_source, events.status_source),
+      source_kind = COALESCE(EXCLUDED.source_kind, events.source_kind),
+      source_note = COALESCE(EXCLUDED.source_note, events.source_note),
 
       last_seen_at = NOW()
     `,
@@ -550,7 +577,9 @@ export async function upsertEvent(ev) {
       !!ev.isMajorEvent,
       ev.majorReason || null,
       ev.statusSource || null,
-      MAX_DURATION_MINUTES
+      MAX_DURATION_MINUTES,
+      ev.sourceKind || null,
+      ev.sourceNote || null
     ]
   );
 }
@@ -661,6 +690,201 @@ export async function repairClosedEventsMissingEndTime({ limit = 500 } = {}) {
   );
 
   return res.rows || [];
+}
+
+
+
+export async function insertManualEvent(ev) {
+  const id = ev.id || `MANUAL_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+  const dur = clampDuration(ev.durationMin);
+
+  await pool.query(
+    `
+    INSERT INTO events (
+      id, title, link, pub_date,
+      place_text, city_text, status_text, event_type,
+      description_raw,
+      start_time_iso, end_time_iso, duration_min, is_closed,
+      alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
+      source_kind, source_note,
+      lat, lon, geo_source, geo_note, geo_updated_at,
+      first_seen_at, last_seen_at
+    )
+    VALUES (
+      $1,$2,$3,$4,
+      $5,$6,$7,$8,
+      $9,
+      $10,$11,$12,$13,
+      $14,$15,$16,$17,$18,
+      'manual',$19,
+      $20,$21,
+      CASE WHEN $20 IS NULL OR $21 IS NULL THEN NULL ELSE 'manual_event_create' END,
+      CASE WHEN $20 IS NULL OR $21 IS NULL THEN NULL ELSE 'Ručně zadáno při vytvoření výjezdu' END,
+      CASE WHEN $20 IS NULL OR $21 IS NULL THEN NULL ELSE NOW() END,
+      NOW(), NOW()
+    )
+    RETURNING *
+    `,
+    [
+      id,
+      ev.title,
+      ev.link || `manual:${id}`,
+      ev.pubDate || ev.startTimeIso || new Date().toISOString(),
+      ev.placeText || null,
+      ev.cityText || null,
+      ev.statusText || null,
+      ev.eventType || null,
+      ev.descriptionRaw || null,
+      ev.startTimeIso || ev.pubDate || null,
+      ev.endTimeIso || null,
+      dur,
+      !!ev.isClosed,
+      Number.isFinite(Number(ev.alarmLevel)) ? Number(ev.alarmLevel) : null,
+      ev.alarmLevelText || null,
+      !!ev.isMajorEvent,
+      ev.majorReason || null,
+      ev.statusSource || "manual",
+      ev.sourceNote || "Ručně doplněno přes admin",
+      Number.isFinite(Number(ev.lat)) ? Number(ev.lat) : null,
+      Number.isFinite(Number(ev.lon)) ? Number(ev.lon) : null
+    ]
+  );
+
+  return id;
+}
+
+export async function insertIngestLog({
+  source = null,
+  sourceKind = null,
+  receivedCount = 0,
+  acceptedCount = 0,
+  newCount = 0,
+  updatedCount = 0,
+  closedCount = 0,
+  geocodedCount = 0,
+  errorText = null,
+  ip = null,
+  userAgent = null
+} = {}) {
+  const r = await pool.query(
+    `
+    INSERT INTO ingest_log (
+      source, source_kind, received_count, accepted_count, new_count, updated_count,
+      closed_count, geocoded_count, error_text, ip, user_agent
+    )
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+    RETURNING id
+    `,
+    [
+      source,
+      sourceKind,
+      Number(receivedCount || 0),
+      Number(acceptedCount || 0),
+      Number(newCount || 0),
+      Number(updatedCount || 0),
+      Number(closedCount || 0),
+      Number(geocodedCount || 0),
+      errorText ? String(errorText).slice(0, 2000) : null,
+      ip || null,
+      userAgent || null
+    ]
+  );
+  return r.rows?.[0]?.id || null;
+}
+
+export async function getIngestDiagnostics({ limit = 20 } = {}) {
+  const lim = Math.max(1, Math.min(Number(limit || 20), 200));
+
+  const logs = await pool.query(
+    `
+    SELECT id, source, source_kind, received_count, accepted_count, new_count, updated_count,
+           closed_count, geocoded_count, error_text, ip, user_agent, created_at
+    FROM ingest_log
+    ORDER BY created_at DESC
+    LIMIT $1
+    `,
+    [lim]
+  );
+
+  const latestEvent = await pool.query(
+    `
+    SELECT id, title, city_text, place_text, pub_date, start_time_iso, created_at, last_seen_at
+    FROM events
+    ORDER BY created_at DESC
+    LIMIT 1
+    `
+  );
+
+  const latestIngest = await pool.query(
+    `SELECT created_at FROM ingest_log ORDER BY created_at DESC LIMIT 1`
+  );
+
+  const last24 = await pool.query(
+    `
+    SELECT COUNT(*)::int AS c
+    FROM events
+    WHERE created_at >= NOW() - interval '24 hours'
+    `
+  );
+
+  const last6 = await pool.query(
+    `
+    SELECT COUNT(*)::int AS c
+    FROM events
+    WHERE created_at >= NOW() - interval '6 hours'
+    `
+  );
+
+  const last1 = await pool.query(
+    `
+    SELECT COUNT(*)::int AS c
+    FROM events
+    WHERE created_at >= NOW() - interval '1 hour'
+    `
+  );
+
+  return {
+    logs: logs.rows || [],
+    latestEvent: latestEvent.rows?.[0] || null,
+    latestIngestAt: latestIngest.rows?.[0]?.created_at || null,
+    counts: {
+      last1h: last1.rows?.[0]?.c || 0,
+      last6h: last6.rows?.[0]?.c || 0,
+      last24h: last24.rows?.[0]?.c || 0
+    }
+  };
+}
+
+export async function searchEventsAdmin({ q = "", limit = 50 } = {}) {
+  const lim = Math.max(1, Math.min(Number(limit || 50), 200));
+  const query = String(q || "").trim();
+
+  const params = [];
+  let where = "TRUE";
+
+  if (query) {
+    params.push(`%${query}%`);
+    where = `(title ILIKE $1 OR city_text ILIKE $1 OR place_text ILIKE $1 OR id ILIKE $1 OR event_type ILIKE $1)`;
+  }
+
+  params.push(lim);
+
+  const r = await pool.query(
+    `
+    SELECT
+      id, title, pub_date, city_text, place_text, status_text, event_type,
+      start_time_iso, end_time_iso, duration_min, is_closed,
+      alarm_level, alarm_level_text, is_major_event, major_reason,
+      source_kind, source_note, lat, lon, created_at, last_seen_at
+    FROM events
+    WHERE ${where}
+    ORDER BY COALESCE(NULLIF(start_time_iso,'' )::timestamptz, created_at) DESC, created_at DESC
+    LIMIT $${params.length}
+    `,
+    params
+  );
+
+  return r.rows || [];
 }
 
 
