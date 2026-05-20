@@ -1084,16 +1084,9 @@ function tableEditButtonHtml(it) {
 
 
 function durationBadgeHtml(it) {
-  const src = String(it?.duration_source || "");
-  if (!src) return "";
-  if (src === "explicit" || src === "manual") return "";
-  if (!Number.isFinite(Number(it?.duration_min)) || Number(it?.duration_min) <= 0) return "";
-
-  if (src === "observed_first_seen_to_close_update") {
-    return ` <span class="durationApprox" title="Délka je měřená od chvíle, kdy FireWatch událost poprvé viděl, do chvíle, kdy přišla změna na ukončeno">sledováno</span>`;
-  }
-
-  return ` <span class="durationApprox" title="Délka je orientační podle dostupných dat">odhad</span>`;
+  // Původ délky (RSS / sledováno / odhad) je interní informace.
+  // Nezobrazuje se ve veřejném přehledu ani běžně adminovi.
+  return "";
 }
 
 function renderTable(items) {
@@ -1130,7 +1123,7 @@ function renderTable(items) {
       <td>${escapeHtml(city)}</td>
       <td>${statusEmoji(it.is_closed)} ${escapeHtml(statusText)} ${carryHtml}</td>
       <td>${alarmHtml}</td>
-      <td>${escapeHtml(formatDuration(durationValue))}${durationBadgeHtml(it)}</td>
+      <td>${escapeHtml(formatDuration(durationValue))}</td>
       <td>${eventDetailButtonHtml(it)}</td>
       <td>${tableEditButtonHtml(it)}</td>
     `;

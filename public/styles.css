@@ -3988,18 +3988,6 @@ button.btn:hover {
 }
 
 
-.durationApprox {
-  display: inline-flex;
-  align-items: center;
-  margin-left: 6px;
-  padding: 1px 6px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 196, 87, 0.25);
-  background: rgba(255, 196, 87, 0.10);
-  color: rgba(255, 220, 150, 0.95);
-  font-size: 10px;
-  font-weight: 900;
-}
 
 
 .durationRecomputeAdminBox {
