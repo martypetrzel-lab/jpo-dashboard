@@ -717,10 +717,10 @@ export async function insertManualEvent(ev) {
       $10,$11,$12,$13,
       $14,$15,$16,$17,$18,
       'manual',$19,
-      $20,$21,
-      CASE WHEN $20 IS NULL OR $21 IS NULL THEN NULL ELSE 'manual_event_create' END,
-      CASE WHEN $20 IS NULL OR $21 IS NULL THEN NULL ELSE 'Ručně zadáno při vytvoření výjezdu' END,
-      CASE WHEN $20 IS NULL OR $21 IS NULL THEN NULL ELSE NOW() END,
+      $20::double precision,$21::double precision,
+      CASE WHEN $20::double precision IS NULL OR $21::double precision IS NULL THEN NULL ELSE 'manual_event_create' END,
+      CASE WHEN $20::double precision IS NULL OR $21::double precision IS NULL THEN NULL ELSE 'Ručně zadáno při vytvoření výjezdu' END,
+      CASE WHEN $20::double precision IS NULL OR $21::double precision IS NULL THEN NULL ELSE NOW() END,
       NOW(), NOW()
     )
     RETURNING *
@@ -1063,6 +1063,18 @@ export async function getEventsFiltered(filters, limit = 400) {
   const res = await pool.query(sql, params);
   return res.rows;
 }
+
+
+export async function countEventsFiltered(filters = {}) {
+  const params = [];
+  const { where } = buildFilterSql(filters, params);
+  const r = await pool.query(
+    `SELECT COUNT(*)::int AS total FROM events WHERE ${where}`,
+    params
+  );
+  return r.rows?.[0]?.total || 0;
+}
+
 
 export async function getStatsFiltered(filters) {
   const types = Array.isArray(filters?.types) ? filters.types : [];

@@ -30,6 +30,7 @@ import {
   initDb,
   upsertEvent,
   getEventsFiltered,
+  countEventsFiltered,
   getStatsFiltered,
   getCachedGeocode,
   setCachedGeocode,
@@ -3239,6 +3240,17 @@ app.get("/api/admin/events/search", requireAdmin, async (req, res) => {
       q: req.query?.q || "",
       limit: Number(req.query?.limit || 50)
     });
+
+    let visibleIds = new Set();
+    try {
+      const filters = parseFilters(req);
+      const visibleRows = await getEventsFiltered(filters, 2000);
+      visibleIds = new Set((visibleRows || []).map((x) => String(x.id)));
+      for (const it of items) {
+        it.visible_in_current_overview = visibleIds.has(String(it.id));
+      }
+    } catch {}
+
     return res.json({ ok: true, items });
   } catch (e) {
     console.error("[admin-events-search]", e);
@@ -3418,12 +3430,15 @@ app.get("/api/admin/visits/stats", requireAdmin, async (req, res) => {
 
 // events (filters) + backfill coords + backfill duration
 app.get("/api/events", async (req, res) => {
-  const limit = Math.min(Number(req.query.limit || 400), 2000);
+  const limit = Math.min(Number(req.query.limit || 2000), 2000);
   const filters = parseFilters(req);
 
-  const rows = await getEventsFiltered(filters, limit);
+  const [rows, totalMatching] = await Promise.all([
+    getEventsFiltered(filters, limit),
+    countEventsFiltered(filters)
+  ]);
 
-  res.json({ ok: true, filters, backfilled_coords: 0, backfilled_durations: 0, items: rows });
+  res.json({ ok: true, filters, limit, total_matching: totalMatching, backfilled_coords: 0, backfilled_durations: 0, items: rows });
 });
 
 // ✅ stats (30 dní) – vždy ze všech dnů (ignoruje filtr "Den")

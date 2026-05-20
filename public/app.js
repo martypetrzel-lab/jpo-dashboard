@@ -90,6 +90,7 @@ function toggleMasterMute() {
 }
 
 let latestItemsSnapshot = [];
+let latestEventsTotalMatching = 0;
 let lastGoodItemsSnapshot = [];
 let lastGoodStatsSnapshot = null;
 let lastGoodLoadAt = 0;
@@ -835,12 +836,25 @@ function escapeHtml(s) {
 // build query helpers
 // Pozn.: month filtr je určený jen pro statistiky měst (topCities) – NESMÍ ovlivnit /api/events ani exporty,
 // jinak to vypadá jako "zmizely události" při Obnovit.
+
+function getEventsApiLimit() {
+  // Hlavní přehled musí dostat celý vybraný den, jinak se noční události z DB nedostanou do tabulky.
+  return 2000;
+}
+
+function getEventsTableLimit() {
+  const v = Number(document.getElementById("eventsLimitSelect")?.value || 25);
+  return Number.isFinite(v) ? Math.max(10, Math.min(v, 200)) : 25;
+}
+
 function buildEventsQuery(filters) {
   const params = new URLSearchParams();
   if (filters.day && filters.day !== "all") params.set("day", filters.day);
   if (filters.type) params.set("type", filters.type);
   if (filters.city) params.set("city", filters.city);
   if (filters.status && filters.status !== "all") params.set("status", filters.status);
+  params.set("limit", String(getEventsTableLimit()));
+  params.set("limit", String(getEventsApiLimit()));
   // month zde úmyslně není
   return params.toString();
 }
@@ -1105,6 +1119,15 @@ function renderTable(items) {
     `;
 
     tbody.appendChild(tr);
+  }
+
+  const info = document.getElementById("eventsTableCountInfo");
+  if (info) {
+    const total = Number(latestEventsTotalMatching || safeItems.length || 0);
+    const shown = safeItems.length;
+    info.textContent = total > shown
+      ? `Zobrazeno ${shown} z ${total} událostí podle aktuálních filtrů.`
+      : `Zobrazeno ${shown} událostí podle aktuálních filtrů.`;
   }
 
   bindInlineTableEditButtons();
@@ -1568,6 +1591,7 @@ async function loadAll(options = {}) {
     }
 
     const items = Array.isArray(eventsJson.items) ? eventsJson.items : [];
+    latestEventsTotalMatching = Number(eventsJson.total_matching || items.length || 0);
 
     // Ochrana proti „vynulování“ obrazovky:
     // pokud auto-refresh vrátí prázdno, ale předtím jsme měli funkční data,
@@ -3715,7 +3739,9 @@ async function searchAdminEventsDb() {
 
   try {
     if (results) results.innerHTML = `<div class="muted">Hledám…</div>`;
-    const r = await fetch(`/api/admin/events/search?q=${encodeURIComponent(q)}&limit=50`, {
+    const filters = getFiltersFromUi?.() || {};
+    const current = buildEventsQuery(filters);
+    const r = await fetch(`/api/admin/events/search?q=${encodeURIComponent(q)}&limit=50${current ? `&${current}` : ""}`, {
       credentials: "include",
       cache: "no-store"
     });
@@ -3732,7 +3758,7 @@ async function searchAdminEventsDb() {
       results.innerHTML = items.map((it) => `
         <div class="adminSearchItem">
           <b>${escapeHtml(it.title || "")}</b>
-          <span>${escapeHtml(it.city_text || it.place_text || "")} • ${escapeHtml(formatDate(it.pub_date || it.start_time_iso || it.created_at))} • ${it.is_closed ? "ukončená" : "aktivní"} • GPS: ${it.lat != null && it.lon != null ? "ano" : "ne"}</span>
+          <span>${escapeHtml(it.city_text || it.place_text || "")} • ${escapeHtml(formatDate(it.pub_date || it.start_time_iso || it.created_at))} • ${it.is_closed ? "ukončená" : "aktivní"} • GPS: ${it.lat != null && it.lon != null ? "ano" : "ne"} • v hlavním přehledu: ${it.visible_in_current_overview ? "ano" : "ne"}</span>
           <small>ID: ${escapeHtml(it.id || "")}${it.source_kind === "manual" ? " • admin: ručně doplněno" : ""}</small>
         </div>
       `).join("");
@@ -5440,3 +5466,5 @@ function fwOpenRegisterDialog() {
     console.log("[reports] archive controls wired");
   });
 })();
+
+document.getElementById("eventsLimitSelect")?.addEventListener("change", () => loadAll());
