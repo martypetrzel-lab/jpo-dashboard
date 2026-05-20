@@ -468,7 +468,7 @@ export async function upsertEvent(ev) {
       source_kind, source_note,
       first_seen_at, last_seen_at
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,CASE WHEN $12::integer IS NOT NULL AND NULLIF($11::text,'' ) IS NOT NULL THEN 'explicit' ELSE NULL END,$13,$14,$15,$16,$17,$18,$20,$21, NOW(), NOW())
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,COALESCE($22::text, CASE WHEN $12::integer IS NOT NULL AND NULLIF($11::text,'' ) IS NOT NULL THEN 'rss_end_time' ELSE NULL END),$13,$14,$15,$16,$17,$18,$20,$21, NOW(), NOW())
     ON CONFLICT (id) DO UPDATE SET
       title = EXCLUDED.title,
       link = EXCLUDED.link,
@@ -500,11 +500,10 @@ export async function upsertEvent(ev) {
              AND events.duration_min IS NULL THEN
           (
             CASE
-              -- FireWatch měří sledovanou délku:
-              -- první chvíle, kdy jsme událost viděli v DB -> chvíle, kdy přišel update "ukončená".
-              WHEN ROUND(EXTRACT(EPOCH FROM (NOW() - COALESCE(events.first_seen_at, events.created_at))) / 60.0)::int <= 0 THEN NULL
-              WHEN ROUND(EXTRACT(EPOCH FROM (NOW() - COALESCE(events.first_seen_at, events.created_at))) / 60.0)::int > $19 THEN NULL
-              ELSE ROUND(EXTRACT(EPOCH FROM (NOW() - COALESCE(events.first_seen_at, events.created_at))) / 60.0)::int
+              -- Fallback bez RSS ukončení: čas změny na ukončená - pub_date/start_time.
+              WHEN ROUND(EXTRACT(EPOCH FROM (NOW() - COALESCE(NULLIF(events.pub_date,'' )::timestamptz, NULLIF(events.start_time_iso,'' )::timestamptz, events.first_seen_at, events.created_at))) / 60.0)::int <= 0 THEN NULL
+              WHEN ROUND(EXTRACT(EPOCH FROM (NOW() - COALESCE(NULLIF(events.pub_date,'' )::timestamptz, NULLIF(events.start_time_iso,'' )::timestamptz, events.first_seen_at, events.created_at))) / 60.0)::int > $19 THEN NULL
+              ELSE ROUND(EXTRACT(EPOCH FROM (NOW() - COALESCE(NULLIF(events.pub_date,'' )::timestamptz, NULLIF(events.start_time_iso,'' )::timestamptz, events.first_seen_at, events.created_at))) / 60.0)::int
             END
           )
         ELSE events.duration_min
@@ -512,7 +511,7 @@ export async function upsertEvent(ev) {
 
       duration_source = CASE
         WHEN EXCLUDED.status_source = 'explicit_open' THEN NULL
-        WHEN EXCLUDED.duration_min IS NOT NULL AND NULLIF(EXCLUDED.end_time_iso,'' ) IS NOT NULL THEN 'manual'
+        WHEN EXCLUDED.duration_min IS NOT NULL THEN COALESCE(EXCLUDED.duration_source, 'rss_end_time')
         WHEN (EXCLUDED.status_source = 'explicit_closed' OR EXCLUDED.is_closed = TRUE) AND events.is_closed = FALSE AND events.status_source = 'explicit_open' AND events.duration_min IS NULL THEN 'observed_first_seen_to_close_update'
         ELSE events.duration_source
       END,
@@ -555,7 +554,8 @@ export async function upsertEvent(ev) {
       ev.statusSource || null,
       MAX_DURATION_MINUTES,
       ev.sourceKind || null,
-      ev.sourceNote || null
+      ev.sourceNote || null,
+      ev.durationSource || null
     ]
   );
 }

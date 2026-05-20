@@ -385,6 +385,27 @@ function isDistrictPlace(placeText) {
 const MAX_DURATION_MINUTES = Math.max(60, Number(process.env.DURATION_MAX_MINUTES || 4320));
 const FUTURE_END_TOLERANCE_MS = 2 * 60 * 1000;
 
+
+function safeDurationFromStartEnd(startIso, endIso) {
+  const startMs = startIso ? new Date(startIso).getTime() : NaN;
+  const endMs = endIso ? new Date(endIso).getTime() : NaN;
+  const nowMs = Date.now();
+
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return null;
+  if (endMs > nowMs + FUTURE_END_TOLERANCE_MS) return null;
+
+  const dur = Math.round((endMs - startMs) / 60000);
+  if (!Number.isFinite(dur) || dur <= 0 || dur > MAX_DURATION_MINUTES) return null;
+  return dur;
+}
+
+function eventStartIsoFromEspRss(it = {}, times = {}) {
+  // Směrodatný čas začátku z ESP/RSS je pubDate.
+  // startTimeIso/zahájení je jen fallback, pokud by někdy pubDate chyběl.
+  return it.pubDate || it.pub_date || it.startTimeIso || it.start_time_iso || times?.startIso || null;
+}
+
+
 async function computeDurationMin(id, startIso, endIso, firstSeen, cutoffIso) {
   const startMs = startIso ? new Date(startIso).getTime() : NaN;
   const nowMs = Date.now();
@@ -2929,46 +2950,56 @@ if (statusAnalysis.source === "explicit_open") {
   );
 }
 
-// start / end timestamps (prefer payload, then parsed, then previous DB values)
+// start / end timestamps podle finální logiky ESP/RSS:
+// začátek = pubDate z ESP/RSS, konec = "ukončení:" z RSS description.
+// Když konec v RSS není, použijeme okamžik, kdy FireWatch zjistí přechod aktivní -> ukončená.
+const rssStartIso = eventStartIsoFromEspRss(it, times);
+
 const startIso =
   it.startTimeIso ||
   times.startIso ||
+  rssStartIso ||
   prev?.start_time_iso ||
   null;
 
 let endIso =
   it.endTimeIso ||
   times.endIso ||
-  prev?.end_time_iso ||
   null;
 
-// Délku automaticky počítáme jen tehdy, když FireWatch z databáze ví,
-// že událost předtím opravdu viděl jako aktivní/otevřenou.
-// Pokud událost přišla do DB už rovnou ukončená, délku neodhadujeme.
 const wasKnownOpen = !!(prev && prev.is_closed === false && prev.status_source === "explicit_open");
 const closingKnownOpen = isClosed && wasKnownOpen;
 
-if (closingKnownOpen && !endIso) {
-  endIso = new Date().toISOString();
-}
-
 let durationMin = null;
+let durationSource = null;
 
-// Pokud ESP někdy pošle délku explicitně, přijmeme ji.
+// 1) Pokud ESP někdy pošle délku explicitně, přijmeme ji.
 if (Number.isFinite(it.durationMin)) {
   const candidate = Math.round(it.durationMin);
   durationMin = (candidate > 0 && candidate <= MAX_DURATION_MINUTES) ? candidate : null;
-} else if (closingKnownOpen) {
-  const startObserved = prev?.first_seen_at || prev?.created_at || null;
-  const endObserved = endIso || new Date().toISOString();
+  if (durationMin != null) durationSource = "esp_duration";
+}
 
-  const s = startObserved ? new Date(startObserved).getTime() : NaN;
-  const e = new Date(endObserved).getTime();
+// 2) Nejlepší přesnost: RSS obsahuje "ukončení:".
+// Délka = ukončení z RSS - pubDate z RSS.
+if (durationMin == null && isClosed && endIso) {
+  durationMin = safeDurationFromStartEnd(rssStartIso || startIso, endIso);
+  if (durationMin != null) durationSource = "rss_end_time";
+}
 
-  if (Number.isFinite(s) && Number.isFinite(e) && e > s) {
-    const candidate = Math.round((e - s) / 60000);
-    durationMin = (candidate > 0 && candidate <= MAX_DURATION_MINUTES) ? candidate : null;
-  }
+// 3) Bez "ukončení:" fallback jen při bezpečném přechodu aktivní -> ukončená.
+// Délka = čas zjištění ukončení - pubDate z RSS.
+if (durationMin == null && isClosed && closingKnownOpen) {
+  if (!endIso) endIso = new Date().toISOString();
+  durationMin = safeDurationFromStartEnd(rssStartIso || startIso, endIso);
+  if (durationMin != null) durationSource = "close_update";
+}
+
+// 4) Událost přišla rovnou ukončená bez času ukončení = délka zůstane neznámá.
+if (!isClosed) {
+  endIso = null;
+  durationMin = null;
+  durationSource = null;
 }
 
       const placeText = it.placeText || null;
@@ -2997,6 +3028,7 @@ if (Number.isFinite(it.durationMin)) {
         startTimeIso: startIso,
         endTimeIso: endIso,
         durationMin,
+        durationSource,
         isClosed,
         alarmLevel: major.alarmLevel,
         alarmLevelText: major.alarmLevelText,

@@ -962,13 +962,17 @@ function carryoverBadgeHtml(it) {
 function liveDurationForEvent(it) {
   if (!it || it.is_closed) return it?.duration_min;
 
-  // Sledovaná délka: od první chvíle, kdy FireWatch událost uviděl,
-  // do aktuální chvíle. Po ukončení backend uloží stejný princip do duration_min.
-  const start = it.first_seen_at || it.created_at || it.start_time_iso || it.pub_date;
+  // Aktivní zásah: směrodatný začátek je pub_date z ESP/RSS.
+  // Fallbacky jsou jen pro případ, že RSS čas chybí.
+  const start = it.pub_date || it.start_time_iso || it.first_seen_at || it.created_at;
   if (!start) return it.duration_min;
+
   const d = new Date(start);
   if (Number.isNaN(d.getTime())) return it.duration_min;
-  return Math.max(0, Math.round((Date.now() - d.getTime()) / 60000));
+
+  const minutes = Math.max(0, Math.round((Date.now() - d.getTime()) / 60000));
+  if (!Number.isFinite(minutes) || minutes > 60 * 24 * 7) return it.duration_min;
+  return minutes;
 }
 
 function alarmLevelBadge(it) {
