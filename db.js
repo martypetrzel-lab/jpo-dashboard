@@ -1066,12 +1066,43 @@ export async function getEventsFiltered(filters, limit = 400) {
 
 
 export async function countEventsFiltered(filters = {}) {
+  const types = Array.isArray(filters?.types) ? filters.types : [];
+  const city = String(filters?.city || "").trim();
+  const status = String(filters?.status || "all").toLowerCase();
+  const day = String(filters?.day || "all").toLowerCase();
+  const month = String(filters?.month || "").trim();
+
+  const where = [];
   const params = [];
-  const { where } = buildFilterSql(filters, params);
+  let i = 1;
+
+  if (types.length) {
+    where.push(`event_type = ANY($${i}::text[])`);
+    params.push(types);
+    i++;
+  }
+
+  if (city) {
+    where.push(`(COALESCE(city_text,'') ILIKE $${i} OR COALESCE(place_text,'') ILIKE $${i} OR COALESCE(title,'') ILIKE $${i} OR COALESCE(description_raw,'') ILIKE $${i})`);
+    params.push(`%${city}%`);
+    i++;
+  }
+
+  if (status === "open") where.push(`is_closed = FALSE`);
+  if (status === "closed") where.push(`is_closed = TRUE`);
+
+  const dayWin = buildTimeWindowSql(day, params, i);
+  where.push(...dayWin.clauses);
+  i = dayWin.nextI;
+
+  const mWin = buildMonthSql(month, params, i);
+  where.push(...mWin.clauses);
+
   const r = await pool.query(
-    `SELECT COUNT(*)::int AS total FROM events WHERE ${where}`,
+    `SELECT COUNT(*)::int AS total FROM events ${where.length ? "WHERE " + where.join(" AND ") : ""}`,
     params
   );
+
   return r.rows?.[0]?.total || 0;
 }
 
