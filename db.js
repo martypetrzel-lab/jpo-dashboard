@@ -878,7 +878,7 @@ export async function searchEventsAdmin({ q = "", limit = 50 } = {}) {
       source_kind, source_note, lat, lon, created_at, last_seen_at
     FROM events
     WHERE ${where}
-    ORDER BY COALESCE(NULLIF(start_time_iso,'' )::timestamptz, created_at) DESC, created_at DESC
+    ORDER BY COALESCE(NULLIF(pub_date,'' )::timestamptz, NULLIF(start_time_iso,'' )::timestamptz, created_at) DESC, created_at DESC
     LIMIT $${params.length}
     `,
     params
@@ -935,9 +935,17 @@ export async function getEventsOutsideCz(limit = 200) {
   return res.rows;
 }
 
+
+function eventTimeSql() {
+  // Hlavní datum události musí odpovídat RSS/veřejné tabulce.
+  // pub_date je čas události z feedu; start_time_iso používáme až jako fallback.
+  return "COALESCE(NULLIF(pub_date,'' )::timestamptz, NULLIF(start_time_iso,'' )::timestamptz, created_at)";
+}
+
 function buildTimeWindowSql(day, params, iStart) {
   const clauses = [];
   let i = iStart;
+  const t = eventTimeSql();
 
   if (day === "today" || day === "yesterday") {
     const offset = day === "yesterday" ? 1 : 0;
@@ -945,14 +953,14 @@ function buildTimeWindowSql(day, params, iStart) {
     clauses.push(
       `(
         (
-          (COALESCE(NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date
+          (${t} AT TIME ZONE 'Europe/Prague')::date
           = ((NOW() AT TIME ZONE 'Europe/Prague')::date - $${i}::int)
         )
         OR
         (
           is_closed = FALSE
           AND (COALESCE(alarm_level, 0) >= 2 OR COALESCE(is_major_event, FALSE) = TRUE)
-          AND (COALESCE(NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date
+          AND (${t} AT TIME ZONE 'Europe/Prague')::date
               < ((NOW() AT TIME ZONE 'Europe/Prague')::date - $${i}::int)
         )
       )`
@@ -972,7 +980,7 @@ function buildMonthSql(month, params, iStart) {
     const m = month.match(/^\d{4}-\d{2}$/);
     if (m) {
       clauses.push(
-        `date_trunc('month', (COALESCE(NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')) = date_trunc('month', to_date($${i}, 'YYYY-MM'))`
+        `date_trunc('month', (${eventTimeSql()} AT TIME ZONE 'Europe/Prague')) = date_trunc('month', to_date($${i}, 'YYYY-MM'))`
       );
       params.push(month);
       i++;
@@ -1028,16 +1036,16 @@ export async function getEventsFiltered(filters, limit = 400) {
       (
         is_closed = FALSE
         AND (COALESCE(alarm_level, 0) >= 2 OR COALESCE(is_major_event, FALSE) = TRUE)
-        AND (COALESCE(NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date
+        AND (COALESCE(NULLIF(pub_date,'' )::timestamptz, NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date
             < (NOW() AT TIME ZONE 'Europe/Prague')::date
       ) AS is_carryover_active,
       (
         CASE
           WHEN is_closed = FALSE
                AND (COALESCE(alarm_level, 0) >= 2 OR COALESCE(is_major_event, FALSE) = TRUE)
-               AND (COALESCE(NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date
+               AND (COALESCE(NULLIF(pub_date,'' )::timestamptz, NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date
                < (NOW() AT TIME ZONE 'Europe/Prague')::date
-          THEN ((NOW() AT TIME ZONE 'Europe/Prague')::date - (COALESCE(NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date)::int
+          THEN ((NOW() AT TIME ZONE 'Europe/Prague')::date - (COALESCE(NULLIF(pub_date,'' )::timestamptz, NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date)::int
           ELSE 0
         END
       ) AS carryover_days,
@@ -1053,7 +1061,7 @@ export async function getEventsFiltered(filters, limit = 400) {
         WHEN COALESCE(alarm_level, 0) >= 3 OR COALESCE(is_major_event, FALSE) = TRUE THEN 3
         ELSE 4
       END ASC,
-      COALESCE(NULLIF(start_time_iso,'' )::timestamptz, created_at) DESC,
+      COALESCE(NULLIF(pub_date,'' )::timestamptz, NULLIF(start_time_iso,'' )::timestamptz, created_at) DESC,
       created_at DESC
     LIMIT $${i}
     `;
@@ -1148,7 +1156,7 @@ export async function getStatsFiltered(filters) {
   const byDay = await pool.query(
     `
     SELECT
-      to_char(((COALESCE(NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date), 'YYYY-MM-DD') AS day,
+      to_char(((COALESCE(NULLIF(pub_date,'' )::timestamptz, NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date), 'YYYY-MM-DD') AS day,
       COUNT(*)::int AS count
     FROM events
     ${where30Sql}
@@ -1619,16 +1627,16 @@ export async function getEventsForPeriod(startIso, endExclusiveIso) {
       (
         is_closed = FALSE
         AND (COALESCE(alarm_level, 0) >= 2 OR COALESCE(is_major_event, FALSE) = TRUE)
-        AND (COALESCE(NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date
+        AND (COALESCE(NULLIF(pub_date,'' )::timestamptz, NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date
             < (NOW() AT TIME ZONE 'Europe/Prague')::date
       ) AS is_carryover_active,
       (
         CASE
           WHEN is_closed = FALSE
                AND (COALESCE(alarm_level, 0) >= 2 OR COALESCE(is_major_event, FALSE) = TRUE)
-               AND (COALESCE(NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date
+               AND (COALESCE(NULLIF(pub_date,'' )::timestamptz, NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date
                < (NOW() AT TIME ZONE 'Europe/Prague')::date
-          THEN ((NOW() AT TIME ZONE 'Europe/Prague')::date - (COALESCE(NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date)::int
+          THEN ((NOW() AT TIME ZONE 'Europe/Prague')::date - (COALESCE(NULLIF(pub_date,'' )::timestamptz, NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date)::int
           ELSE 0
         END
       ) AS carryover_days,
