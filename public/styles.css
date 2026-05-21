@@ -3996,3 +3996,862 @@ button.btn:hover {
     radial-gradient(circle at 100% 0%, rgba(255, 196, 87, 0.10), transparent 26rem),
     rgba(255,255,255,0.035) !important;
 }
+
+
+/* =========================================================
+   FireWatch CZ v2.9 – profesionální responzivní redesign
+   Zachovává funkce, mění jen prezentaci a použitelnost.
+   ========================================================= */
+:root {
+  --fw-bg0: #070b10;
+  --fw-bg1: #0b111a;
+  --fw-bg2: #111a27;
+  --fw-card: rgba(15, 23, 34, 0.82);
+  --fw-card2: rgba(20, 30, 44, 0.92);
+  --fw-line: rgba(255,255,255,0.095);
+  --fw-line2: rgba(255,255,255,0.15);
+  --fw-text: #eef5ff;
+  --fw-muted: rgba(238,245,255,0.68);
+  --fw-soft: rgba(238,245,255,0.48);
+  --fw-orange: #ff7a28;
+  --fw-orange2: #ffb15f;
+  --fw-blue: #5eb1ff;
+  --fw-green: #5ee0a0;
+  --fw-red: #ff5d5d;
+  --fw-radius: 22px;
+  --fw-shadow: 0 20px 70px rgba(0,0,0,0.38);
+}
+
+html {
+  scroll-behavior: smooth;
+  background: var(--fw-bg0);
+}
+
+body {
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 18% -6%, rgba(255,122,40,0.20), transparent 30rem),
+    radial-gradient(circle at 82% 4%, rgba(62,156,255,0.14), transparent 36rem),
+    linear-gradient(135deg, #070b10 0%, #0b1018 42%, #0d1420 100%) !important;
+  color: var(--fw-text);
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(rgba(255,255,255,0.024) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.018) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: linear-gradient(to bottom, rgba(0,0,0,0.58), transparent 72%);
+  z-index: -1;
+}
+
+.fwAppShell {
+  max-width: 1780px;
+  margin: 0 auto;
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 60;
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  background: rgba(8, 12, 18, 0.82) !important;
+  border-bottom: 1px solid var(--fw-line) !important;
+  box-shadow: 0 16px 48px rgba(0,0,0,0.26);
+}
+
+.fwBrandLogoTop {
+  max-height: 58px;
+  width: auto;
+}
+
+.actions .btn,
+.btn,
+button.btn {
+  min-height: 40px;
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,0.13);
+  background: rgba(255,255,255,0.055);
+  color: var(--fw-text);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.18);
+  transition: transform .16s ease, background .16s ease, border-color .16s ease, box-shadow .16s ease;
+}
+
+.btn:hover,
+button.btn:hover {
+  transform: translateY(-1px);
+  background: rgba(255,255,255,0.085);
+  border-color: rgba(255,255,255,0.20);
+}
+
+.btn.primary,
+button.btn.primary {
+  border-color: rgba(255,122,40,0.42);
+  background: linear-gradient(135deg, rgba(255,122,40,0.95), rgba(255,167,72,0.82));
+  color: #160b03;
+  font-weight: 900;
+}
+
+.pill,
+#statusPill,
+#modePill {
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 7px 12px;
+  border: 1px solid var(--fw-line2);
+  background: rgba(255,255,255,0.065);
+  font-weight: 850;
+}
+
+.fwSidebar {
+  background:
+    radial-gradient(circle at 50% 0%, rgba(255,122,40,0.14), transparent 18rem),
+    rgba(8,12,18,0.86) !important;
+  border-right: 1px solid var(--fw-line);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+.fwSidebarNav button {
+  border-radius: 15px !important;
+  min-height: 42px;
+  color: rgba(238,245,255,0.84);
+  border: 1px solid transparent;
+  transition: background .16s ease, border-color .16s ease, transform .16s ease;
+}
+
+.fwSidebarNav button:hover {
+  transform: translateX(2px);
+  background: rgba(255,255,255,0.075) !important;
+  border-color: rgba(255,255,255,0.11);
+}
+
+.mobileSidebarToggle {
+  border-radius: 999px !important;
+  background: rgba(9,14,21,0.90) !important;
+  border: 1px solid var(--fw-line2) !important;
+  box-shadow: var(--fw-shadow);
+}
+
+.landingPage,
+.grid {
+  padding-left: clamp(12px, 2vw, 28px);
+  padding-right: clamp(12px, 2vw, 28px);
+}
+
+.landingHero {
+  border: 1px solid var(--fw-line);
+  border-radius: 30px;
+  background:
+    radial-gradient(circle at 0% 0%, rgba(255,122,40,0.18), transparent 34rem),
+    radial-gradient(circle at 100% 18%, rgba(94,177,255,0.12), transparent 30rem),
+    rgba(12,18,27,0.76);
+  box-shadow: var(--fw-shadow);
+  overflow: hidden;
+}
+
+.landingHeroText h1 {
+  font-size: clamp(32px, 5vw, 66px);
+  line-height: 0.98;
+  letter-spacing: -0.055em;
+}
+
+.landingHeroText p {
+  color: var(--fw-muted);
+  font-size: clamp(15px, 1.35vw, 18px);
+  line-height: 1.65;
+}
+
+.landingBadge,
+.eyebrow {
+  width: fit-content;
+  border: 1px solid rgba(255,122,40,0.26);
+  border-radius: 999px;
+  background: rgba(255,122,40,0.09);
+  color: #ffd2b7;
+  padding: 7px 11px;
+  font-weight: 900;
+  letter-spacing: .02em;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: clamp(14px, 1.45vw, 22px);
+  align-items: start;
+}
+
+.card,
+section.card {
+  border: 1px solid var(--fw-line) !important;
+  border-radius: var(--fw-radius) !important;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.055), rgba(255,255,255,0.025)),
+    var(--fw-card) !important;
+  box-shadow: 0 18px 55px rgba(0,0,0,0.24);
+  overflow: hidden;
+}
+
+.cardHeader {
+  gap: 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.065);
+  padding-bottom: 12px;
+}
+
+.cardHeader h2,
+.card h2 {
+  letter-spacing: -0.025em;
+}
+
+.hint,
+.cardHeader .hint,
+.muted {
+  color: var(--fw-muted) !important;
+}
+
+.commandOverviewCard {
+  grid-column: 1 / -1;
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 14% 10%, rgba(255,122,40,0.18), transparent 30rem),
+    radial-gradient(circle at 92% 6%, rgba(94,177,255,0.14), transparent 34rem),
+    linear-gradient(180deg, rgba(255,255,255,0.075), rgba(255,255,255,0.028)),
+    rgba(9,14,22,0.94) !important;
+}
+
+.commandOverviewCard::after {
+  content: "";
+  position: absolute;
+  inset: auto -10% -45% 30%;
+  height: 260px;
+  background: radial-gradient(circle, rgba(255,122,40,0.12), transparent 60%);
+  pointer-events: none;
+}
+
+.v28HeroTop {
+  position: relative;
+  z-index: 1;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 18px;
+}
+
+.v28HeroCopy h2 {
+  font-size: clamp(28px, 3.2vw, 48px);
+  line-height: 1;
+  margin: 10px 0 10px;
+}
+
+.v28HeroCopy p {
+  max-width: 820px;
+  color: var(--fw-muted);
+  line-height: 1.65;
+}
+
+.v28HeroStatus {
+  min-width: 250px;
+  border-radius: 20px;
+  padding: 14px 16px;
+  border: 1px solid rgba(94,177,255,0.20);
+  background: rgba(94,177,255,0.075);
+}
+
+.v28HeroStatus span {
+  display: block;
+  font-weight: 950;
+  color: #dff0ff;
+}
+
+.v28HeroStatus small {
+  color: var(--fw-soft);
+}
+
+.v28KpiGrid {
+  position: relative;
+  z-index: 1;
+  display: grid !important;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.v28KpiTile {
+  min-height: 126px;
+  text-align: left;
+  border-radius: 22px !important;
+  border: 1px solid rgba(255,255,255,0.095) !important;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.075), rgba(255,255,255,0.032)),
+    rgba(255,255,255,0.035) !important;
+  color: var(--fw-text);
+  padding: 16px !important;
+  box-shadow: 0 16px 40px rgba(0,0,0,0.18);
+}
+
+.v28KpiTile b {
+  display: block;
+  font-size: clamp(28px, 3vw, 42px);
+  line-height: 1;
+  margin: 12px 0 6px;
+}
+
+.v28KpiTile span,
+.v28KpiTile small {
+  color: var(--fw-muted);
+}
+
+.v28KpiTile.urgent {
+  border-color: rgba(255,93,93,0.34) !important;
+  background:
+    radial-gradient(circle at 80% 0%, rgba(255,93,93,0.16), transparent 10rem),
+    rgba(255,93,93,0.055) !important;
+}
+
+.v28KpiTile.warning {
+  border-color: rgba(255,177,95,0.34) !important;
+  background:
+    radial-gradient(circle at 80% 0%, rgba(255,177,95,0.16), transparent 10rem),
+    rgba(255,177,95,0.050) !important;
+}
+
+.v29SignalBar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 16px 0 0;
+}
+
+.v29Signal {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.045);
+  color: var(--fw-muted);
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.v29Signal.ok {
+  color: #d7ffe9;
+  border-color: rgba(94,224,160,0.25);
+  background: rgba(94,224,160,0.08);
+}
+
+.v28OpsStrip {
+  position: relative;
+  z-index: 1;
+  border-radius: 22px !important;
+  border: 1px solid rgba(255,255,255,0.075);
+  background: rgba(0,0,0,0.13);
+  padding: 14px;
+}
+
+.v28OpsMain strong {
+  font-size: 15px;
+}
+
+.v28OpsMain span,
+.v28OpsMeta span {
+  color: var(--fw-muted);
+}
+
+.mapCard {
+  grid-column: span 7;
+}
+
+#map {
+  min-height: clamp(360px, 52vh, 680px);
+  border-radius: 18px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,0.08);
+}
+
+.chartCard,
+.activeClosedCard,
+.v28MiniPanel,
+.regionalWeatherCard,
+.majorEventsCard,
+.manualEventQuickCard,
+.tableCard,
+.talkLauncherCard,
+.publicLockedCard,
+.opsRadioCardShell,
+.reportsArchiveCard,
+.watchCard,
+.statsProCard {
+  grid-column: span 6;
+}
+
+.tableCard,
+.statsProCard,
+.reportsArchiveCard {
+  grid-column: 1 / -1;
+}
+
+.regionalWeatherCard {
+  grid-column: span 6;
+}
+
+.majorEventsCard {
+  grid-column: span 6;
+}
+
+.card input,
+.card select,
+.card textarea,
+.topbar select,
+.miniInput,
+.miniSelect {
+  min-height: 40px;
+  border-radius: 14px !important;
+  border: 1px solid rgba(255,255,255,0.13) !important;
+  background: rgba(255,255,255,0.065) !important;
+  color: var(--fw-text) !important;
+}
+
+.filters,
+.filterGrid,
+.controls,
+.formGrid {
+  gap: 12px !important;
+}
+
+.tableWrap {
+  border-radius: 18px;
+  border: 1px solid rgba(255,255,255,0.075);
+  background: rgba(0,0,0,0.12);
+}
+
+table {
+  border-collapse: separate !important;
+  border-spacing: 0;
+  width: 100%;
+}
+
+thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: rgba(12,18,27,0.96);
+  color: rgba(238,245,255,0.72);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: .045em;
+}
+
+tbody tr {
+  transition: background .12s ease, transform .12s ease;
+}
+
+tbody tr:hover {
+  background: rgba(255,255,255,0.045);
+}
+
+tbody td {
+  border-bottom: 1px solid rgba(255,255,255,0.055);
+  vertical-align: middle;
+}
+
+.desktopEventsTable {
+  display: block;
+}
+
+.eventsMobileList {
+  display: none;
+}
+
+.eventMobileCard {
+  border: 1px solid rgba(255,255,255,0.09);
+  border-radius: 20px;
+  padding: 14px;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.060), rgba(255,255,255,0.025)),
+    rgba(12,18,27,0.86);
+  box-shadow: 0 16px 38px rgba(0,0,0,0.18);
+}
+
+.eventMobileCard.isOpen {
+  border-color: rgba(255,93,93,0.24);
+}
+
+.eventMobileCard.isMajor {
+  border-color: rgba(255,177,95,0.36);
+  background:
+    radial-gradient(circle at 92% 0%, rgba(255,177,95,0.13), transparent 10rem),
+    rgba(12,18,27,0.88);
+}
+
+.eventMobileTop {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas:
+    "type title"
+    "type state";
+  gap: 4px 10px;
+  align-items: start;
+}
+
+.eventMobileType {
+  grid-area: type;
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border-radius: 15px;
+  background: rgba(255,255,255,0.070);
+  border: 1px solid rgba(255,255,255,0.10);
+  font-size: 22px;
+}
+
+.eventMobileTitleBlock {
+  grid-area: title;
+  min-width: 0;
+}
+
+.eventMobileTitleBlock h3 {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.25;
+}
+
+.eventMobileTitleBlock p {
+  margin: 4px 0 0;
+  color: var(--fw-muted);
+  font-size: 13px;
+}
+
+.eventMobileState {
+  grid-area: state;
+  width: fit-content;
+  border-radius: 999px;
+  padding: 4px 9px;
+  color: var(--fw-muted);
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.075);
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.eventMobileMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.eventMobileMeta span {
+  border-radius: 999px;
+  padding: 5px 9px;
+  color: rgba(238,245,255,0.75);
+  background: rgba(255,255,255,0.050);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.eventMobileBadges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.eventMobileActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.eventMobileActions .linkBtn,
+.eventMobileActions .btn {
+  min-height: 36px;
+}
+
+.emptyMobileEvents {
+  border: 1px dashed rgba(255,255,255,0.16);
+  border-radius: 18px;
+  padding: 18px;
+  color: var(--fw-muted);
+  background: rgba(255,255,255,0.035);
+}
+
+.eventsTableCountInfo {
+  color: var(--fw-soft);
+}
+
+.modal,
+.modalWide {
+  border-radius: 24px !important;
+  border: 1px solid rgba(255,255,255,0.12) !important;
+  background: rgba(11,17,26,0.96) !important;
+  box-shadow: 0 25px 90px rgba(0,0,0,0.58);
+}
+
+.modalBackdrop {
+  backdrop-filter: blur(7px);
+  -webkit-backdrop-filter: blur(7px);
+}
+
+@media (min-width: 1160px) {
+  .fwAppShell {
+    padding-left: 258px;
+  }
+
+  .fwSidebar {
+    width: 258px;
+  }
+}
+
+@media (max-width: 1320px) {
+  .v28KpiGrid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .mapCard,
+  .regionalWeatherCard,
+  .majorEventsCard,
+  .chartCard,
+  .activeClosedCard,
+  .v28MiniPanel,
+  .talkLauncherCard,
+  .publicLockedCard,
+  .opsRadioCardShell {
+    grid-column: 1 / -1;
+  }
+
+  #map {
+    min-height: 460px;
+  }
+}
+
+@media (max-width: 980px) {
+  .topbar {
+    align-items: flex-start;
+    flex-direction: column;
+    padding: 12px 12px 14px;
+  }
+
+  .actions {
+    width: 100%;
+    justify-content: flex-start;
+    overflow-x: auto;
+    padding-bottom: 4px;
+    flex-wrap: nowrap;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .actions > * {
+    flex: 0 0 auto;
+  }
+
+  .miniPanel {
+    min-width: 260px;
+  }
+
+  .v28HeroTop {
+    grid-template-columns: 1fr;
+  }
+
+  .v28HeroStatus {
+    min-width: 0;
+  }
+
+  .v28KpiGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .v28KpiTile {
+    min-height: 112px;
+  }
+
+  .v28OpsStrip {
+    display: grid !important;
+    gap: 12px;
+  }
+
+  .tableHeaderControls {
+    width: 100%;
+    justify-content: flex-start !important;
+  }
+}
+
+@media (max-width: 720px) {
+  body {
+    font-size: 14px;
+  }
+
+  .fwAppShell {
+    padding-bottom: 70px;
+  }
+
+  .mobileSidebarToggle {
+    display: inline-flex !important;
+    position: fixed;
+    left: 12px;
+    bottom: 12px;
+    z-index: 120;
+    min-height: 46px;
+    padding: 10px 14px;
+  }
+
+  .fwSidebar {
+    width: min(88vw, 330px) !important;
+  }
+
+  .landingPage,
+  .grid {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+
+  .landingHero {
+    border-radius: 22px;
+  }
+
+  .landingHeroText {
+    padding: 20px !important;
+  }
+
+  .landingPreview {
+    display: none;
+  }
+
+  .grid {
+    display: block;
+  }
+
+  .card,
+  section.card {
+    margin-bottom: 12px;
+    border-radius: 20px !important;
+  }
+
+  .cardHeader {
+    display: grid !important;
+    gap: 8px;
+  }
+
+  .v28HeroCopy h2 {
+    font-size: 30px;
+  }
+
+  .v28HeroCopy p {
+    font-size: 14px;
+  }
+
+  .v28KpiGrid {
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .v28KpiTile {
+    min-height: 104px;
+    padding: 12px !important;
+  }
+
+  .v28KpiTile span {
+    font-size: 12px;
+  }
+
+  .v28KpiTile b {
+    font-size: 30px;
+  }
+
+  .v28KpiTile small {
+    font-size: 11px;
+  }
+
+  .v29SignalBar {
+    gap: 6px;
+  }
+
+  .v29Signal {
+    font-size: 11px;
+  }
+
+  .desktopEventsTable {
+    display: none !important;
+  }
+
+  .eventsMobileList {
+    display: grid;
+    gap: 10px;
+  }
+
+  #map {
+    min-height: 360px;
+    border-radius: 16px;
+  }
+
+  .modal,
+  .modalWide {
+    width: calc(100vw - 18px) !important;
+    max-width: calc(100vw - 18px) !important;
+    max-height: calc(100dvh - 18px) !important;
+    border-radius: 20px !important;
+  }
+
+  .modalBody {
+    max-height: calc(100dvh - 140px);
+    overflow: auto;
+  }
+
+  input,
+  select,
+  textarea,
+  button {
+    font-size: 16px;
+  }
+}
+
+@media (max-width: 460px) {
+  .topbar {
+    padding-top: 10px;
+  }
+
+  .fwBrandLogoTop {
+    max-height: 44px;
+  }
+
+  .actions .btn,
+  .btn {
+    min-height: 38px;
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+
+  .v28KpiGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .eventMobileTop {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .eventMobileState {
+    font-size: 11px;
+  }
+
+  .eventMobileMeta span {
+    font-size: 11px;
+  }
+}
+
+@media (hover: none) {
+  .btn:hover,
+  button.btn:hover,
+  .fwSidebarNav button:hover {
+    transform: none;
+  }
+}

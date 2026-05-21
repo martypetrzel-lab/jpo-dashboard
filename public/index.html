@@ -47,7 +47,7 @@
     </nav>
 
     <div class="fwSidebarFooter">
-      <span>v2.0 layout</span>
+      <span>v2.9 responsive</span>
       <small>Neoficiální analytický projekt</small>
     </div>
   </aside>
@@ -344,6 +344,12 @@
           <b id="overviewMissingCount">—</b>
           <small>k ručnímu doplnění</small>
         </button>
+      </div>
+
+      <div class="v29SignalBar" aria-label="Rychlý stav systému">
+        <span class="v29Signal ok">● Živá data</span>
+        <span class="v29Signal">Středočeský kraj</span>
+        <span class="v29Signal">Veřejný analytický režim</span>
       </div>
 
       <div class="v28OpsStrip">
@@ -644,11 +650,11 @@
               <option value="200">200</option>
             </select>
           </label>
-          <div class="hint">Tabulka (scroll na mobilu)</div>
+          <div class="hint">Desktop tabulka / mobilní karty</div>
         </div>
       </div>
 
-      <div class="tableWrap" role="region" aria-label="Tabulka výjezdů" tabindex="0">
+      <div class="tableWrap desktopEventsTable" role="region" aria-label="Tabulka výjezdů" tabindex="0">
         <table>
           <thead>
           <tr>
@@ -666,6 +672,7 @@
           <tbody id="eventsTbody"></tbody>
         </table>
       </div>
+      <div id="eventsMobileList" class="eventsMobileList" aria-label="Mobilní seznam výjezdů"></div>
       <div id="eventsTableCountInfo" class="eventsTableCountInfo"></div>
     </section>
   </main>

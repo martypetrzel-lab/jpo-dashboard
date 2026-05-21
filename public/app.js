@@ -1093,6 +1093,68 @@ function durationBadgeHtml(it) {
   return "";
 }
 
+
+function compactTitleForMobile(title = "", city = "") {
+  const raw = String(title || "").trim();
+  const c = String(city || "").trim();
+  if (!raw) return "Událost";
+  if (c && raw.toLowerCase().endsWith((" - " + c).toLowerCase())) {
+    return raw.slice(0, Math.max(0, raw.length - c.length - 3)).trim() || raw;
+  }
+  return raw;
+}
+
+function eventMobileCardHtml(it) {
+  const meta = typeMeta(it.event_type);
+  const timeValue = it.pub_date || it.start_time_iso || it.created_at || "";
+  const city = it.city_text || it.place_text || "";
+  const title = compactTitleForMobile(it.title || "", city);
+  const statusText = typeof statusLabelForEvent === "function"
+    ? statusLabelForEvent(it)
+    : (it.is_closed ? "ukončená" : "aktivní");
+  const durationValue = typeof liveDurationForEvent === "function" ? liveDurationForEvent(it) : it.duration_min;
+  const alarmHtml = typeof alarmLevelBadge === "function" ? (alarmLevelBadge(it) || "") : "";
+  const carryHtml = typeof carryoverBadgeHtml === "function" ? (carryoverBadgeHtml(it) || "") : "";
+  const majorClass = typeof isMajorEventItem === "function" && isMajorEventItem(it) ? " isMajor" : "";
+  const stateClass = it.is_closed ? " isClosed" : " isOpen";
+
+  return `
+    <article class="eventMobileCard${majorClass}${stateClass}">
+      <div class="eventMobileTop">
+        <span class="eventMobileType" title="${escapeHtml(meta.label || it.event_type || "")}">${escapeHtml(meta.emoji || "•")}</span>
+        <div class="eventMobileTitleBlock">
+          <h3>${escapeHtml(title)}</h3>
+          <p>${escapeHtml(city || "Místo neurčeno")}</p>
+        </div>
+        <span class="eventMobileState">${statusEmoji(it.is_closed)} ${escapeHtml(statusText)}</span>
+      </div>
+      <div class="eventMobileMeta">
+        <span>🕒 ${escapeHtml(formatDate(timeValue))}</span>
+        <span>⏱️ ${escapeHtml(formatDuration(durationValue))}</span>
+      </div>
+      <div class="eventMobileBadges">
+        ${alarmHtml || ""}
+        ${carryHtml || ""}
+      </div>
+      <div class="eventMobileActions">
+        ${eventDetailButtonHtml(it)}
+        ${tableEditButtonHtml(it)}
+      </div>
+    </article>
+  `;
+}
+
+function renderMobileEventCards(items) {
+  const box = document.getElementById("eventsMobileList");
+  if (!box) return;
+  const safeItems = Array.isArray(items) ? items : [];
+  if (!safeItems.length) {
+    box.innerHTML = `<div class="emptyMobileEvents">Žádné události pro aktuální filtr.</div>`;
+    return;
+  }
+  box.innerHTML = safeItems.map(eventMobileCardHtml).join("");
+}
+
 function renderTable(items) {
   const tbody = document.getElementById("eventsTbody");
   if (!tbody) return;
@@ -1100,6 +1162,7 @@ function renderTable(items) {
   tbody.innerHTML = "";
 
   const safeItems = Array.isArray(items) ? items : [];
+  renderMobileEventCards(safeItems);
 
   for (const it of safeItems) {
     const meta = typeMeta(it.event_type);
