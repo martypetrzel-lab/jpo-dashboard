@@ -147,6 +147,7 @@ export async function initDb() {
       last_login_at TIMESTAMPTZ
     );
   `);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS permissions JSONB NOT NULL DEFAULT '{}'::jsonb;`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS user_sessions (
@@ -297,7 +298,7 @@ export async function getUsersCount() {
 
 export async function getUserByUsername(username) {
   const r = await pool.query(
-    `SELECT id, username, password_hash, role, is_enabled, created_at, last_login_at FROM users WHERE username=$1`,
+    `SELECT id, username, password_hash, role, is_enabled, permissions, created_at, last_login_at FROM users WHERE username=$1`,
     [username]
   );
   return r.rows[0] || null;
@@ -305,20 +306,20 @@ export async function getUserByUsername(username) {
 
 export async function getUserById(id) {
   const r = await pool.query(
-    `SELECT id, username, role, is_enabled, created_at, last_login_at FROM users WHERE id=$1`,
+    `SELECT id, username, role, is_enabled, permissions, created_at, last_login_at FROM users WHERE id=$1`,
     [id]
   );
   return r.rows[0] || null;
 }
 
-export async function createUser({ username, passwordHash, role = "ops", isEnabled = true }) {
+export async function createUser({ username, passwordHash, role = "ops", isEnabled = true, permissions = {} }) {
   const r = await pool.query(
     `
-    INSERT INTO users (username, password_hash, role, is_enabled)
-    VALUES ($1,$2,$3,$4)
-    RETURNING id, username, role, is_enabled, created_at, last_login_at
+    INSERT INTO users (username, password_hash, role, is_enabled, permissions)
+    VALUES ($1,$2,$3,$4,$5::jsonb)
+    RETURNING id, username, role, is_enabled, permissions, created_at, last_login_at
     `,
-    [username, passwordHash, role, !!isEnabled]
+    [username, passwordHash, role, !!isEnabled, JSON.stringify(permissions || {})]
   );
   return r.rows[0];
 }
@@ -326,7 +327,7 @@ export async function createUser({ username, passwordHash, role = "ops", isEnabl
 export async function listUsers(limit = 200) {
   const r = await pool.query(
     `
-    SELECT id, username, role, is_enabled, created_at, last_login_at
+    SELECT id, username, role, is_enabled, permissions, created_at, last_login_at
     FROM users
     ORDER BY created_at DESC
     LIMIT $1
@@ -357,6 +358,10 @@ export async function updateUserById(id, patch = {}) {
     fields.push(`is_enabled=$${i++}`);
     params.push(!!patch.isEnabled);
   }
+  if (patch.permissions != null) {
+    fields.push(`permissions=$${i++}::jsonb`);
+    params.push(JSON.stringify(patch.permissions || {}));
+  }
   if (patch.lastLoginAtNow) {
     fields.push(`last_login_at=NOW()`);
   }
@@ -364,7 +369,7 @@ export async function updateUserById(id, patch = {}) {
   if (!fields.length) return await getUserById(id);
 
   const r = await pool.query(
-    `UPDATE users SET ${fields.join(", ")} WHERE id=$1 RETURNING id, username, role, is_enabled, created_at, last_login_at`,
+    `UPDATE users SET ${fields.join(", ")} WHERE id=$1 RETURNING id, username, role, is_enabled, permissions, created_at, last_login_at`,
     params
   );
   return r.rows[0] || null;
@@ -399,6 +404,7 @@ export async function getSessionUserByTokenSha(tokenSha256) {
       u.id AS user_id,
       u.username,
       u.role,
+      u.permissions,
       u.is_enabled
     FROM user_sessions s
     JOIN users u ON u.id = s.user_id
@@ -1483,7 +1489,7 @@ export async function getVisitStats(days = 30) {
 
 export async function createUserPublic({ username, passwordHash }) {
   const r = await pool.query(
-    `INSERT INTO users (username, password_hash, role, is_enabled) VALUES ($1,$2,'public',TRUE) RETURNING id, username, role, is_enabled`,
+    `INSERT INTO users (username, password_hash, role, is_enabled, permissions) VALUES ($1,$2,'public',TRUE,'{}'::jsonb) RETURNING id, username, role, is_enabled, permissions`,
     [username, passwordHash]
   );
   return r.rows[0] || null;

@@ -190,11 +190,31 @@ async function authFromRequest(req) {
 
     return {
       sessionId: row.session_id,
-      user: { id: row.user_id, username: row.username, role: row.role }
+      user: { id: row.user_id, username: row.username, role: row.role, permissions: normalizePermissions(row.role, row.permissions || {}) }
     };
   } catch {
     return null;
   }
+}
+
+const FW_ROLE_DEFAULT_PERMISSIONS = {
+  public: { canViewOps: false, canUseAudio: false, canUseTalk: false, canEditIncidents: false, canFixGps: false, canCreateReports: false, canManageUsers: false, canViewDiagnostics: false },
+  ops: { canViewOps: true, canUseAudio: true, canUseTalk: true, canEditIncidents: false, canFixGps: false, canCreateReports: false, canManageUsers: false, canViewDiagnostics: false },
+  editor: { canViewOps: true, canUseAudio: false, canUseTalk: true, canEditIncidents: true, canFixGps: true, canCreateReports: true, canManageUsers: false, canViewDiagnostics: false },
+  admin: { canViewOps: true, canUseAudio: true, canUseTalk: true, canEditIncidents: true, canFixGps: true, canCreateReports: true, canManageUsers: true, canViewDiagnostics: true },
+  custom: {}
+};
+
+function normalizePermissions(role, permissions = {}) {
+  const base = FW_ROLE_DEFAULT_PERMISSIONS[String(role || "public").toLowerCase()] || FW_ROLE_DEFAULT_PERMISSIONS.public;
+  return { ...base, ...(permissions || {}) };
+}
+
+function userHasPermission(user, permission) {
+  const role = String(user?.role || "public").toLowerCase();
+  if (role === "admin") return true;
+  const permissions = normalizePermissions(role, user?.permissions || {});
+  return !!permissions[permission];
 }
 
 function requireAuthAny(req, res, next) {
@@ -208,7 +228,7 @@ function requireAuthAny(req, res, next) {
 function requireOps(req, res, next) {
   authFromRequest(req).then((auth) => {
     if (!auth?.user) return res.status(401).json({ ok: false, error: "unauthorized" });
-    if (!["ops", "admin"].includes(String(auth.user.role))) {
+    if (!["ops", "editor", "admin"].includes(String(auth.user.role)) && !userHasPermission(auth.user, "canViewOps")) {
       return res.status(403).json({ ok: false, error: "forbidden" });
     }
     req.auth = auth;
@@ -2610,6 +2630,7 @@ app.post("/api/admin/users", requireAdmin, async (req, res) => {
     const password = String(req.body?.password || "");
     const role = String(req.body?.role || "ops").trim();
     const isEnabled = req.body?.is_enabled !== false;
+    const permissions = (req.body?.permissions && typeof req.body.permissions === "object") ? req.body.permissions : {};
 
     if (!/^[a-zA-Z0-9_.-]{2,40}$/.test(username)) {
       return res.status(400).json({ ok: false, error: "invalid_username" });
@@ -2617,12 +2638,12 @@ app.post("/api/admin/users", requireAdmin, async (req, res) => {
     if (password.length < 6) {
       return res.status(400).json({ ok: false, error: "weak_password" });
     }
-    if (!["ops", "admin"].includes(role)) {
+    if (!["public", "ops", "editor", "admin", "custom"].includes(role)) {
       return res.status(400).json({ ok: false, error: "invalid_role" });
     }
 
     const passwordHash = await bcrypt.hash(password, 12);
-    const created = await createUser({ username, passwordHash, role, isEnabled });
+    const created = await createUser({ username, passwordHash, role, isEnabled, permissions: normalizePermissions(role, permissions) });
     await insertAudit({ userId: req.auth.user.id, username: req.auth.user.username, action: "user_create", details: `${username} role=${role}`, ip: getClientIp(req) });
     return res.json({ ok: true, user: created });
   } catch (e) {
@@ -2643,8 +2664,14 @@ app.patch("/api/admin/users/:id", requireAdmin, async (req, res) => {
     const patch = {};
     if (req.body?.role != null) {
       const role = String(req.body.role);
-      if (!["ops", "admin"].includes(role)) return res.status(400).json({ ok: false, error: "invalid_role" });
+      if (!["public", "ops", "editor", "admin", "custom"].includes(role)) return res.status(400).json({ ok: false, error: "invalid_role" });
       patch.role = role;
+    }
+    if (req.body?.permissions != null) {
+      if (!req.body.permissions || typeof req.body.permissions !== "object" || Array.isArray(req.body.permissions)) {
+        return res.status(400).json({ ok: false, error: "invalid_permissions" });
+      }
+      patch.permissions = normalizePermissions(patch.role || "custom", req.body.permissions);
     }
     if (req.body?.is_enabled != null) patch.isEnabled = !!req.body.is_enabled;
     if (req.body?.password != null) {

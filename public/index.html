@@ -23,26 +23,35 @@
 <div class="fwSidebarBrand fwSidebarBrandLogo">
 <img alt="FireWatch CZ" class="fwBrandLogoSidebar" src="/logo-firewatch-cz.png"/>
 </div>
-<nav aria-label="FireWatch navigace" class="fwSidebarNav"><button data-scroll-target="commandOverviewCard" type="button">Přehled</button>
-<button data-scroll-target="eventsTableCard" type="button">Výjezdy</button>
+<nav aria-label="FireWatch navigace" class="fwSidebarNav groupedNav">
+<div class="navGroup">
+<div class="navGroupTitle">Veřejná část</div>
+<button data-scroll-target="commandOverviewCard" type="button">Přehled</button>
+<button data-scroll-target="eventsTableCard" type="button">Poslední výjezdy</button>
 <button data-scroll-target="mapCard" type="button">Mapa</button>
 <button data-scroll-target="dailyStatsCard" type="button">Statistiky</button>
 <button data-scroll-target="reportsArchiveCard" type="button">Reporty</button>
-<button data-scroll-target="talkLauncherCard" type="button">Talk</button>
-<button class="opsOnlyNav" data-scroll-target="watchCard" style="display:none;" type="button">OPS nástroje</button>
-<button class="adminOnlyNav" data-scroll-target="adminBtn" style="display:none;" type="button">Admin</button>
+</div>
+<div class="navGroup opsOnlyNav" style="display:none;">
+<div class="navGroupTitle">OPS režim</div>
+<button data-scroll-target="watchCard" type="button">OPS nástroje</button>
+<button data-scroll-target="talkLauncherCard" type="button">FireWatch Talk</button>
+<button data-scroll-target="majorEventsCard" type="button">Významné události</button>
+</div>
+<div class="navGroup adminOnlyNav" style="display:none;">
+<div class="navGroupTitle">Administrace</div>
+<button data-scroll-target="adminBtn" type="button">Admin panel</button>
+<button data-scroll-target="adminBtn" type="button">Uživatelé a oprávnění</button>
+<button data-scroll-target="adminBtn" type="button">Diagnostika</button>
+</div>
 </nav>
 <div class="fwSidebarFooter">
-<span>v2.9 responsive</span>
+<span>v2.2 admin menu + oprávnění</span>
 <small>Neoficiální analytický projekt • Simulované informace nejsou oficiální data IZS</small>
 </div>
 </aside>
 <div class="fwAppShell">
-<section class="fwQuickStart"><a class="fwQuickCard" href="#eventsTableCard"><span class="fwQuickIcon">📋</span><strong>Poslední výjezdy</strong><small>Rychlý přehled aktuálních a ukončených událostí</small></a>
-<a class="fwQuickCard" href="#mapCard"><span class="fwQuickIcon">🗺️</span><strong>Mapa zásahů</strong><small>Body událostí a orientační mapový přehled</small></a>
-<a class="fwQuickCard" href="#reportsArchiveCard"><span class="fwQuickIcon">📊</span><strong>Reporty</strong><small>Denní, týdenní a měsíční souhrny</small></a>
-<a class="fwQuickCard" href="#talkLauncherCard"><span class="fwQuickIcon">🎙️</span><strong>FireWatch Talk</strong><small>Internetová vysílačka pro týmy</small></a>
-</section>
+
 <header class="topbar">
 <div class="title titleLogo">
 <img alt="FireWatch CZ – Přehled a statistiky zásahů JPO" class="fwBrandLogoTop" src="/logo-firewatch-cz.png"/>
@@ -765,14 +774,17 @@
 <div class="adminCard">
 <div class="adminCardHeader">
 <div class="adminCardTitle">Vytvořit uživatele</div>
-<div class="hint">Role ops/admin, možnost disable.</div>
+<div class="hint">Role + konkrétní oprávnění funkcí. Role nastaví základ, oprávnění lze doladit u každého účtu.</div>
 </div>
 <div class="adminRow" style="flex-wrap:wrap; gap:10px;">
 <input class="miniInput" id="newUser" placeholder="username" style="min-width:140px;"/>
 <input class="miniInput" id="newPass" placeholder="heslo (min 6)" style="min-width:160px;" type="password"/>
 <select class="miniSelect" id="newRole" style="min-width:110px;">
+<option value="public">public</option>
 <option value="ops">ops</option>
+<option value="editor">editor</option>
 <option value="admin">admin</option>
+<option value="custom">custom</option>
 </select>
 <label class="check" style="margin:0;">
 <input checked="" id="newEnabled" type="checkbox"/>
@@ -804,10 +816,23 @@
 <div class="hint" id="visitsMsg" style="min-height:18px; margin-top:6px;"></div>
 </div>
 </div>
+<div class="adminCard permissionsIntroCard" style="margin-top:12px;">
+<div class="adminCardHeader">
+<div class="adminCardTitle">Role a oprávnění</div>
+<div class="hint">Každému účtu lze přiřadit roli a zároveň povolit jen konkrétní funkce. Změny se ukládají okamžitě.</div>
+</div>
+<div class="permissionsLegend">
+<span><b>public</b> veřejný účet</span>
+<span><b>ops</b> OPS režim + Talk/audio</span>
+<span><b>editor</b> správa výjezdů, GPS a reportů</span>
+<span><b>admin</b> kompletní správa</span>
+<span><b>custom</b> ručně nastavená práva</span>
+</div>
+</div>
 <div class="adminCard" style="margin-top:12px;">
 <div class="adminCardHeader">
 <div class="adminCardTitle">Uživatelé</div>
-<div class="hint">Klikni na roli nebo enabled pro rychlou úpravu, reset hesla přes tlačítko.</div>
+<div class="hint">Klikni na roli, zapnutí účtu nebo konkrétní funkci. Přepínače umožní přesně řídit, co daný účet smí.</div>
 </div>
 <div aria-label="Uživatelé" class="tableWrap" role="region" tabindex="0">
 <table>
@@ -817,6 +842,7 @@
 <th>Username</th>
 <th>Role</th>
 <th>Enabled</th>
+<th>Oprávnění funkcí</th>
 <th>Last login</th>
 <th>Akce</th>
 </tr>
