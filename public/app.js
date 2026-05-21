@@ -4094,10 +4094,13 @@ stationsReadyPromise = loadStations();
 
 loadAll();
 
-// AUTO REFRESH každých 5 minut (stabilní 1.02 – beze změny)
+// AUTO REFRESH každou 1 minutu
+// Každý běh volá loadAll({ auto: true }) a používá cache-busting parametr _=Date.now(),
+// takže dashboard pravidelně stáhne čerstvá data z API bez nutnosti ručně obnovovat stránku.
+const AUTO_REFRESH_MS = 60 * 1000;
 setInterval(() => {
   loadAll({ auto: true });
-}, 5 * 60 * 1000);
+}, AUTO_REFRESH_MS);
 
 // ==============================
 // OPS / ADMIN + SHIFT UI (frontend)
