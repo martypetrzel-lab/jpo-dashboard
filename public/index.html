@@ -1,1280 +1,1134 @@
-<!doctype html>
+<!DOCTYPE html>
+
 <html lang="cs">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-  <meta name="theme-color" content="#0b0f14" />
-  <title>FireWatch CZ – Přehled a statistiky zásahů JPO</title>
-  <meta property="og:title" content="FireWatch CZ" />
-  <meta property="og:description" content="Přehled a statistiky zásahů JPO" />
-  <meta property="og:image" content="/logo-firewatch-cz.png" />
-  <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:image" content="/logo-firewatch-cz.png" />
-
-  <!-- 🔥 FAVICON – plamínek místo glóbusu -->
-  <link
-    rel="icon"
-    type="image/svg+xml"
-    href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔥</text></svg>"
-  >
-
-  <link rel="stylesheet" href="styles.css" />
-  <link rel="stylesheet" href="radio.css" />
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
-</head>
+<meta charset="utf-8"/>
+<meta content="width=device-width,initial-scale=1,viewport-fit=cover" name="viewport"/>
+<meta content="#0b0f14" name="theme-color"/>
+<title>FireWatch CZ – Přehled a statistiky zásahů JPO</title>
+<meta content="FireWatch CZ" property="og:title"/>
+<meta content="Přehled a statistiky zásahů JPO" property="og:description"/>
+<meta content="/logo-firewatch-cz.png" property="og:image"/>
+<meta content="summary_large_image" name="twitter:card"/>
+<meta content="/logo-firewatch-cz.png" name="twitter:image"/>
+<!-- 🔥 FAVICON – plamínek místo glóbusu -->
+<link href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;🔥&lt;/text&gt;&lt;/svg&gt;" rel="icon" type="image/svg+xml"/>
+<link href="styles.css" rel="stylesheet">
+<link href="radio.css" rel="stylesheet"/>
+<link crossorigin="" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" rel="stylesheet"/>
+</link></head>
 <body>
-
-  <button id="mobileSidebarToggle" class="mobileSidebarToggle" type="button">☰ Menu</button>
-
-  <aside id="fwSidebar" class="fwSidebar">
-    <div class="fwSidebarBrand fwSidebarBrandLogo">
-      <img src="/logo-firewatch-cz.png" alt="FireWatch CZ" class="fwBrandLogoSidebar" />
-    </div>
-
-    <nav class="fwSidebarNav" aria-label="FireWatch navigace">
-      <button type="button" data-scroll-target="landingPage">Přehled</button>
-      <button type="button" data-scroll-target="mapCard">Mapa</button>
-      <button type="button" data-scroll-target="statsProCard">Statistiky</button>
-      <button type="button" data-scroll-target="reportsArchiveCard">Reporty</button>
-      <button type="button" data-scroll-target="talkLauncherCard">FireWatch Talk</button>
-      <button type="button" data-scroll-target="regionalWeatherCard">Počasí</button>
-      <button type="button" class="adminOnlyNav" data-scroll-target="manualEventQuickCard" style="display:none;">Ruční úpravy</button>
-      <button type="button" data-scroll-target="watchCard">Notifikace</button>
-      <button type="button" data-scroll-target="reportsArchiveCard">Reporty</button>
-      <button type="button" data-scroll-target="talkLauncherCard">FireWatch Talk</button>
-      <button type="button" class="adminOnlyNav" data-scroll-target="adminBtn" style="display:none;">Admin</button>
-    </nav>
-
-    <div class="fwSidebarFooter">
-      <span>v2.9 responsive</span>
-      <small>Neoficiální analytický projekt • Simulované informace nejsou oficiální data IZS</small>
-    </div>
-  </aside>
-
-
-  <div class="fwAppShell">
-<section class="fwQuickStart">
-  <a href="#mapCard" class="fwQuickCard">
-    <span class="fwQuickIcon">🗺️</span>
-    <strong>Mapa zásahů</strong>
-    <small>Aktuální výjezdy a přehled událostí</small>
-  </a>
-  <a href="#reportsArchiveCard" class="fwQuickCard">
-    <span class="fwQuickIcon">📊</span>
-    <strong>Reporty</strong>
-    <small>Denní a měsíční statistiky FireWatch CZ</small>
-  </a>
-  <a href="#talkLauncherCard" class="fwQuickCard">
-    <span class="fwQuickIcon">🎙️</span>
-    <strong>FireWatch Talk</strong>
-    <small>Internetová vysílačka pro týmy a dispečink</small>
-  </a>
+<button class="mobileSidebarToggle" id="mobileSidebarToggle" type="button">☰ Menu</button>
+<aside class="fwSidebar" id="fwSidebar">
+<div class="fwSidebarBrand fwSidebarBrandLogo">
+<img alt="FireWatch CZ" class="fwBrandLogoSidebar" src="/logo-firewatch-cz.png"/>
+</div>
+<nav aria-label="FireWatch navigace" class="fwSidebarNav"><button data-scroll-target="commandOverviewCard" type="button">Přehled</button>
+<button data-scroll-target="eventsTableCard" type="button">Výjezdy</button>
+<button data-scroll-target="mapCard" type="button">Mapa</button>
+<button data-scroll-target="dailyStatsCard" type="button">Statistiky</button>
+<button data-scroll-target="reportsArchiveCard" type="button">Reporty</button>
+<button data-scroll-target="talkLauncherCard" type="button">Talk</button>
+<button class="opsOnlyNav" data-scroll-target="watchCard" style="display:none;" type="button">OPS nástroje</button>
+<button class="adminOnlyNav" data-scroll-target="adminBtn" style="display:none;" type="button">Admin</button>
+</nav>
+<div class="fwSidebarFooter">
+<span>v2.9 responsive</span>
+<small>Neoficiální analytický projekt • Simulované informace nejsou oficiální data IZS</small>
+</div>
+</aside>
+<div class="fwAppShell">
+<section class="fwQuickStart"><a class="fwQuickCard" href="#eventsTableCard"><span class="fwQuickIcon">📋</span><strong>Poslední výjezdy</strong><small>Rychlý přehled aktuálních a ukončených událostí</small></a>
+<a class="fwQuickCard" href="#mapCard"><span class="fwQuickIcon">🗺️</span><strong>Mapa zásahů</strong><small>Body událostí a orientační mapový přehled</small></a>
+<a class="fwQuickCard" href="#reportsArchiveCard"><span class="fwQuickIcon">📊</span><strong>Reporty</strong><small>Denní, týdenní a měsíční souhrny</small></a>
+<a class="fwQuickCard" href="#talkLauncherCard"><span class="fwQuickIcon">🎙️</span><strong>FireWatch Talk</strong><small>Internetová vysílačka pro týmy</small></a>
 </section>
 <header class="topbar">
-    <div class="title titleLogo">
-      <img src="/logo-firewatch-cz.png" alt="FireWatch CZ – Přehled a statistiky zásahů JPO" class="fwBrandLogoTop" />
-    </div>
+<div class="title titleLogo">
+<img alt="FireWatch CZ – Přehled a statistiky zásahů JPO" class="fwBrandLogoTop" src="/logo-firewatch-cz.png"/>
+</div>
+<div class="actions">
+<div class="miniPanel" id="shiftPanel" title="Směna A/B/C + režim času předání">
+<div class="miniRow">
+<span class="miniLabel">Směna</span>
+<span class="miniValue" id="shiftNow">—</span>
+<span class="miniSep">•</span>
+<label class="miniToggle" title="HZS (07:00) / HZSP (06:00)">
+<select class="miniSelect" id="shiftModeSelect">
+<option value="HZS">HZS 07:00</option>
+<option value="HZSP">HZSP 06:00</option>
+</select>
+</label>
+</div>
+<div class="miniRow miniSub">
+<span id="shiftCountdown">Předání za —</span>
+<span class="miniSep">•</span>
+<span id="shiftNext3">Dnes/Zítra/Pozítří —</span>
+</div>
+</div>
+<button class="btn" id="fullscreenBtn" title="Celá obrazovka">⛶</button>
+<button class="btn" id="tvModeBtn" title="TV mód (větší písmo, kiosk)">📺</button>
+<button class="btn" id="muteBtn" title="Ztlumit vše (FireWatch)">🔈</button>
+<button class="btn" id="audioBtn" style="display:none;" title="Audio (OPS)">🔊</button>
+<button class="btn" id="briefingBtn" style="display:none;" title="Hlasový briefing (OPS)">🗣️</button>
+<span class="pill pillMode" id="modePill">PUBLIC</span>
+<button class="btn" id="landingHomeBtn">Úvod</button>
+<button class="btn" id="loginBtn">Přihlásit</button>
+<button class="btn" id="registerBtn">Registrace</button>
+<button class="btn" id="adminBtn" style="display:none;">Admin</button>
+<button class="btn" id="logoutBtn" style="display:none;">Odhlásit</button>
+<button class="btn" id="requestOpsBtn" style="display:none;">Požádat OPS</button>
+<span class="pill" id="statusPill">…</span>
+<button class="btn" id="refreshBtn">Obnovit</button>
+</div>
+</header>
+<section aria-label="Stav dat FireWatch CZ" class="dataStatusStrip" id="dataStatusStrip">
+<div class="dataStatusItem online"><span class="dot"></span><strong>Data online</strong></div>
+<div class="dataStatusItem"><span>Poslední aktualizace</span><strong id="dataStripUpdated">—</strong></div>
+<div class="dataStatusItem"><span>Poslední výjezd</span><strong id="dataStripLastEvent">—</strong></div>
+<div class="dataStatusItem"><span>Zdroj</span><strong id="dataStripSource">RSS aktivní</strong></div>
+</section>
 
-    <div class="actions">
-      <div class="miniPanel" id="shiftPanel" title="Směna A/B/C + režim času předání">
-        <div class="miniRow">
-          <span class="miniLabel">Směna</span>
-          <span class="miniValue" id="shiftNow">—</span>
-          <span class="miniSep">•</span>
-          <label class="miniToggle" title="HZS (07:00) / HZSP (06:00)">
-            <select id="shiftModeSelect" class="miniSelect">
-              <option value="HZS">HZS 07:00</option>
-              <option value="HZSP">HZSP 06:00</option>
-            </select>
-          </label>
-        </div>
-        <div class="miniRow miniSub">
-          <span id="shiftCountdown">Předání za —</span>
-          <span class="miniSep">•</span>
-          <span id="shiftNext3">Dnes/Zítra/Pozítří —</span>
-        </div>
-      </div>
-
-      <button id="fullscreenBtn" class="btn" title="Celá obrazovka">⛶</button>
-      <button id="tvModeBtn" class="btn" title="TV mód (větší písmo, kiosk)">📺</button>
-      <button id="muteBtn" class="btn" title="Ztlumit vše (FireWatch)">🔈</button>
-
-      <button id="audioBtn" class="btn" title="Audio (OPS)" style="display:none;">🔊</button>
-      <button id="briefingBtn" class="btn" title="Hlasový briefing (OPS)" style="display:none;">🗣️</button>
-
-      <span id="modePill" class="pill pillMode">PUBLIC</span>
-      <button id="landingHomeBtn" class="btn">Úvod</button>
-        <button id="loginBtn" class="btn">Přihlásit</button>
-      <button id="registerBtn" class="btn">Registrace</button>
-      <button id="adminBtn" class="btn" style="display:none;">Admin</button>
-      <button id="logoutBtn" class="btn" style="display:none;">Odhlásit</button>
-      <button id="requestOpsBtn" class="btn" style="display:none;">Požádat OPS</button>
-
-      <span id="statusPill" class="pill">…</span>
-      <button id="refreshBtn" class="btn">Obnovit</button>
-    </div>
-  </header>
-
-  <section id="landingPage" class="landingPage">
-    <div class="landingHero">
-      <div class="landingHeroText">
-        <div class="landingBadge">FireWatch CZ • veřejný přehledový projekt</div>
-        <h1>Veřejné události, mapa, statistiky a týmová komunikace v jednom prostředí.</h1>
-        <p>
+<section class="landingPage" id="landingPage">
+<div class="landingHero">
+<div class="landingHeroText">
+<div class="landingBadge">FireWatch CZ • veřejný přehledový projekt</div>
+<h1>Veřejné události, mapa, statistiky a týmová komunikace v jednom prostředí.</h1>
+<p>
           FireWatch CZ je soukromý webový projekt pro přehledné zobrazování veřejně dostupných
           informací o událostech jednotek požární ochrany. Nabízí dashboard, mapu, filtrování,
           statistiky, archiv analytických souhrnů a komunikační modul FireWatch Talk.
         </p>
-
-        <div class="landingActions">
-          <button id="landingDashboardBtn" class="btn primary landingCta">Zobrazit dashboard</button>
-          <button id="landingLoginBtn" class="btn">Přihlásit</button>
-          <button id="landingRegisterBtn" class="btn">Registrovat</button>
-        </div>
-
-        <div class="landingNote">
+<div class="landingActions">
+<button class="btn primary landingCta" id="landingDashboardBtn">Zobrazit dashboard</button>
+<button class="btn" id="landingLoginBtn">Přihlásit</button>
+<button class="btn" id="landingRegisterBtn">Registrovat</button>
+</div>
+<div class="landingNote">
           ⚠️ FireWatch CZ není oficiální systém HZS, JPO ani IZS a neslouží k řízení zásahů.
           Údaje mají orientační, analytický a vývojový charakter.
         </div>
-      </div>
-
-      <div class="landingPreview">
-        <div class="landingPreviewTop">
-          <span></span><span></span><span></span>
-        </div>
-        <div class="landingPreviewTitle">Aktuální přehled</div>
-        <div class="landingPreviewGrid">
-          <div><b>Mapa</b><small>body událostí</small></div>
-          <div><b>Statistiky</b><small>typy a města</small></div>
-          <div><b>Reporty</b><small>denní / týdenní / měsíční</small></div>
-          <div><b>Talk</b><small>týmová komunikace</small></div>
-        </div>
-      </div>
-    </div>
-
-    <div class="landingFeatureGrid">
-      <article class="landingFeature">
-        <div class="landingIcon">🗺️</div>
-        <h3>Mapa událostí</h3>
-        <p>Rychlý přehled událostí v mapě, filtrování podle typu, dne, stavu a města.</p>
-      </article>
-
-      <article class="landingFeature">
-        <div class="landingIcon">📊</div>
-        <h3>Statistiky a reporty</h3>
-        <p>Denní, týdenní a měsíční analytické souhrny, archiv reportů, PDF export a tisk.</p>
-      </article>
-
-      <article class="landingFeature">
-        <div class="landingIcon">🔎</div>
-        <h3>Veřejný HOST režim</h3>
-        <p>Základní přehled je dostupný bez registrace. Přihlášení odemyká pokročilé funkce.</p>
-      </article>
-
-      <article class="landingFeature">
-        <div class="landingIcon">🎙️</div>
-        <h3>FireWatch Talk</h3>
-        <p>Soukromý komunikační modul ve stylu internetové vysílačky pro týmovou komunikaci.</p>
-      </article>
-    </div>
-
-    <div class="landingSplit">
-      <div class="landingPanel">
-        <h2>Co je dostupné bez registrace?</h2>
-        <ul>
-          <li>veřejný dashboard</li>
-          <li>mapa událostí</li>
-          <li>poslední výjezdy</li>
-          <li>základní statistiky</li>
-          <li>archiv analytických souhrnů</li>
-        </ul>
-      </div>
-
-      <div class="landingPanel landingPanelAccent">
-        <h2>Co odemkne účet?</h2>
-        <ul>
-          <li>FireWatch Talk</li>
-          <li>vlastní nastavení</li>
-          <li>pokročilejší práce s funkcemi</li>
-          <li>OPS/admin nástroje podle oprávnění</li>
-          <li>budoucí notifikace a odběry</li>
-        </ul>
-      </div>
-
-      <div class="landingPanel">
-        <h2>Co se chystá dál?</h2>
-        <ul>
-          <li>Geolokace 2.0</li>
-          <li>Statistiky PRO</li>
-          <li>Notifikace a odběry</li>
-          <li>FireWatch Talk 2.0</li>
-          <li>nový profesionální layout v2.0</li>
-        </ul>
-      </div>
-    </div>
-  </section>
-
-
-  <section id="publicGuestHero" class="publicHero" style="display:none;">
-    <div class="publicHeroMain">
-      <div class="publicHeroKicker">Veřejný režim</div>
-      <h2>Prohlížej FireWatch CZ bez registrace</h2>
-      <p>
+</div>
+<div class="landingPreview">
+<div class="landingPreviewTop">
+<span></span><span></span><span></span>
+</div>
+<div class="landingPreviewTitle">Aktuální přehled</div>
+<div class="landingPreviewGrid">
+<div><b>Mapa</b><small>body událostí</small></div>
+<div><b>Statistiky</b><small>typy a města</small></div>
+<div><b>Reporty</b><small>denní / týdenní / měsíční</small></div>
+<div><b>Talk</b><small>týmová komunikace</small></div>
+</div>
+</div>
+</div>
+<div class="landingFeatureGrid">
+<article class="landingFeature">
+<div class="landingIcon">🗺️</div>
+<h3>Mapa událostí</h3>
+<p>Rychlý přehled událostí v mapě, filtrování podle typu, dne, stavu a města.</p>
+</article>
+<article class="landingFeature">
+<div class="landingIcon">📊</div>
+<h3>Statistiky a reporty</h3>
+<p>Denní, týdenní a měsíční analytické souhrny, archiv reportů, PDF export a tisk.</p>
+</article>
+<article class="landingFeature">
+<div class="landingIcon">🔎</div>
+<h3>Veřejný HOST režim</h3>
+<p>Základní přehled je dostupný bez registrace. Přihlášení odemyká pokročilé funkce.</p>
+</article>
+<article class="landingFeature">
+<div class="landingIcon">🎙️</div>
+<h3>FireWatch Talk</h3>
+<p>Soukromý komunikační modul ve stylu internetové vysílačky pro týmovou komunikaci.</p>
+</article>
+</div>
+<div class="landingSplit">
+<div class="landingPanel">
+<h2>Co je dostupné bez registrace?</h2>
+<ul>
+<li>veřejný dashboard</li>
+<li>mapa událostí</li>
+<li>poslední výjezdy</li>
+<li>základní statistiky</li>
+<li>archiv analytických souhrnů</li>
+</ul>
+</div>
+<div class="landingPanel landingPanelAccent">
+<h2>Co odemkne účet?</h2>
+<ul>
+<li>FireWatch Talk</li>
+<li>vlastní nastavení</li>
+<li>pokročilejší práce s funkcemi</li>
+<li>OPS/admin nástroje podle oprávnění</li>
+<li>budoucí notifikace a odběry</li>
+</ul>
+</div>
+<div class="landingPanel">
+<h2>Co se chystá dál?</h2>
+<ul>
+<li>Geolokace 2.0</li>
+<li>Statistiky PRO</li>
+<li>Notifikace a odběry</li>
+<li>FireWatch Talk 2.0</li>
+<li>čistší veřejný dashboard a oddělená OPS část</li>
+</ul>
+</div>
+</div>
+</section>
+<section class="publicHero" id="publicGuestHero" style="display:none;">
+<div class="publicHeroMain">
+<div class="publicHeroKicker">Veřejný režim</div>
+<h2>Prohlížej FireWatch CZ bez registrace</h2>
+<p>
         Jako host můžeš zobrazit veřejný přehled událostí, mapu, základní statistiky a poslední výjezdy.
         Přihlášení odemkne FireWatch Talk, vlastní nastavení a další rozšířené funkce.
       </p>
-      <div class="publicHeroActions">
-        <button id="guestContinueBtn" class="btn primary">Pokračovat jako host</button>
-        <button id="guestLoginBtn" class="btn">Přihlásit</button>
-        <button id="guestRegisterBtn" class="btn">Registrovat</button>
-      </div>
-    </div>
-    <div class="publicHeroSide">
-      <div class="publicHeroItem">🗺️ Mapa událostí</div>
-      <div class="publicHeroItem">📊 Základní statistiky</div>
-      <div class="publicHeroItem">🔎 Filtry a detail</div>
-      <div class="publicHeroItem locked">🎙️ FireWatch Talk po přihlášení</div>
-    </div>
-  </section>
-
-  <section class="filters">
-    <div class="filtersRow">
-
-      <div class="field">
-        <label for="daySelect">Den (mapa + tabulka)</label>
-        <select id="daySelect">
-          <option value="today" selected>dnes</option>
-          <option value="yesterday">včera</option>
-          <option value="all">vše</option>
-        </select>
-      </div>
-
-      <div class="field">
-        <label for="typeSelect">Typ</label>
-        <select id="typeSelect">
-          <option value="">vše</option>
-          <option value="fire">požár</option>
-          <option value="traffic">nehoda</option>
-          <option value="tech">technická</option>
-          <option value="rescue">záchrana</option>
-          <option value="false_alarm">planý poplach</option>
-          <option value="other">jiné</option>
-        </select>
-      </div>
-
-      <div class="field">
-        <label for="cityInput">Město</label>
-        <input id="cityInput" type="text" placeholder="např. Nehvizdy" />
-      </div>
-
-      <div class="field">
-        <label for="statusSelect">Stav</label>
-        <select id="statusSelect">
-          <option value="all">vše</option>
-          <option value="open">aktivní</option>
-          <option value="closed">ukončené</option>
-        </select>
-      </div>
-
-      <div class="field">
-        <label class="ghost">Vrstva</label>
-        <div class="checkRow">
-          <label class="check">
-            <input id="hzsStationsToggle" type="checkbox" checked />
-            <span>Stanice HZS</span>
-          </label>
-        </div>
-      </div>
-
-      <div class="field">
-        <label for="monthInput">Měsíc (statistika měst)</label>
-        <input id="monthInput" type="month" />
-      </div>
-
-      <div class="field buttons">
-        <label class="ghost">Akce</label>
-        <div class="btnRow">
-          <button id="applyBtn" class="btn primary">Použít</button>
-          <button id="resetBtn" class="btn">Reset</button>
-        </div>
-      </div>
-
-      <div class="field buttons">
-        <label class="ghost">Export</label>
-        <div class="btnRow">
-          <button id="exportCsvBtn" class="btn">Export CSV</button>
-          <button id="exportPdfBtn" class="btn">Export PDF</button>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <main class="grid">
-
-
-    
-    <section id="commandOverviewCard" class="card commandOverviewCard v28OverviewCard">
-      <div class="v28HeroTop">
-        <div class="v28HeroCopy">
-          <div class="eyebrow">FireWatchCZ operační přehled</div>
-          <h2>Aktuální situace na jednom místě</h2>
-          <p>
+<div class="publicHeroActions">
+<button class="btn primary" id="guestContinueBtn">Pokračovat jako host</button>
+<button class="btn" id="guestLoginBtn">Přihlásit</button>
+<button class="btn" id="guestRegisterBtn">Registrovat</button>
+</div>
+</div>
+<div class="publicHeroSide">
+<div class="publicHeroItem">🗺️ Mapa událostí</div>
+<div class="publicHeroItem">📊 Základní statistiky</div>
+<div class="publicHeroItem">🔎 Filtry a detail</div>
+<div class="publicHeroItem locked">🎙️ FireWatch Talk po přihlášení</div>
+</div>
+</section>
+<section class="filters">
+<div class="filtersRow">
+<div class="field">
+<label for="daySelect">Den (mapa + tabulka)</label>
+<select id="daySelect">
+<option selected="" value="today">dnes</option>
+<option value="yesterday">včera</option>
+<option value="all">vše</option>
+</select>
+</div>
+<div class="field">
+<label for="typeSelect">Typ</label>
+<select id="typeSelect">
+<option value="">vše</option>
+<option value="fire">požár</option>
+<option value="traffic">nehoda</option>
+<option value="tech">technická</option>
+<option value="rescue">záchrana</option>
+<option value="false_alarm">planý poplach</option>
+<option value="other">jiné</option>
+</select>
+</div>
+<div class="field">
+<label for="cityInput">Město</label>
+<input id="cityInput" placeholder="např. Nehvizdy" type="text"/>
+</div>
+<div class="field">
+<label for="statusSelect">Stav</label>
+<select id="statusSelect">
+<option value="all">vše</option>
+<option value="open">aktivní</option>
+<option value="closed">ukončené</option>
+</select>
+</div>
+<div class="field">
+<label class="ghost">Vrstva</label>
+<div class="checkRow">
+<label class="check">
+<input checked="" id="hzsStationsToggle" type="checkbox"/>
+<span>Stanice HZS</span>
+</label>
+</div>
+</div>
+<div class="field">
+<label for="monthInput">Měsíc (statistika měst)</label>
+<input id="monthInput" type="month"/>
+</div>
+<div class="field buttons">
+<label class="ghost">Akce</label>
+<div class="btnRow">
+<button class="btn primary" id="applyBtn">Použít</button>
+<button class="btn" id="resetBtn">Reset</button>
+</div>
+</div>
+<div class="field buttons">
+<label class="ghost">Export</label>
+<div class="btnRow">
+<button class="btn" id="exportCsvBtn">Export CSV</button>
+<button class="btn" id="exportPdfBtn">Export PDF</button>
+</div>
+</div>
+</div>
+</section>
+<main class="grid">
+<section class="card commandOverviewCard v28OverviewCard" id="commandOverviewCard">
+<div class="v28HeroTop">
+<div class="v28HeroCopy">
+<div class="eyebrow">FireWatchCZ operační přehled</div>
+<h2>Aktuální situace na jednom místě</h2>
+<p>
             Rychlý přehled dnešních událostí, aktivních zásahů, významných událostí,
             mapových bodů a chybějících souřadnic bez dlouhého hledání ve stránce.
           </p>
-        </div>
-
-        <div class="v28HeroStatus">
-          <span id="commandOverviewStatus">Načítám…</span>
-          <small id="overviewLastUpdate">poslední aktualizace —</small>
-        </div>
-      </div>
-
-      <div class="v28KpiGrid">
-        <button type="button" class="v28KpiTile urgent" data-scroll-target="eventsTableCard">
-          <span>🔴 Aktivní</span>
-          <b id="overviewOpenCount">—</b>
-          <small>probíhající zásahy</small>
-        </button>
-
-        <button type="button" class="v28KpiTile" data-scroll-target="eventsTableCard">
-          <span>📋 Dnes celkem</span>
-          <b id="overviewTotalCount">—</b>
-          <small>záznamů ve filtru</small>
-        </button>
-
-        <button type="button" class="v28KpiTile warning" data-scroll-target="majorEventsCard">
-          <span>🚨 Významné</span>
-          <b id="overviewMajorCount">—</b>
-          <small>vyšší stupeň / ruční význam</small>
-        </button>
-
-        <button type="button" class="v28KpiTile" data-scroll-target="mapCard">
-          <span>🗺️ Na mapě</span>
-          <b id="overviewMapCount">—</b>
-          <small>událostí se souřadnicemi</small>
-        </button>
-
-        <button type="button" class="v28KpiTile adminOnly" data-scroll-target="manualEventQuickCard">
-          <span>📍 Bez GPS</span>
-          <b id="overviewMissingCount">—</b>
-          <small>k ručnímu doplnění</small>
-        </button>
-      </div>
-
-      <div class="v29SignalBar" aria-label="Rychlý stav systému">
-        <span class="v29Signal ok">● Živá data</span>
-        <span class="v29Signal">Středočeský kraj</span>
-        <span class="v29Signal">Veřejný analytický režim</span>
-      </div>
-
-      <div class="v28OpsStrip">
-        <div class="v28OpsMain" id="overviewPrimaryIncident">
-          <strong>Nejdelší aktivní zásah</strong>
-          <span>zatím bez dat</span>
-        </div>
-
-        <div class="v28OpsMeta">
-          <span id="overviewFilterLabel">Filtr: —</span>
-          <span id="overviewDataHealth">Stav dat: načítám…</span>
-          <span id="overviewWeatherRisk">Počasí: načítá se</span>
-        </div>
-
-        <div class="v28QuickActions">
-          <button type="button" class="btn quickJump" data-scroll-target="mapCard">Mapa</button>
-          <button type="button" class="btn quickJump" data-scroll-target="eventsTableCard">Výjezdy</button>
-          <button type="button" class="btn quickJump" data-scroll-target="regionalWeatherCard">Počasí</button>
-          <button type="button" class="btn quickJump" data-scroll-target="reportsArchiveCard">Reporty</button>
-        </div>
-      </div>
-    </section>
-
-<section id="talkLauncherCard" class="card talkLauncherCard">
-      <div class="talkLauncherMain">
-        <div>
-          <h2>FireWatch Talk</h2>
-          <p>Rychlá týmová komunikace bokem od veřejného přehledu. Otevře se jen když ji potřebuješ.</p>
-        </div>
-        <button id="toggleTalkBtn" class="btn primary">Otevřít FireWatch Talk 2.0</button>
-      </div>
-    </section>
-
-    <section id="opsRadioMount" class="card opsRadioCardShell" style="display:none;"></section>
-
-    <section id="talkLockedCard" class="card publicLockedCard" style="display:none;">
-      <div class="cardHeader">
-        <h2>FireWatch Talk</h2>
-        <div class="hint">Dostupné po přihlášení</div>
-      </div>
-      <p>
-        Soukromý týmový hlasový chat, místnosti, PTT komunikace a statusy jsou dostupné pouze pro přihlášené uživatele.
-      </p>
-      <div class="btnRow">
-        <button id="talkLockedLoginBtn" class="btn primary">Přihlásit</button>
-        <button id="talkLockedRegisterBtn" class="btn">Registrovat</button>
-      </div>
-    </section>
-
-    <section id="mapCard" class="card mapCard v28MapCard">
-      <div class="cardHeader">
-        <h2>Mapa výjezdů</h2>
-        <div class="hint legend">
-          <span class="legendItem">🔥 požár</span>
-          <span class="legendItem">🚗 nehoda</span>
-          <span class="legendItem">🛠️ technická</span>
-          <span class="legendItem">🚑 záchrana</span>
-          <span class="legendItem">🚫 planý poplach</span>
-          <span class="legendItem">❓ jiné</span>
-        </div>
-      </div>
-      <div id="map"></div>
-      <div class="mapDisclaimer">
+</div>
+<div class="v28HeroStatus">
+<span id="commandOverviewStatus">Načítám…</span>
+<small id="overviewLastUpdate">poslední aktualizace —</small>
+</div>
+</div>
+<div class="v28KpiGrid">
+<button class="v28KpiTile urgent" data-scroll-target="eventsTableCard" type="button">
+<span>🔴 Aktivní</span>
+<b id="overviewOpenCount">—</b>
+<small>probíhající zásahy</small>
+</button>
+<button class="v28KpiTile" data-scroll-target="eventsTableCard" type="button">
+<span>📋 Dnes celkem</span>
+<b id="overviewTotalCount">—</b>
+<small>záznamů ve filtru</small>
+</button>
+<button class="v28KpiTile warning" data-scroll-target="majorEventsCard" type="button">
+<span>🚨 Významné</span>
+<b id="overviewMajorCount">—</b>
+<small>vyšší stupeň / ruční význam</small>
+</button>
+<button class="v28KpiTile" data-scroll-target="mapCard" type="button">
+<span>🗺️ Na mapě</span>
+<b id="overviewMapCount">—</b>
+<small>událostí se souřadnicemi</small>
+</button>
+<button class="v28KpiTile adminOnly" data-scroll-target="manualEventQuickCard" type="button">
+<span>📍 Bez GPS</span>
+<b id="overviewMissingCount">—</b>
+<small>k ručnímu doplnění</small>
+</button>
+</div>
+<div aria-label="Rychlý stav systému" class="v29SignalBar">
+<span class="v29Signal ok">● Živá data</span>
+<span class="v29Signal">Středočeský kraj</span>
+<span class="v29Signal">Veřejný analytický režim</span>
+</div>
+<div class="v28OpsStrip">
+<div class="v28OpsMain" id="overviewPrimaryIncident">
+<strong>Nejdelší aktivní zásah</strong>
+<span>zatím bez dat</span>
+</div>
+<div class="v28OpsMeta">
+<span id="overviewFilterLabel">Filtr: —</span>
+<span id="overviewDataHealth">Stav dat: načítám…</span>
+<span id="overviewWeatherRisk">Počasí: načítá se</span>
+</div>
+<div class="v28QuickActions">
+<button class="btn quickJump" data-scroll-target="mapCard" type="button">Mapa</button>
+<button class="btn quickJump" data-scroll-target="eventsTableCard" type="button">Výjezdy</button>
+<button class="btn quickJump" data-scroll-target="regionalWeatherCard" type="button">Počasí</button>
+<button class="btn quickJump" data-scroll-target="reportsArchiveCard" type="button">Reporty</button>
+</div>
+</div>
+</section>
+<section class="card majorEventsCard" id="majorEventsCard">
+<div class="cardHeader">
+<h2>Významné události</h2>
+<div class="hint">Automatické rozpoznání stupně poplachu a větších zásahů bez úpravy ESP32</div>
+</div>
+<div class="majorEventsControls adminOnly">
+<button class="btn primary" id="majorBackfillBtn">Přepočítat významné události</button>
+<button class="btn" id="majorReloadBtn">Načíst významné</button>
+<span class="hint" id="majorBackfillStatus"></span>
+</div>
+<div class="majorEventsSummary" id="majorEventsSummary"></div>
+<div class="majorEventsList" id="majorEventsList"></div>
+</section>
+<section class="card tableCard v28EventsCard" id="eventsTableCard">
+<div class="cardHeader">
+<h2>Poslední výjezdy</h2><div class="tableEditHelp adminOnly" id="tableEditHelp">Admin režim: události upravíš tlačítkem <b>Upravit</b> v posledním sloupci.</div>
+<div class="tableHeaderControls">
+<label class="miniInlineControl">
+<span>Počet řádků</span>
+<select class="miniSelect" id="eventsLimitSelect">
+<option value="10">10</option>
+<option selected="" value="25">25</option>
+<option value="50">50</option>
+<option value="100">100</option>
+<option value="200">200</option>
+</select>
+</label>
+<div class="hint">Desktop tabulka / mobilní karty</div>
+</div>
+</div>
+<div aria-label="Tabulka výjezdů" class="tableWrap desktopEventsTable" role="region" tabindex="0">
+<table>
+<thead>
+<tr>
+<th>Čas</th>
+<th>Typ</th>
+<th>Název</th>
+<th>Město</th>
+<th>Stav</th>
+<th>Význam</th>
+<th>Délka</th>
+<th>Odkaz</th>
+<th>Úprava</th>
+</tr>
+</thead>
+<tbody id="eventsTbody"></tbody>
+</table>
+</div>
+<div aria-label="Mobilní seznam výjezdů" class="eventsMobileList" id="eventsMobileList"></div>
+<div class="eventsTableCountInfo" id="eventsTableCountInfo"></div>
+</section>
+<section class="card mapCard v28MapCard" id="mapCard">
+<div class="cardHeader">
+<h2>Mapa výjezdů</h2>
+<div class="hint legend">
+<span class="legendItem">🔥 požár</span>
+<span class="legendItem">🚗 nehoda</span>
+<span class="legendItem">🛠️ technická</span>
+<span class="legendItem">🚑 záchrana</span>
+<span class="legendItem">🚫 planý poplach</span>
+<span class="legendItem">❓ jiné</span>
+</div>
+</div>
+<div id="map"></div>
+<div class="mapDisclaimer">
         Stanice, trasy i pohyb vozidel jsou pouze orientační a simulované. Nejde o reálné sledování jednotek ani o neveřejná data.
       </div>
-    </section>
-<section id="dailyStatsCard" class="card chartCard v28MiniPanel">
-      <div class="cardHeader">
-        <h2>Statistika (30 dní)</h2>
-        <div class="hint">Počet výjezdů po dnech</div>
-      </div>
-      <div class="canvasWrap">
-        <canvas id="chartByDay" height="140"></canvas>
-      </div>
-    </section>
-
-    <section id="activeClosedCard" class="card activeClosedCard v28MiniPanel">
-      <div class="cardHeader">
-        <h2>Aktivní × ukončené</h2>
-        <div class="hint">Počet (30 dní, podle filtrů)</div>
-      <div id="activeClosedTypeBreakdown" class="typeBreakdownGrid"></div>
-      </div>
-      <div class="splitStats">
-        <div class="splitCard">
-          <div class="splitValue" id="openCount">—</div>
-          <div class="splitLabel">Aktivní</div>
-        </div>
-        <div class="splitCard">
-          <div class="splitValue" id="closedCount">—</div>
-          <div class="splitLabel">Ukončené</div>
-        </div>
-      </div>
-    </section>
-
-    <section id="cityRankCard" class="card cityRankCard v28MiniPanel">
-      <div class="cardHeader">
-        <h2>Žebříček měst</h2>
-        <div class="hint">Top 15 (30 dní)</div>
-      </div>
-      <div class="list" id="topCities"></div>
-    </section>
-
-    <section id="longestEventsCard" class="card longestEventsCard v28MiniPanel">
-      <div class="cardHeader">
-        <h2>Nejdelší zásahy</h2>
-        <div class="hint">Jen kde se spočítala délka</div>
-      </div>
-      <div class="list" id="longestList"></div>
-    </section>
-
-    
-    
-    
-    <section id="watchCard" class="card watchCard">
-      <div class="cardHeader">
-        <h2>Moje sledování a notifikace</h2>
-        <div class="hint">Lokální webové upozornění podle měst a typů událostí</div>
-      </div>
-
-      <div class="watchGrid">
-        <div class="watchPanel">
-          <h3>Co chci sledovat</h3>
-          <label class="watchLabel">
-            Města / lokality
-            <input id="watchCitiesInput" type="text" placeholder="např. Nehvizdy, Kladno, Čelákovice" />
-          </label>
-
-          <div class="watchTypes">
-            <label><input type="checkbox" class="watchTypeCheck" value="fire"> 🔥 Požár</label>
-            <label><input type="checkbox" class="watchTypeCheck" value="traffic"> 🚗 Dopravní nehoda</label>
-            <label><input type="checkbox" class="watchTypeCheck" value="tech"> 🛠 Technická pomoc</label>
-            <label><input type="checkbox" class="watchTypeCheck" value="rescue"> 🚑 Záchrana</label>
-            <label><input type="checkbox" class="watchTypeCheck" value="false_alarm"> 🚫 Planý poplach</label>
-            <label><input type="checkbox" class="watchTypeCheck" value="other"> ❓ Jiné</label>
-          </div>
-
-          <div class="watchActions">
-            <button id="saveWatchBtn" class="btn primary">Uložit sledování</button>
-            <button id="enableBrowserNotifBtn" class="btn">Povolit notifikace</button>
-            <button id="testWatchNotifBtn" class="btn">Test</button>
-          </div>
-
-          <div id="watchMsg" class="hint" style="min-height:18px;"></div>
-        </div>
-
-        <div class="watchPanel">
-          <h3>Aktuální nastavení</h3>
-          <div id="watchSummary" class="watchSummary">—</div>
-
-          <h3 style="margin-top:14px;">Poslední upozornění</h3>
-          <div id="watchHistory" class="watchHistory">Zatím žádné upozornění.</div>
-        </div>
-      </div>
-    </section>
-
-
-    <div id="v28WorkAreaLabel" class="v28SectionLabel"><span>Analytika a rozšířené nástroje</span><small>počasí, statistiky, reporty a admin úpravy</small></div>
-
-<section id="regionalWeatherCard" class="card regionalWeatherCard">
-      <div class="cardHeader">
-        <h2>Regionální počasí × události</h2>
-        <div class="hint">Open‑Meteo pro zóny Středočeského kraje, dnešek a dalších 24 hodin</div>
-      </div>
-
-      <div class="regionalWeatherControls">
-        <label>
-          Období pro porovnání
-          <select id="regionalWeatherDays">
-            <option value="30" selected>30 dní</option>
-            <option value="14">14 dní</option>
-            <option value="7">7 dní</option>
-          </select>
-        </label>
-        <button id="loadRegionalWeatherBtn" class="btn primary">Načíst regionální počasí</button>
-      </div>
-
-      <div id="regionalWeatherSummary" class="regionalWeatherSummary"></div>
-      <div id="regionalWeatherHighlights" class="regionalWeatherHighlights"></div>
-      <div id="regionalWeatherZones" class="regionalWeatherZones"></div>
-
-      <div id="regionalWeatherDetail" class="regionalWeatherDetail"></div>
-    </section>
-
-<section id="statsProCard" class="card statsProCard">
-      <div class="cardHeader">
-        <h2>Statistiky PRO</h2>
-        <div class="hint">Porovnání období, trendy, vytížené hodiny a růst měst</div>
-      </div>
-
-      <div class="statsProControls">
-        <select id="statsProPreset">
-          <option value="month">Tento měsíc vs minulý měsíc</option>
-          <option value="lastMonth">Minulý měsíc vs předchozí měsíc</option>
-          <option value="week">Tento týden vs minulý týden</option>
-        </select>
-        <button id="loadStatsProBtn" class="btn primary">Načíst PRO statistiky</button>
-      </div>
-
-      <div id="statsProSummary" class="statsProSummary"></div>
-
-      <div class="statsProGrid">
-        <div class="statsProPanel">
-          <div class="cardHeader compact">
-            <h3>Trend typů událostí</h3>
-            <span class="hint">aktuální vs předchozí období</span>
-          </div>
-          <div id="statsProTypeTrend" class="statsProList"></div>
-        </div>
-
-        <div class="statsProPanel">
-          <div class="cardHeader compact">
-            <h3>Města podle nárůstu</h3>
-            <span class="hint">kde přibylo nejvíce událostí</span>
-          </div>
-          <div id="statsProCityGrowth" class="statsProList"></div>
-        </div>
-
-        <div class="statsProPanel">
-          <div class="cardHeader compact">
-            <h3>Nejaktivnější hodiny</h3>
-            <span class="hint">rozložení podle hodin</span>
-          </div>
-          <div id="statsProHours" class="hourBars"></div>
-        </div>
-
-        <div class="statsProPanel">
-          <div class="cardHeader compact">
-            <h3>Heatmapa období</h3>
-            <span class="hint">intenzita po dnech</span>
-          </div>
-          <div id="statsProHeatmap" class="statsHeatmap"></div>
-        </div>
-      </div>
-    </section>
-
-<section id="reportsArchiveCard" class="card reportsArchiveCard">
-      <div class="cardHeader">
-        <h2>Archiv analytických souhrnů</h2>
-        <div class="hint">Denní / týdenní / měsíční snapshoty pro zpětné zobrazení a tisk</div>
-      </div>
-
-      <div class="reportControls">
-        <select id="reportTypeSelect">
-          <option value="month">měsíční</option>
-          <option value="week">týdenní</option>
-          <option value="day">denní</option>
-        </select>
-        <input id="reportKeyInput" type="text" placeholder="měsíc: 2026-05 | týden: 2026-W21 | den: 2026-05-18" />
-        <button id="generateReportBtn" class="btn primary">Vygenerovat / otevřít</button>
-        <button id="refreshReportsBtn" class="btn">Načíst archiv</button>
-        <button id="runReportsAutomationBtn" class="btn">Doplnit automatiku</button>
-      </div>
-
-      <div id="reportsList" class="reportsList"></div>
-      <div id="reportDetail" class="reportDetail"></div>
-    </section>
-
-
-    
-    <section id="manualEventQuickCard" class="card manualEventQuickCard adminOnly">
-      <div class="cardHeader">
-        <h2>Ruční úprava události</h2>
-        <div class="hint">Admin nástroj pro ruční nastavení stavu, stupně poplachu a délky zásahu</div>
-      </div>
-      <div class="manualQuickControls">
-        <button id="manualQuickLoadBtn" class="btn primary" type="button">Načíst poslední události k úpravě</button>
-        <input id="manualQuickSearch" type="text" placeholder="Filtrovat název / město…" />
-        <span id="manualQuickStatus" class="hint"></span>
-      </div>
-      <div id="manualQuickList" class="manualQuickList"></div>
-    </section>
-
-<section id="majorEventsCard" class="card majorEventsCard">
-      <div class="cardHeader">
-        <h2>Významné události</h2>
-        <div class="hint">Automatické rozpoznání stupně poplachu a větších zásahů bez úpravy ESP32</div>
-      </div>
-      <div class="majorEventsControls adminOnly">
-        <button id="majorBackfillBtn" class="btn primary">Přepočítat významné události</button>
-        <button id="majorReloadBtn" class="btn">Načíst významné</button>
-        <span id="majorBackfillStatus" class="hint"></span>
-      </div>
-      <div id="majorEventsSummary" class="majorEventsSummary"></div>
-      <div id="majorEventsList" class="majorEventsList"></div>
-    </section>
-
-<section id="eventsTableCard" class="card tableCard v28EventsCard">
-      <div class="cardHeader">
-        <h2>Poslední výjezdy</h2><div id="tableEditHelp" class="tableEditHelp adminOnly">Admin režim: události upravíš tlačítkem <b>Upravit</b> v posledním sloupci.</div>
-        <div class="tableHeaderControls">
-          <label class="miniInlineControl">
-            <span>Počet řádků</span>
-            <select id="eventsLimitSelect" class="miniSelect">
-              <option value="10">10</option>
-              <option value="25" selected>25</option>
-              <option value="50">50</option>
-              <option value="100">100</option>
-              <option value="200">200</option>
-            </select>
-          </label>
-          <div class="hint">Desktop tabulka / mobilní karty</div>
-        </div>
-      </div>
-
-      <div class="tableWrap desktopEventsTable" role="region" aria-label="Tabulka výjezdů" tabindex="0">
-        <table>
-          <thead>
-          <tr>
-            <th>Čas</th>
-            <th>Typ</th>
-            <th>Název</th>
-            <th>Město</th>
-            <th>Stav</th>
-            <th>Význam</th>
-            <th>Délka</th>
-            <th>Odkaz</th>
-            <th>Úprava</th>
-          </tr>
-        </thead>
-          <tbody id="eventsTbody"></tbody>
-        </table>
-      </div>
-      <div id="eventsMobileList" class="eventsMobileList" aria-label="Mobilní seznam výjezdů"></div>
-      <div id="eventsTableCountInfo" class="eventsTableCountInfo"></div>
-    </section>
-  </main>
-
-  <!-- ============================
-       MODALS (OPS / ADMIN)
-       ============================ -->
-
-  <!-- ZVEDNUTO NAD LEAFLET (který umí mít z-index ~1000+) -->
-  <div id="modalBackdrop" class="modalBackdrop" style="display:none; z-index: 10000;"></div>
-
-  <div id="loginModal" class="modal" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
-    <div class="modalHeader">
-      <div>
-        <div id="loginTitle" class="modalTitle">Přihlášení (OPS)</div>
-        <div class="modalHint">Přístup je určen jen pro interní použití.</div>
-      </div>
-      <button class="btn" id="loginCloseBtn" title="Zavřít">✕</button>
-    </div>
-    <div class="modalBody">
-      <div class="field" style="margin-top:0;">
-        <label for="loginUser">Uživatelské jméno</label>
-        <input id="loginUser" type="text" autocomplete="username" placeholder="např. ops1" />
-      </div>
-      <div class="field">
-        <label for="loginPass">Heslo</label>
-        <input id="loginPass" type="password" autocomplete="current-password" placeholder="••••••" />
-      </div>
-      <div class="hint" id="loginMsg" style="min-height:18px;"></div>
-      <div class="btnRow" style="justify-content:flex-end; gap:10px;">
-        <button class="btn" id="loginCancelBtn">Zrušit</button>
-        <button class="btn primary" id="loginSubmitBtn">Přihlásit</button>
-      </div>
-    </div>
-  </div>
-
-
-  <div id="registerModal" class="modal" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="registerTitle">
-    <div class="modalHeader">
-      <div>
-        <div id="registerTitle" class="modalTitle">Registrace</div>
-        <div class="modalHint">Po registraci máš přístup v režimu PUBLIC. OPS oprávnění musí schválit admin.</div>
-      </div>
-      <button class="btn" id="registerCloseBtn" title="Zavřít">✕</button>
-    </div>
-    <div class="modalBody">
-      <div class="field" style="margin-top:0;">
-        <label for="regUser">Uživatelské jméno</label>
-        <input id="regUser" type="text" autocomplete="username" placeholder="např. novak.petr" />
-        <div class="hint">3–32 znaků: písmena/čísla/._-</div>
-      </div>
-      <div class="field">
-        <label for="regPass">Heslo</label>
-        <input id="regPass" type="password" autocomplete="new-password" placeholder="min. 6 znaků" />
-      </div>
-      <div class="checkRow" style="margin-top:6px;">
-        <label class="check" style="margin:0;">
-          <input id="regRequestOps" type="checkbox" />
-          <span>Požádat rovnou o OPS oprávnění</span>
-        </label>
-      </div>
-      <div class="hint" id="regMsg" style="min-height:18px; margin-top:6px;"></div>
-      <div class="btnRow" style="justify-content:flex-end; gap:10px;">
-        <button class="btn" id="regCancelBtn">Zrušit</button>
-        <button class="btn primary" id="regSubmitBtn">Registrovat</button>
-      </div>
-    </div>
-  </div>
-
-  <div id="adminModal" class="modal modalWide" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="adminTitle">
-    <div class="modalHeader">
-      <div>
-        <div id="adminTitle" class="modalTitle">Admin panel</div>
-        <div class="modalHint">Uživatelé + výchozí nastavení směn (HZS/HZSP).</div>
-      </div>
-      <button class="btn" id="adminCloseBtn" title="Zavřít">✕</button>
-    </div>
-    <div class="modalBody">
-      <div class="adminGrid">
-        <div class="adminCard">
-          <div class="adminCardHeader">
-            <div class="adminCardTitle">Nastavení</div>
-            <div class="hint">Výchozí režim směn pro public (globální default)</div>
-          </div>
-          <div class="adminRow">
-            <label class="miniToggle" style="width:100%;">
-              <span style="opacity:.85; margin-right:8px;">Default:</span>
-              <select id="adminDefaultShift" class="miniSelect" style="min-width:160px;">
-                <option value="HZS">HZS 07:00</option>
-                <option value="HZSP">HZSP 06:00</option>
-              </select>
-            </label>
-            <button class="btn" id="adminSaveSettings">Uložit</button>
-          </div>
-          <div class="hint" id="adminSettingsMsg" style="min-height:18px;"></div>
-        </div>
-
-
-        <div class="adminCard adminManualCreateCard">
-          <div class="adminCardHeader">
-            <div class="adminCardTitle">Ruční doplnění výjezdu</div>
-            <div class="hint">Vidí pouze admin. Veřejnost neuvidí, že byl výjezd doplněn ručně.</div>
-          </div>
-
-          <div class="adminManualGrid">
-            <input id="manualCreateTitle" class="miniInput span2" placeholder="Název události / výjezdu" />
-            <input id="manualCreateCity" class="miniInput" placeholder="Město / obec" />
-            <input id="manualCreatePlace" class="miniInput" placeholder="Místo / upřesnění" />
-
-            <select id="manualCreateType" class="miniSelect">
-              <option value="other">Jiné / neurčeno</option>
-              <option value="fire">Požár</option>
-              <option value="traffic">Dopravní nehoda</option>
-              <option value="technical">Technická pomoc</option>
-              <option value="rescue">Záchrana osob/zvířat</option>
-              <option value="hazmat">Únik nebezpečných látek</option>
-            </select>
-
-            <select id="manualCreateStatus" class="miniSelect">
-              <option value="open">Probíhá zásah</option>
-              <option value="closed">Ukončená</option>
-            </select>
-
-            <select id="manualCreateAlarm" class="miniSelect">
-              <option value="">Bez stupně / neznámý</option>
-              <option value="1">I. stupeň</option>
-              <option value="2">II. stupeň</option>
-              <option value="3">III. stupeň</option>
-              <option value="4">IV. / zvláštní</option>
-            </select>
-
-            <label class="check manualCreateCheck">
-              <input id="manualCreateMajor" type="checkbox" />
-              <span>Významná událost</span>
-            </label>
-
-            <label>
-              Začátek
-              <input id="manualCreateStart" class="miniInput" type="datetime-local" />
-            </label>
-            <label>
-              Konec
-              <input id="manualCreateEnd" class="miniInput" type="datetime-local" />
-            </label>
-
-            <input id="manualCreateLat" class="miniInput" type="number" step="0.000001" placeholder="Latitude" />
-            <input id="manualCreateLon" class="miniInput" type="number" step="0.000001" placeholder="Longitude" />
-
-            <textarea id="manualCreateDetail" class="miniInput span2" rows="4" placeholder="Veřejný detail / poznámka k události"></textarea>
-          </div>
-
-          <div class="adminRow" style="margin-top:10px;">
-            <button id="manualCreatePickMapBtn" class="btn" type="button">Vybrat na mapě</button>
-            <button id="manualCreateSubmitBtn" class="btn primary" type="button">Přidat výjezd</button>
-            <span id="manualCreateMsg" class="hint"></span>
-          </div>
-        </div>
-
-        <div class="adminCard adminDiagnosticsCard">
-          <div class="adminCardHeader">
-            <div class="adminCardTitle">Diagnostika příjmu dat</div>
-            <div class="hint">Kontrola, jestli ESP/Railway opravdu něco přijímalo. Pouze admin.</div>
-          </div>
-
-          <div id="ingestDiagnosticsSummary" class="diagnosticsSummary">
-            Načti diagnostiku příjmu dat.
-          </div>
-
-          <div class="adminRow" style="margin-top:10px;">
-            <button id="loadIngestDiagnosticsBtn" class="btn" type="button">Načíst diagnostiku</button>
-            <input id="adminEventSearchInput" class="miniInput" placeholder="Hledat výjezd v DB: město, název, ID…" />
-            <button id="adminEventSearchBtn" class="btn" type="button">Hledat</button>
-          </div>
-
-          <div id="adminEventSearchResults" class="adminSearchResults"></div>
-          <div id="ingestDiagnosticsLog" class="ingestDiagnosticsLog"></div>
-        </div>
-
-        <div class="adminCard">
-          <div class="adminCardHeader">
-            <div class="adminCardTitle">Vytvořit uživatele</div>
-            <div class="hint">Role ops/admin, možnost disable.</div>
-          </div>
-          <div class="adminRow" style="flex-wrap:wrap; gap:10px;">
-            <input id="newUser" class="miniInput" placeholder="username" style="min-width:140px;" />
-            <input id="newPass" class="miniInput" placeholder="heslo (min 6)" type="password" style="min-width:160px;" />
-            <select id="newRole" class="miniSelect" style="min-width:110px;">
-              <option value="ops">ops</option>
-              <option value="admin">admin</option>
-            </select>
-            <label class="check" style="margin:0;">
-              <input id="newEnabled" type="checkbox" checked />
-              <span>enabled</span>
-            </label>
-            <button id="createUserBtn" class="btn primary">Vytvořit</button>
-          </div>
-          <div class="hint" id="adminCreateMsg" style="min-height:18px;"></div>
-        </div>
-      
-        <div class="adminCard">
-          <div class="adminCardHeader">
-            <div class="adminCardTitle">Návštěvnost webu</div>
-            <div class="hint">Počítá se počet načtení stránky (PUBLIC/OPS/ADMIN). Zobrazení je jen pro admina.</div>
-          </div>
-          <div class="splitStats" style="margin-top:10px;">
-            <div class="splitCard">
-              <div class="splitValue" id="visitsToday">—</div>
-              <div class="splitLabel">Dnes</div>
-            </div>
-            <div class="splitCard">
-              <div class="splitValue" id="visits7">—</div>
-              <div class="splitLabel">7 dní</div>
-            </div>
-            <div class="splitCard">
-              <div class="splitValue" id="visits30">—</div>
-              <div class="splitLabel">30 dní</div>
-            </div>
-          </div>
-          <div class="hint" id="visitsMsg" style="min-height:18px; margin-top:6px;"></div>
-        </div>
+</section>
+<section class="card chartCard v28MiniPanel" id="dailyStatsCard">
+<div class="cardHeader">
+<h2>Statistika (30 dní)</h2>
+<div class="hint">Počet výjezdů po dnech</div>
+</div>
+<div class="canvasWrap">
+<canvas height="140" id="chartByDay"></canvas>
+</div>
+</section>
+<section class="card activeClosedCard v28MiniPanel" id="activeClosedCard">
+<div class="cardHeader">
+<h2>Aktivní × ukončené</h2>
+<div class="hint">Počet (30 dní, podle filtrů)</div>
+<div class="typeBreakdownGrid" id="activeClosedTypeBreakdown"></div>
+</div>
+<div class="splitStats">
+<div class="splitCard">
+<div class="splitValue" id="openCount">—</div>
+<div class="splitLabel">Aktivní</div>
+</div>
+<div class="splitCard">
+<div class="splitValue" id="closedCount">—</div>
+<div class="splitLabel">Ukončené</div>
+</div>
+</div>
+</section>
+<section class="card cityRankCard v28MiniPanel" id="cityRankCard">
+<div class="cardHeader">
+<h2>Žebříček měst</h2>
+<div class="hint">Top 15 (30 dní)</div>
+</div>
+<div class="list" id="topCities"></div>
+</section>
+<section class="card longestEventsCard v28MiniPanel" id="longestEventsCard">
+<div class="cardHeader">
+<h2>Nejdelší zásahy</h2>
+<div class="hint">Jen kde se spočítala délka</div>
+</div>
+<div class="list" id="longestList"></div>
+</section>
+<section class="card reportsArchiveCard" id="reportsArchiveCard">
+<div class="cardHeader">
+<h2>Archiv analytických souhrnů</h2>
+<div class="hint">Denní / týdenní / měsíční snapshoty pro zpětné zobrazení a tisk</div>
+</div>
+<div class="reportsHeroGrid">
+<div class="reportHeroCard"><strong>Denní report</strong><span>rychlý souhrn pro sdílení</span></div>
+<div class="reportHeroCard"><strong>Týdenní report</strong><span>trendy, města a typy událostí</span></div>
+<div class="reportHeroCard"><strong>Měsíční report</strong><span>archiv a přehled za období</span></div>
 </div>
 
-      <div class="adminCard" style="margin-top:12px;">
-        <div class="adminCardHeader">
-          <div class="adminCardTitle">Uživatelé</div>
-          <div class="hint">Klikni na roli nebo enabled pro rychlou úpravu, reset hesla přes tlačítko.</div>
-        </div>
-        <div class="tableWrap" role="region" aria-label="Uživatelé" tabindex="0">
-          <table>
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>Username</th>
-                <th>Role</th>
-                <th>Enabled</th>
-                <th>Last login</th>
-                <th>Akce</th>
-              </tr>
-            </thead>
-            <tbody id="usersTbody"></tbody>
-          </table>
-        </div>
-        <div class="hint" id="adminUsersMsg" style="min-height:18px; margin-top:6px;"></div>
-      </div>
+<div class="reportControls">
+<select id="reportTypeSelect">
+<option value="month">měsíční</option>
+<option value="week">týdenní</option>
+<option value="day">denní</option>
+</select>
+<input id="reportKeyInput" placeholder="měsíc: 2026-05 | týden: 2026-W21 | den: 2026-05-18" type="text">
+<button class="btn primary" id="generateReportBtn">Vygenerovat / otevřít</button>
+<button class="btn" id="refreshReportsBtn">Načíst archiv</button>
+<button class="btn" id="runReportsAutomationBtn">Doplnit automatiku</button>
+</input></div>
+<div class="reportsList" id="reportsList"></div>
+<div class="reportDetail" id="reportDetail"></div>
+</section>
+<section class="card talkLauncherCard" id="talkLauncherCard">
+<div class="talkLauncherMain talkPromoMain">
+<div class="talkPromoCopy">
+<div class="sectionKicker">FireWatch Talk</div>
+<h2>Internetová týmová vysílačka pro jednotky, obce a krizové týmy.</h2>
+<p>Oddělený komunikační prostor ve stylu PTT vysílačky. Veřejný web zůstává čistý, Talk se otevře jen ve chvíli, kdy ho opravdu potřebuješ.</p>
+<div class="talkPromoBadges"><span>PTT režim</span><span>místnosti</span><span>stav uživatelů</span><span>OPS použití</span></div>
+</div>
+<div class="talkPromoActions">
+<button class="btn primary" id="toggleTalkBtn">Otevřít FireWatch Talk 2.0</button>
+<button class="btn quickJump" data-scroll-target="reportsArchiveCard" type="button">Zobrazit reporty</button>
+</div>
+</div>
+</section>
+<section class="card opsRadioCardShell" id="opsRadioMount" style="display:none;"></section>
+<section class="card publicLockedCard" id="talkLockedCard" style="display:none;">
+<div class="cardHeader">
+<h2>FireWatch Talk</h2>
+<div class="hint">Dostupné po přihlášení</div>
+</div>
+<p>
+        Soukromý týmový hlasový chat, místnosti, PTT komunikace a statusy jsou dostupné pouze pro přihlášené uživatele.
+      </p>
+<div class="btnRow">
+<button class="btn primary" id="talkLockedLoginBtn">Přihlásit</button>
+<button class="btn" id="talkLockedRegisterBtn">Registrovat</button>
+</div>
+</section>
+<div class="v28SectionLabel opsOnly" id="v28WorkAreaLabel"><span>Analytika a rozšířené nástroje</span><small>zobrazí se po přihlášení s oprávněním OPS/admin</small></div>
+<section class="card watchCard opsOnly" id="watchCard">
+<div class="cardHeader">
+<h2>Moje sledování a notifikace</h2>
+<div class="hint">Lokální webové upozornění podle měst a typů událostí</div>
+</div>
+<div class="watchGrid">
+<div class="watchPanel">
+<h3>Co chci sledovat</h3>
+<label class="watchLabel">
+            Města / lokality
+            <input id="watchCitiesInput" placeholder="např. Nehvizdy, Kladno, Čelákovice" type="text"/>
+</label>
+<div class="watchTypes">
+<label><input class="watchTypeCheck" type="checkbox" value="fire"/> 🔥 Požár</label>
+<label><input class="watchTypeCheck" type="checkbox" value="traffic"/> 🚗 Dopravní nehoda</label>
+<label><input class="watchTypeCheck" type="checkbox" value="tech"/> 🛠 Technická pomoc</label>
+<label><input class="watchTypeCheck" type="checkbox" value="rescue"/> 🚑 Záchrana</label>
+<label><input class="watchTypeCheck" type="checkbox" value="false_alarm"/> 🚫 Planý poplach</label>
+<label><input class="watchTypeCheck" type="checkbox" value="other"/> ❓ Jiné</label>
+</div>
+<div class="watchActions">
+<button class="btn primary" id="saveWatchBtn">Uložit sledování</button>
+<button class="btn" id="enableBrowserNotifBtn">Povolit notifikace</button>
+<button class="btn" id="testWatchNotifBtn">Test</button>
+</div>
+<div class="hint" id="watchMsg" style="min-height:18px;"></div>
+</div>
+<div class="watchPanel">
+<h3>Aktuální nastavení</h3>
+<div class="watchSummary" id="watchSummary">—</div>
+<h3 style="margin-top:14px;">Poslední upozornění</h3>
+<div class="watchHistory" id="watchHistory">Zatím žádné upozornění.</div>
+</div>
+</div>
+</section>
+<section class="card regionalWeatherCard opsOnly" id="regionalWeatherCard">
+<div class="cardHeader">
+<h2>Regionální počasí × události</h2>
+<div class="hint">Open‑Meteo pro zóny Středočeského kraje, dnešek a dalších 24 hodin</div>
+</div>
+<div class="regionalWeatherControls">
+<label>
+          Období pro porovnání
+          <select id="regionalWeatherDays">
+<option selected="" value="30">30 dní</option>
+<option value="14">14 dní</option>
+<option value="7">7 dní</option>
+</select>
+</label>
+<button class="btn primary" id="loadRegionalWeatherBtn">Načíst regionální počasí</button>
+</div>
+<div class="regionalWeatherSummary" id="regionalWeatherSummary"></div>
+<div class="regionalWeatherHighlights" id="regionalWeatherHighlights"></div>
+<div class="regionalWeatherZones" id="regionalWeatherZones"></div>
+<div class="regionalWeatherDetail" id="regionalWeatherDetail"></div>
+</section>
+<section class="card statsProCard opsOnly" id="statsProCard">
+<div class="cardHeader">
+<h2>Statistiky PRO</h2>
+<div class="hint">Porovnání období, trendy, vytížené hodiny a růst měst</div>
+</div>
+<div class="statsProControls">
+<select id="statsProPreset">
+<option value="month">Tento měsíc vs minulý měsíc</option>
+<option value="lastMonth">Minulý měsíc vs předchozí měsíc</option>
+<option value="week">Tento týden vs minulý týden</option>
+</select>
+<button class="btn primary" id="loadStatsProBtn">Načíst PRO statistiky</button>
+</div>
+<div class="statsProSummary" id="statsProSummary"></div>
+<div class="statsProGrid">
+<div class="statsProPanel">
+<div class="cardHeader compact">
+<h3>Trend typů událostí</h3>
+<span class="hint">aktuální vs předchozí období</span>
+</div>
+<div class="statsProList" id="statsProTypeTrend"></div>
+</div>
+<div class="statsProPanel">
+<div class="cardHeader compact">
+<h3>Města podle nárůstu</h3>
+<span class="hint">kde přibylo nejvíce událostí</span>
+</div>
+<div class="statsProList" id="statsProCityGrowth"></div>
+</div>
+<div class="statsProPanel">
+<div class="cardHeader compact">
+<h3>Nejaktivnější hodiny</h3>
+<span class="hint">rozložení podle hodin</span>
+</div>
+<div class="hourBars" id="statsProHours"></div>
+</div>
+<div class="statsProPanel">
+<div class="cardHeader compact">
+<h3>Heatmapa období</h3>
+<span class="hint">intenzita po dnech</span>
+</div>
+<div class="statsHeatmap" id="statsProHeatmap"></div>
+</div>
+</div>
+</section>
+<section class="card manualEventQuickCard adminOnly" id="manualEventQuickCard">
+<div class="cardHeader">
+<h2>Ruční úprava události</h2>
+<div class="hint">Admin nástroj pro ruční nastavení stavu, stupně poplachu a délky zásahu</div>
+</div>
+<div class="manualQuickControls">
+<button class="btn primary" id="manualQuickLoadBtn" type="button">Načíst poslední události k úpravě</button>
+<input id="manualQuickSearch" placeholder="Filtrovat název / město…" type="text">
+<span class="hint" id="manualQuickStatus"></span>
+</input></div>
+<div class="manualQuickList" id="manualQuickList"></div>
+</section>
 
-      <div class="adminCard" style="margin-top:12px;">
-        <div class="adminCardHeader">
-          <div class="adminCardTitle">Žádosti o OPS oprávnění</div>
-          <div class="hint">Uživatelé se mohou registrovat jako PUBLIC a požádat o OPS. Admin žádost ručně schvaluje.</div>
-        </div>
-        <div class="tableWrap" role="region" aria-label="Žádosti OPS" tabindex="0">
-          <table>
-            <thead>
-              <tr>
-                <th>Žádost</th>
-                <th>Uživatel</th>
-                <th>Čas</th>
-                <th>Akce</th>
-              </tr>
-            </thead>
-            <tbody id="opsReqTbody"></tbody>
-          </table>
-        </div>
-        <div class="hint" id="opsReqMsg" style="min-height:18px; margin-top:6px;"></div>
-      </div>
+<section class="card publicDisclaimerCard" id="publicDisclaimerCard">
+<strong>Upozornění</strong>
+<p>FireWatch CZ je neoficiální analytický projekt. Nejde o systém HZS, JPO ani IZS, neslouží k řízení zásahů a simulované údaje o trasách nebo stanicích mají pouze orientační charakter.</p>
+</section>
 
-      <div class="adminCard" style="margin-top:12px;">
-        <div class="adminCardHeader">
-          <div class="adminCardTitle">
-        <section class="adminSection majorBackfillAdminBox">
-          <div class="sectionHead">
-            <div>
-              <h3>Významné události / stupeň poplachu</h3>
-              <p>Zpětně projde uložené události a doplní III. stupeň, zvláštní stupeň a stav „probíhá zásah“.</p>
-            </div>
+</main>
+<!-- ============================
+       MODALS (OPS / ADMIN)
+       ============================ -->
+<!-- ZVEDNUTO NAD LEAFLET (který umí mít z-index ~1000+) -->
+<div class="modalBackdrop" id="modalBackdrop" style="display:none; z-index: 10000;"></div>
+<div aria-labelledby="loginTitle" aria-modal="true" class="modal" id="loginModal" role="dialog" style="display:none;">
+<div class="modalHeader">
+<div>
+<div class="modalTitle" id="loginTitle">Přihlášení (OPS)</div>
+<div class="modalHint">Přístup je určen jen pro interní použití.</div>
+</div>
+<button class="btn" id="loginCloseBtn" title="Zavřít">✕</button>
+</div>
+<div class="modalBody">
+<div class="field" style="margin-top:0;">
+<label for="loginUser">Uživatelské jméno</label>
+<input autocomplete="username" id="loginUser" placeholder="např. ops1" type="text">
+</input></div>
+<div class="field">
+<label for="loginPass">Heslo</label>
+<input autocomplete="current-password" id="loginPass" placeholder="••••••" type="password">
+</input></div>
+<div class="hint" id="loginMsg" style="min-height:18px;"></div>
+<div class="btnRow" style="justify-content:flex-end; gap:10px;">
+<button class="btn" id="loginCancelBtn">Zrušit</button>
+<button class="btn primary" id="loginSubmitBtn">Přihlásit</button>
+</div>
+</div>
+</div>
+<div aria-labelledby="registerTitle" aria-modal="true" class="modal" id="registerModal" role="dialog" style="display:none;">
+<div class="modalHeader">
+<div>
+<div class="modalTitle" id="registerTitle">Registrace</div>
+<div class="modalHint">Po registraci máš přístup v režimu PUBLIC. OPS oprávnění musí schválit admin.</div>
+</div>
+<button class="btn" id="registerCloseBtn" title="Zavřít">✕</button>
+</div>
+<div class="modalBody">
+<div class="field" style="margin-top:0;">
+<label for="regUser">Uživatelské jméno</label>
+<input autocomplete="username" id="regUser" placeholder="např. novak.petr" type="text">
+<div class="hint">3–32 znaků: písmena/čísla/._-</div>
+</input></div>
+<div class="field">
+<label for="regPass">Heslo</label>
+<input autocomplete="new-password" id="regPass" placeholder="min. 6 znaků" type="password">
+</input></div>
+<div class="checkRow" style="margin-top:6px;">
+<label class="check" style="margin:0;">
+<input id="regRequestOps" type="checkbox"/>
+<span>Požádat rovnou o OPS oprávnění</span>
+</label>
+</div>
+<div class="hint" id="regMsg" style="min-height:18px; margin-top:6px;"></div>
+<div class="btnRow" style="justify-content:flex-end; gap:10px;">
+<button class="btn" id="regCancelBtn">Zrušit</button>
+<button class="btn primary" id="regSubmitBtn">Registrovat</button>
+</div>
+</div>
+</div>
+<div aria-labelledby="adminTitle" aria-modal="true" class="modal modalWide" id="adminModal" role="dialog" style="display:none;">
+<div class="modalHeader">
+<div>
+<div class="modalTitle" id="adminTitle">Admin panel</div>
+<div class="modalHint">Uživatelé + výchozí nastavení směn (HZS/HZSP).</div>
+</div>
+<button class="btn" id="adminCloseBtn" title="Zavřít">✕</button>
+</div>
+<div class="modalBody">
+<div class="adminGrid">
+<div class="adminCard">
+<div class="adminCardHeader">
+<div class="adminCardTitle">Nastavení</div>
+<div class="hint">Výchozí režim směn pro public (globální default)</div>
+</div>
+<div class="adminRow">
+<label class="miniToggle" style="width:100%;">
+<span style="opacity:.85; margin-right:8px;">Default:</span>
+<select class="miniSelect" id="adminDefaultShift" style="min-width:160px;">
+<option value="HZS">HZS 07:00</option>
+<option value="HZSP">HZSP 06:00</option>
+</select>
+</label>
+<button class="btn" id="adminSaveSettings">Uložit</button>
+</div>
+<div class="hint" id="adminSettingsMsg" style="min-height:18px;"></div>
+</div>
+<div class="adminCard adminManualCreateCard">
+<div class="adminCardHeader">
+<div class="adminCardTitle">Ruční doplnění výjezdu</div>
+<div class="hint">Vidí pouze admin. Veřejnost neuvidí, že byl výjezd doplněn ručně.</div>
+</div>
+<div class="adminManualGrid">
+<input class="miniInput span2" id="manualCreateTitle" placeholder="Název události / výjezdu"/>
+<input class="miniInput" id="manualCreateCity" placeholder="Město / obec"/>
+<input class="miniInput" id="manualCreatePlace" placeholder="Místo / upřesnění"/>
+<select class="miniSelect" id="manualCreateType">
+<option value="other">Jiné / neurčeno</option>
+<option value="fire">Požár</option>
+<option value="traffic">Dopravní nehoda</option>
+<option value="technical">Technická pomoc</option>
+<option value="rescue">Záchrana osob/zvířat</option>
+<option value="hazmat">Únik nebezpečných látek</option>
+</select>
+<select class="miniSelect" id="manualCreateStatus">
+<option value="open">Probíhá zásah</option>
+<option value="closed">Ukončená</option>
+</select>
+<select class="miniSelect" id="manualCreateAlarm">
+<option value="">Bez stupně / neznámý</option>
+<option value="1">I. stupeň</option>
+<option value="2">II. stupeň</option>
+<option value="3">III. stupeň</option>
+<option value="4">IV. / zvláštní</option>
+</select>
+<label class="check manualCreateCheck">
+<input id="manualCreateMajor" type="checkbox"/>
+<span>Významná událost</span>
+</label>
+<label>
+              Začátek
+              <input class="miniInput" id="manualCreateStart" type="datetime-local"/>
+</label>
+<label>
+              Konec
+              <input class="miniInput" id="manualCreateEnd" type="datetime-local"/>
+</label>
+<input class="miniInput" id="manualCreateLat" placeholder="Latitude" step="0.000001" type="number"/>
+<input class="miniInput" id="manualCreateLon" placeholder="Longitude" step="0.000001" type="number"/>
+<textarea class="miniInput span2" id="manualCreateDetail" placeholder="Veřejný detail / poznámka k události" rows="4"></textarea>
+</div>
+<div class="adminRow" style="margin-top:10px;">
+<button class="btn" id="manualCreatePickMapBtn" type="button">Vybrat na mapě</button>
+<button class="btn primary" id="manualCreateSubmitBtn" type="button">Přidat výjezd</button>
+<span class="hint" id="manualCreateMsg"></span>
+</div>
+</div>
+<div class="adminCard adminDiagnosticsCard">
+<div class="adminCardHeader">
+<div class="adminCardTitle">Diagnostika příjmu dat</div>
+<div class="hint">Kontrola, jestli ESP/Railway opravdu něco přijímalo. Pouze admin.</div>
+</div>
+<div class="diagnosticsSummary" id="ingestDiagnosticsSummary">
+            Načti diagnostiku příjmu dat.
           </div>
-          <div class="majorEventsControls">
-            <button id="adminMajorBackfillBtn" class="btn primary" type="button">Přepočítat stupně poplachu</button>
-            <button id="adminMajorReloadBtn" class="btn" type="button">Načíst významné</button>
-            <button id="adminRecheckStatusesBtn" class="btn" type="button">Překontrolovat stavy z RSS</button>
-            <span id="adminMajorBackfillStatus" class="hint"></span>
-          </div>
-        </section>
-
-        <section class="adminSection manualEditAdminBox">
-          <div class="sectionHead">
-            <div>
-              <h3>Ruční úprava zásahu</h3>
-              <p>Vyber událost a ručně nastav, zda probíhá, je ukončená, stupeň poplachu a časy pro přepočet délky.</p>
-            </div>
-          </div>
-          <div class="majorEventsControls">
-            <button id="adminManualQuickLoadBtn" class="btn primary" type="button">Načíst události k úpravě</button>
-            <input id="adminManualQuickSearch" class="adminManualQuickSearch" type="text" placeholder="Filtrovat název / město…" />
-            <span id="adminManualQuickStatus" class="hint">Po načtení klikni u události na „Upravit“.</span>
-          </div>
-          <div id="adminManualQuickList" class="manualQuickList adminManualQuickList"></div>
-        </section>
-
-        <section class="adminSection durationRecomputeAdminBox">
-          <div class="sectionHead">
-            <div>
-              <h3>Přepočet délky zásahů</h3>
-              <p>Přepočítá uložené délky podle pravidla: první zjištění události → změna na ukončeno.</p>
-            </div>
-          </div>
-          <div class="majorEventsControls">
-            <button id="adminRecomputeDurationsBtn" class="btn primary" type="button">Přepočítat sledované délky</button>
-            <button id="adminClearBogusDurationsBtn" class="btn" type="button">Vyčistit krátké falešné délky</button>
-            <span id="adminDurationRecomputeStatus" class="hint"></span>
-          </div>
-        </section>
+<div class="adminRow" style="margin-top:10px;">
+<button class="btn" id="loadIngestDiagnosticsBtn" type="button">Načíst diagnostiku</button>
+<input class="miniInput" id="adminEventSearchInput" placeholder="Hledat výjezd v DB: město, název, ID…"/>
+<button class="btn" id="adminEventSearchBtn" type="button">Hledat</button>
+</div>
+<div class="adminSearchResults" id="adminEventSearchResults"></div>
+<div class="ingestDiagnosticsLog" id="ingestDiagnosticsLog"></div>
+</div>
+<div class="adminCard">
+<div class="adminCardHeader">
+<div class="adminCardTitle">Vytvořit uživatele</div>
+<div class="hint">Role ops/admin, možnost disable.</div>
+</div>
+<div class="adminRow" style="flex-wrap:wrap; gap:10px;">
+<input class="miniInput" id="newUser" placeholder="username" style="min-width:140px;"/>
+<input class="miniInput" id="newPass" placeholder="heslo (min 6)" style="min-width:160px;" type="password"/>
+<select class="miniSelect" id="newRole" style="min-width:110px;">
+<option value="ops">ops</option>
+<option value="admin">admin</option>
+</select>
+<label class="check" style="margin:0;">
+<input checked="" id="newEnabled" type="checkbox"/>
+<span>enabled</span>
+</label>
+<button class="btn primary" id="createUserBtn">Vytvořit</button>
+</div>
+<div class="hint" id="adminCreateMsg" style="min-height:18px;"></div>
+</div>
+<div class="adminCard">
+<div class="adminCardHeader">
+<div class="adminCardTitle">Návštěvnost webu</div>
+<div class="hint">Počítá se počet načtení stránky (PUBLIC/OPS/ADMIN). Zobrazení je jen pro admina.</div>
+</div>
+<div class="splitStats" style="margin-top:10px;">
+<div class="splitCard">
+<div class="splitValue" id="visitsToday">—</div>
+<div class="splitLabel">Dnes</div>
+</div>
+<div class="splitCard">
+<div class="splitValue" id="visits7">—</div>
+<div class="splitLabel">7 dní</div>
+</div>
+<div class="splitCard">
+<div class="splitValue" id="visits30">—</div>
+<div class="splitLabel">30 dní</div>
+</div>
+</div>
+<div class="hint" id="visitsMsg" style="min-height:18px; margin-top:6px;"></div>
+</div>
+</div>
+<div class="adminCard" style="margin-top:12px;">
+<div class="adminCardHeader">
+<div class="adminCardTitle">Uživatelé</div>
+<div class="hint">Klikni na roli nebo enabled pro rychlou úpravu, reset hesla přes tlačítko.</div>
+</div>
+<div aria-label="Uživatelé" class="tableWrap" role="region" tabindex="0">
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Username</th>
+<th>Role</th>
+<th>Enabled</th>
+<th>Last login</th>
+<th>Akce</th>
+</tr>
+</thead>
+<tbody id="usersTbody"></tbody>
+</table>
+</div>
+<div class="hint" id="adminUsersMsg" style="min-height:18px; margin-top:6px;"></div>
+</div>
+<div class="adminCard" style="margin-top:12px;">
+<div class="adminCardHeader">
+<div class="adminCardTitle">Žádosti o OPS oprávnění</div>
+<div class="hint">Uživatelé se mohou registrovat jako PUBLIC a požádat o OPS. Admin žádost ručně schvaluje.</div>
+</div>
+<div aria-label="Žádosti OPS" class="tableWrap" role="region" tabindex="0">
+<table>
+<thead>
+<tr>
+<th>Žádost</th>
+<th>Uživatel</th>
+<th>Čas</th>
+<th>Akce</th>
+</tr>
+</thead>
+<tbody id="opsReqTbody"></tbody>
+</table>
+</div>
+<div class="hint" id="opsReqMsg" style="min-height:18px; margin-top:6px;"></div>
+</div>
+<div class="adminCard" style="margin-top:12px;">
+<div class="adminCardHeader">
+<div class="adminCardTitle">
+<section class="adminSection majorBackfillAdminBox">
+<div class="sectionHead">
+<div>
+<h3>Významné události / stupeň poplachu</h3>
+<p>Zpětně projde uložené události a doplní III. stupeň, zvláštní stupeň a stav „probíhá zásah“.</p>
+</div>
+</div>
+<div class="majorEventsControls">
+<button class="btn primary" id="adminMajorBackfillBtn" type="button">Přepočítat stupně poplachu</button>
+<button class="btn" id="adminMajorReloadBtn" type="button">Načíst významné</button>
+<button class="btn" id="adminRecheckStatusesBtn" type="button">Překontrolovat stavy z RSS</button>
+<span class="hint" id="adminMajorBackfillStatus"></span>
+</div>
+</section>
+<section class="adminSection manualEditAdminBox">
+<div class="sectionHead">
+<div>
+<h3>Ruční úprava zásahu</h3>
+<p>Vyber událost a ručně nastav, zda probíhá, je ukončená, stupeň poplachu a časy pro přepočet délky.</p>
+</div>
+</div>
+<div class="majorEventsControls">
+<button class="btn primary" id="adminManualQuickLoadBtn" type="button">Načíst události k úpravě</button>
+<input class="adminManualQuickSearch" id="adminManualQuickSearch" placeholder="Filtrovat název / město…" type="text"/>
+<span class="hint" id="adminManualQuickStatus">Po načtení klikni u události na „Upravit“.</span>
+</div>
+<div class="manualQuickList adminManualQuickList" id="adminManualQuickList"></div>
+</section>
+<section class="adminSection durationRecomputeAdminBox">
+<div class="sectionHead">
+<div>
+<h3>Přepočet délky zásahů</h3>
+<p>Přepočítá uložené délky podle pravidla: první zjištění události → změna na ukončeno.</p>
+</div>
+</div>
+<div class="majorEventsControls">
+<button class="btn primary" id="adminRecomputeDurationsBtn" type="button">Přepočítat sledované délky</button>
+<button class="btn" id="adminClearBogusDurationsBtn" type="button">Vyčistit krátké falešné délky</button>
+<span class="hint" id="adminDurationRecomputeStatus"></span>
+</div>
+</section>
 
 
 Události bez souřadnic</div>
-          <div class="hint">Doplnění souřadnic ručně nebo kliknutím do mapy. Projeví se všude (mapa, simulace, export, statistiky).</div>
-        </div>
-
-        <div class="adminRow" style="flex-wrap:wrap; gap:10px;">
-          <button id="reloadMissingCoordsBtn" class="btn">Načíst</button>
-          <button id="autoGeocodeMissingBtn" class="btn primary">Auto doplnit GPS</button>
-          <span class="hint" id="missingCoordsInfo">—</span>
-        </div>
-
-        <div id="coordsEditorCard" class="coordsEditorCard" style="display:none;">
-          <div>
-            <div class="hint">Vybraná událost</div>
-            <div id="coordsSelectedTitle" class="coordsSelectedTitle">—</div>
-            <div id="coordsSelectedMeta" class="coordsSelectedMeta">—</div>
-          </div>
-          <div class="coordsEditorActions">
-            <button id="minimizeAdminForMapBtn" class="btn">Minimalizovat panel a vybrat v mapě</button>
-            <button id="scrollToCoordsEditorBtn" class="btn">Přejít na souřadnice</button>
-          </div>
-        </div>
-
-        <div class="tableWrap missingCoordsWrap" role="region" aria-label="Události bez souřadnic" tabindex="0" style="margin-top:8px;">
-          <table>
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>Název</th>
-                <th>Město</th>
-                <th>Stav</th>
-                <th>Akce</th>
-              </tr>
-            </thead>
-            <tbody id="missingCoordsTbody"></tbody>
-          </table>
-        </div>
-
-        <div class="adminRow" style="flex-wrap:wrap; gap:10px; margin-top:10px;">
-          <input id="coordsEventId" class="miniInput" placeholder="event id" style="min-width:220px;" readonly />
-          <input id="coordsLat" class="miniInput" placeholder="lat" style="min-width:120px;" />
-          <input id="coordsLon" class="miniInput" placeholder="lon" style="min-width:120px;" />
-          <button id="pickOnMapBtn" class="btn">Vybrat na mapě</button>
-          <button id="saveCoordsBtn" class="btn primary">Uložit</button>
-          <button id="loadGeoSuggestionsBtn" class="btn">Návrhy GPS</button>
-          <button id="clearCoordsBtn" class="btn">Smazat</button>
-        </div>
-        <div id="geoSuggestionsBox" class="geoSuggestionsBox"></div>
-        <div class="hint" id="coordsMsg" style="min-height:18px; margin-top:6px;"></div>
-      </div>
-
-    </div>
-  </div>
-
-  <!-- ============================
+<div class="hint">Doplnění souřadnic ručně nebo kliknutím do mapy. Projeví se všude (mapa, simulace, export, statistiky).</div>
+</div>
+<div class="adminRow" style="flex-wrap:wrap; gap:10px;">
+<button class="btn" id="reloadMissingCoordsBtn">Načíst</button>
+<button class="btn primary" id="autoGeocodeMissingBtn">Auto doplnit GPS</button>
+<span class="hint" id="missingCoordsInfo">—</span>
+</div>
+<div class="coordsEditorCard" id="coordsEditorCard" style="display:none;">
+<div>
+<div class="hint">Vybraná událost</div>
+<div class="coordsSelectedTitle" id="coordsSelectedTitle">—</div>
+<div class="coordsSelectedMeta" id="coordsSelectedMeta">—</div>
+</div>
+<div class="coordsEditorActions">
+<button class="btn" id="minimizeAdminForMapBtn">Minimalizovat panel a vybrat v mapě</button>
+<button class="btn" id="scrollToCoordsEditorBtn">Přejít na souřadnice</button>
+</div>
+</div>
+<div aria-label="Události bez souřadnic" class="tableWrap missingCoordsWrap" role="region" style="margin-top:8px;" tabindex="0">
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Název</th>
+<th>Město</th>
+<th>Stav</th>
+<th>Akce</th>
+</tr>
+</thead>
+<tbody id="missingCoordsTbody"></tbody>
+</table>
+</div>
+<div class="adminRow" style="flex-wrap:wrap; gap:10px; margin-top:10px;">
+<input class="miniInput" id="coordsEventId" placeholder="event id" readonly="" style="min-width:220px;"/>
+<input class="miniInput" id="coordsLat" placeholder="lat" style="min-width:120px;"/>
+<input class="miniInput" id="coordsLon" placeholder="lon" style="min-width:120px;"/>
+<button class="btn" id="pickOnMapBtn">Vybrat na mapě</button>
+<button class="btn primary" id="saveCoordsBtn">Uložit</button>
+<button class="btn" id="loadGeoSuggestionsBtn">Návrhy GPS</button>
+<button class="btn" id="clearCoordsBtn">Smazat</button>
+</div>
+<div class="geoSuggestionsBox" id="geoSuggestionsBox"></div>
+<div class="hint" id="coordsMsg" style="min-height:18px; margin-top:6px;"></div>
+</div>
+</div>
+</div>
+<!-- ============================
        AUDIO (OPS)
        ============================ -->
-  <div id="audioModal" class="modal" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="audioTitle">
-    <div class="modalHeader">
-      <div>
-        <div id="audioTitle" class="modalTitle">Audio (OPS)</div>
-        <div class="modalHint">Hlasová hlášení běží jen v OPS. Na mobilech/tabletech je potřeba audio nejdřív „odemknout“ tlačítkem.</div>
-      </div>
-      <button class="btn" id="audioCloseBtn" title="Zavřít">✕</button>
-    </div>
-
-    <div class="modalBody">
-      <div class="adminCard" style="margin-top:0;">
-        <div class="adminCardHeader">
-          <div class="adminCardTitle">Ovládání</div>
-          <div class="hint">Bez spamu: nové události = jen hlas. Souhrn po 3 hodinách = jen hlas. Předání směny = gong + hlas (lze vypnout).</div>
-        </div>
-
-        <div class="field" style="margin-top:10px;">
-          <label class="ghost">Audio</label>
-          <div class="checkRow">
-            <label class="check">
-              <input id="audioEnabled" type="checkbox" />
-              <span>Zapnout hlášení (OPS)</span>
-            </label>
-            <button id="audioUnlockBtn" class="btn" title="Nutné pro tablety/mobily">Odemknout</button>
-          </div>
-          <div class="hint" id="audioMsg" style="min-height:18px; margin-top:6px;"></div>
-        </div>
-
-        <div class="grid2" style="margin-top:10px;">
-          <div class="field" style="margin-top:0;">
-            <label for="audioVolume">Hlasitost gongu (směna)</label>
-            <input id="audioVolume" type="range" min="0" max="100" value="70" />
-          </div>
-          <div class="field" style="margin-top:0;">
-            <label for="audioGongOnShift">Gong při předání směny</label>
-            <select id="audioGongOnShift">
-              <option value="on" selected>zapnuto</option>
-              <option value="off">vypnuto</option>
-            </select>
-          </div>
-        </div>
-
-        <div class="grid2" style="margin-top:10px;">
-          <div class="field" style="margin-top:0;">
-            <label for="audioRate">Rychlost hlasu</label>
-            <input id="audioRate" type="range" min="80" max="140" value="105" />
-          </div>
-          <div class="field" style="margin-top:0;">
-            <label for="audioQuiet">Tichý režim</label>
-            <select id="audioQuiet">
-              <option value="off" selected>vypnuto</option>
-              <option value="on">22:00–06:00</option>
-            </select>
-          </div>
-        </div>
-
-        <div class="adminActions" style="margin-top:12px;">
-          <button id="audioTestNew" class="btn">Test: nová událost</button>
-          <button id="audioTestSummary" class="btn">Test: souhrn</button>
-          <button id="audioTestShift" class="btn">Test: směna</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-  <script src="app.js"></script>
-  <script src="radio.js"></script>
-  
+<div aria-labelledby="audioTitle" aria-modal="true" class="modal" id="audioModal" role="dialog" style="display:none;">
+<div class="modalHeader">
+<div>
+<div class="modalTitle" id="audioTitle">Audio (OPS)</div>
+<div class="modalHint">Hlasová hlášení běží jen v OPS. Na mobilech/tabletech je potřeba audio nejdřív „odemknout“ tlačítkem.</div>
 </div>
-<button id="restoreAdminPanelBtn" class="restoreAdminPanelBtn" style="display:none;">Zpět do adminu</button>
-
-  <div id="manualEventModalBackdrop" class="modalBackdrop" style="display:none;">
-    <div class="modal manualEventModal">
-      <div class="modalHead">
-        <div>
-          <h2>Ruční úprava události</h2>
-          <p id="manualEventSubtitle">Nastavení stavu, stupně poplachu a délky zásahu.</p>
-        </div>
-        <button id="manualEventCloseBtn" class="iconBtn" type="button">×</button>
-      </div>
-
-      <div class="manualEventBody">
-        <div class="manualEventInfo" id="manualEventInfo"></div>
-
-        <label>
+<button class="btn" id="audioCloseBtn" title="Zavřít">✕</button>
+</div>
+<div class="modalBody">
+<div class="adminCard" style="margin-top:0;">
+<div class="adminCardHeader">
+<div class="adminCardTitle">Ovládání</div>
+<div class="hint">Bez spamu: nové události = jen hlas. Souhrn po 3 hodinách = jen hlas. Předání směny = gong + hlas (lze vypnout).</div>
+</div>
+<div class="field" style="margin-top:10px;">
+<label class="ghost">Audio</label>
+<div class="checkRow">
+<label class="check">
+<input id="audioEnabled" type="checkbox"/>
+<span>Zapnout hlášení (OPS)</span>
+</label>
+<button class="btn" id="audioUnlockBtn" title="Nutné pro tablety/mobily">Odemknout</button>
+</div>
+<div class="hint" id="audioMsg" style="min-height:18px; margin-top:6px;"></div>
+</div>
+<div class="grid2" style="margin-top:10px;">
+<div class="field" style="margin-top:0;">
+<label for="audioVolume">Hlasitost gongu (směna)</label>
+<input id="audioVolume" max="100" min="0" type="range" value="70"/>
+</div>
+<div class="field" style="margin-top:0;">
+<label for="audioGongOnShift">Gong při předání směny</label>
+<select id="audioGongOnShift">
+<option selected="" value="on">zapnuto</option>
+<option value="off">vypnuto</option>
+</select>
+</div>
+</div>
+<div class="grid2" style="margin-top:10px;">
+<div class="field" style="margin-top:0;">
+<label for="audioRate">Rychlost hlasu</label>
+<input id="audioRate" max="140" min="80" type="range" value="105"/>
+</div>
+<div class="field" style="margin-top:0;">
+<label for="audioQuiet">Tichý režim</label>
+<select id="audioQuiet">
+<option selected="" value="off">vypnuto</option>
+<option value="on">22:00–06:00</option>
+</select>
+</div>
+</div>
+<div class="adminActions" style="margin-top:12px;">
+<button class="btn" id="audioTestNew">Test: nová událost</button>
+<button class="btn" id="audioTestSummary">Test: souhrn</button>
+<button class="btn" id="audioTestShift">Test: směna</button>
+</div>
+</div>
+</div>
+</div>
+<script crossorigin="" src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="app.js"></script>
+<script src="radio.js"></script>
+</div>
+<button class="restoreAdminPanelBtn" id="restoreAdminPanelBtn" style="display:none;">Zpět do adminu</button>
+<div class="modalBackdrop" id="manualEventModalBackdrop" style="display:none;">
+<div class="modal manualEventModal">
+<div class="modalHead">
+<div>
+<h2>Ruční úprava události</h2>
+<p id="manualEventSubtitle">Nastavení stavu, stupně poplachu a délky zásahu.</p>
+</div>
+<button class="iconBtn" id="manualEventCloseBtn" type="button">×</button>
+</div>
+<div class="manualEventBody">
+<div class="manualEventInfo" id="manualEventInfo"></div>
+<label>
           Stav zásahu
           <select id="manualEventStatusMode">
-            <option value="auto">Nechat aktuální / automatiku</option>
-            <option value="open">Probíhá zásah / aktivní bez konce</option>
-            <option value="closed">Ukončená</option>
-          </select>
-        </label>
-
-        <label>
+<option value="auto">Nechat aktuální / automatiku</option>
+<option value="open">Probíhá zásah / aktivní bez konce</option>
+<option value="closed">Ukončená</option>
+</select>
+</label>
+<label>
           Stupeň poplachu
           <select id="manualEventAlarmLevel">
-            <option value="">Bez stupně / neznámý</option>
-            <option value="1">I. stupeň</option>
-            <option value="2">II. stupeň</option>
-            <option value="3">III. stupeň</option>
-            <option value="4">IV. / zvláštní stupeň</option>
-          </select>
-        </label>
-
-        <label class="check manualMajorCheck">
-          <input id="manualEventIsMajor" type="checkbox" />
+<option value="">Bez stupně / neznámý</option>
+<option value="1">I. stupeň</option>
+<option value="2">II. stupeň</option>
+<option value="3">III. stupeň</option>
+<option value="4">IV. / zvláštní stupeň</option>
+</select>
+</label>
+<label class="check manualMajorCheck">
+<input id="manualEventIsMajor" type="checkbox"/>
           Označit jako významnou událost
         </label>
-
-        <label>
+<label>
           Důvod / poznámka
-          <input id="manualEventMajorReason" type="text" placeholder="např. III. stupeň poplachu, dlouhotrvající zásah…" />
-        </label>
-
-        <div class="manualEventTimeGrid">
-          <label>
+          <input id="manualEventMajorReason" placeholder="např. III. stupeň poplachu, dlouhotrvající zásah…" type="text"/>
+</label>
+<div class="manualEventTimeGrid">
+<label>
             Začátek zásahu
-            <input id="manualEventStart" type="datetime-local" />
-          </label>
-          <label id="manualEventEndLabel">
+            <input id="manualEventStart" type="datetime-local"/>
+</label>
+<label id="manualEventEndLabel">
             Konec zásahu
-            <input id="manualEventEnd" type="datetime-local" />
-            <small id="manualEventEndHint" class="manualInputHint">U aktivního zásahu se konec nevyplňuje. Doplní se až po ukončení.</small>
-          </label>
-        </div>
-
-        
-        <section class="manualCoordsBox">
-          <div class="manualCoordsHead">
-            <div>
-              <h3>Souřadnice / pozice výjezdu</h3>
-              <p>Souřadnice můžeš zadat ručně, nebo kliknout na mapu a tím vybrat přesné místo výjezdu.</p>
-            </div>
-            <button id="manualPickOnMapBtn" class="btn" type="button">Vybrat na mapě</button>
-          </div>
-
-          <div class="manualEventCoordsGrid">
-            <label>
+            <input id="manualEventEnd" type="datetime-local"/>
+<small class="manualInputHint" id="manualEventEndHint">U aktivního zásahu se konec nevyplňuje. Doplní se až po ukončení.</small>
+</label>
+</div>
+<section class="manualCoordsBox">
+<div class="manualCoordsHead">
+<div>
+<h3>Souřadnice / pozice výjezdu</h3>
+<p>Souřadnice můžeš zadat ručně, nebo kliknout na mapu a tím vybrat přesné místo výjezdu.</p>
+</div>
+<button class="btn" id="manualPickOnMapBtn" type="button">Vybrat na mapě</button>
+</div>
+<div class="manualEventCoordsGrid">
+<label>
               Latitude
-              <input id="manualEventLat" type="number" step="0.000001" placeholder="např. 50.142000" />
-            </label>
-            <label>
+              <input id="manualEventLat" placeholder="např. 50.142000" step="0.000001" type="number"/>
+</label>
+<label>
               Longitude
-              <input id="manualEventLon" type="number" step="0.000001" placeholder="např. 14.795000" />
-            </label>
-          </div>
-
-          <div class="manualCoordsActions">
-            <button id="manualClearCoordsBtn" class="btn" type="button">Smazat souřadnice</button>
-            <span id="manualCoordsHint" class="hint">Po kliknutí na „Vybrat na mapě“ se modal schová, klikni do mapy a poloha se vloží zpět do formuláře.</span>
-          </div>
-        </section>
-
-
-        <div id="manualEventComputed" class="manualEventComputed"></div>
-
-        <div class="modalActions">
-          <button id="manualEventSaveBtn" class="btn primary" type="button">Uložit a přepočítat</button>
-          <button id="manualEventCancelBtn" class="btn" type="button">Zavřít</button>
-          <span id="manualEventStatus" class="hint"></span>
-        </div>
-      </div>
-    </div>
-  </div>
-
-
-  <div id="eventDetailModalBackdrop" class="modalBackdrop" style="display:none;">
-    <div class="modal eventDetailModal">
-      <div class="modalHead">
-        <div>
-          <h2>Detail události</h2>
-          <p id="eventDetailSubtitle">Vlastní FireWatch detail bez závislosti na původní stránce.</p>
-        </div>
-        <button id="eventDetailCloseBtn" class="iconBtn" type="button">×</button>
-      </div>
-
-      <div class="eventDetailBody">
-        <div id="eventDetailHeader" class="eventDetailHeader"></div>
-
-        <div class="eventDetailGrid">
-          <div class="eventDetailPanel">
-            <h3>Souhrn</h3>
-            <div id="eventDetailSummary"></div>
-          </div>
-
-          <div class="eventDetailPanel">
-            <h3>Vlastní poznámka / veřejně dostupné informace</h3>
-            <div id="eventDetailPublicText" class="eventDetailPublicText"></div>
-
-            <div id="eventDetailAdminEditor" class="eventDetailAdminEditor adminOnly">
-              <label>
+              <input id="manualEventLon" placeholder="např. 14.795000" step="0.000001" type="number"/>
+</label>
+</div>
+<div class="manualCoordsActions">
+<button class="btn" id="manualClearCoordsBtn" type="button">Smazat souřadnice</button>
+<span class="hint" id="manualCoordsHint">Po kliknutí na „Vybrat na mapě“ se modal schová, klikni do mapy a poloha se vloží zpět do formuláře.</span>
+</div>
+</section>
+<div class="manualEventComputed" id="manualEventComputed"></div>
+<div class="modalActions">
+<button class="btn primary" id="manualEventSaveBtn" type="button">Uložit a přepočítat</button>
+<button class="btn" id="manualEventCancelBtn" type="button">Zavřít</button>
+<span class="hint" id="manualEventStatus"></span>
+</div>
+</div>
+</div>
+</div>
+<div class="modalBackdrop" id="eventDetailModalBackdrop" style="display:none;">
+<div class="modal eventDetailModal">
+<div class="modalHead">
+<div>
+<h2>Detail události</h2>
+<p id="eventDetailSubtitle">Vlastní FireWatch detail bez závislosti na původní stránce.</p>
+</div>
+<button class="iconBtn" id="eventDetailCloseBtn" type="button">×</button>
+</div>
+<div class="eventDetailBody">
+<div class="eventDetailHeader" id="eventDetailHeader"></div>
+<div class="eventDetailGrid">
+<div class="eventDetailPanel">
+<h3>Souhrn</h3>
+<div id="eventDetailSummary"></div>
+</div>
+<div class="eventDetailPanel">
+<h3>Vlastní poznámka / veřejně dostupné informace</h3>
+<div class="eventDetailPublicText" id="eventDetailPublicText"></div>
+<div class="eventDetailAdminEditor adminOnly" id="eventDetailAdminEditor">
+<label>
                 Text detailu
-                <textarea id="eventDetailTextInput" rows="8" placeholder="Sem si můžeš zapsat vlastní veřejně dohledané informace k události…"></textarea>
-              </label>
-              <label>
+                <textarea id="eventDetailTextInput" placeholder="Sem si můžeš zapsat vlastní veřejně dohledané informace k události…" rows="8"></textarea>
+</label>
+<label>
                 Zdroj / poznámka ke zdroji
-                <input id="eventDetailSourceInput" type="text" placeholder="např. veřejný článek, obecní info, vlastní ověřená poznámka…" />
-              </label>
-              <div class="modalActions">
-                <button id="eventDetailSaveBtn" class="btn primary" type="button">Uložit detail</button>
-                <button id="eventDetailEditEventBtn" class="btn" type="button">Upravit stav / stupeň</button>
-                <span id="eventDetailStatus" class="hint"></span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="eventDetailFooter">
-          <a id="eventDetailSourceLink" href="#" target="_blank" rel="noopener" style="display:none;">Původní zdroj</a>
-          <button id="eventDetailCancelBtn" class="btn" type="button">Zavřít</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
+                <input id="eventDetailSourceInput" placeholder="např. veřejný článek, obecní info, vlastní ověřená poznámka…" type="text"/>
+</label>
+<div class="modalActions">
+<button class="btn primary" id="eventDetailSaveBtn" type="button">Uložit detail</button>
+<button class="btn" id="eventDetailEditEventBtn" type="button">Upravit stav / stupeň</button>
+<span class="hint" id="eventDetailStatus"></span>
+</div>
+</div>
+</div>
+</div>
+<div class="eventDetailFooter">
+<a href="#" id="eventDetailSourceLink" rel="noopener" style="display:none;" target="_blank">Původní zdroj</a>
+<button class="btn" id="eventDetailCancelBtn" type="button">Zavřít</button>
+</div>
+</div>
+</div>
+</div>
 </body>
 </html>

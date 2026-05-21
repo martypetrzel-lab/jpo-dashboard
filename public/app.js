@@ -1067,7 +1067,7 @@ function bindInlineTableEditButtons() {
 function eventDetailButtonHtml(it) {
   const id = escapeHtml(it?.id || "");
   if (!id) return "";
-  return `<button type="button" class="linkBtn eventDetailBtn" data-event-id="${id}">detail</button>`;
+  return `<button type="button" class="btn miniBtn eventDetailBtn" data-event-id="${id}">Detail</button>`;
 }
 
 function detailDateText(value) {
@@ -1182,14 +1182,16 @@ function renderTable(items) {
     const alarmHtml = typeof alarmLevelBadge === "function" ? (alarmLevelBadge(it) || "") : "";
     const carryHtml = typeof carryoverBadgeHtml === "function" ? (carryoverBadgeHtml(it) || "") : "";
     const durationValue = typeof liveDurationForEvent === "function" ? liveDurationForEvent(it) : it.duration_min;
+    const titleShort = title.length > 82 ? `${title.slice(0, 82).trim()}…` : title;
+    const stateClass = it.is_closed ? "stateClosed" : "stateOpen";
 
     tr.innerHTML = `
       <td>${escapeHtml(formatDate(timeValue))}</td>
       <td title="${escapeHtml(meta.label || it.event_type || "")}">${escapeHtml(meta.emoji || "")}</td>
-      <td>${escapeHtml(title)}</td>
+      <td title="${escapeHtml(title)}"><span class="eventTitleCompact">${escapeHtml(titleShort)}</span></td>
       <td>${escapeHtml(city)}</td>
-      <td>${statusEmoji(it.is_closed)} ${escapeHtml(statusText)} ${carryHtml}</td>
-      <td>${alarmHtml}</td>
+      <td><span class="eventStateBadge ${stateClass}">${statusEmoji(it.is_closed)} ${escapeHtml(statusText)}</span> ${carryHtml}</td>
+      <td>${alarmHtml || '<span class="muted">—</span>'}</td>
       <td>${escapeHtml(formatDuration(durationValue))}</td>
       <td>${eventDetailButtonHtml(it)}</td>
       <td>${tableEditButtonHtml(it)}</td>
@@ -2880,6 +2882,27 @@ function updateCommandOverview(items = [], stats = null) {
     }
   }
 
+  const stripUpdated = document.getElementById("dataStripUpdated");
+  const stripLastEvent = document.getElementById("dataStripLastEvent");
+  const stripSource = document.getElementById("dataStripSource");
+  if (stripUpdated) {
+    try {
+      stripUpdated.textContent = new Intl.DateTimeFormat("cs-CZ", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date());
+    } catch {
+      stripUpdated.textContent = "nyní";
+    }
+  }
+  if (stripLastEvent) {
+    const newest = safeItems
+      .map(x => x?.pub_date || x?.start_time_iso || x?.created_at || "")
+      .filter(Boolean)
+      .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0];
+    stripLastEvent.textContent = newest ? formatDate(newest) : "bez dat";
+  }
+  if (stripSource) {
+    stripSource.textContent = safeItems.length ? "RSS aktivní" : "čekám na data";
+  }
+
   if (filterLabel) {
     const f = typeof getFiltersFromUi === "function" ? getFiltersFromUi() : {};
     const dayMap = { today: "dnes", yesterday: "včera", all: "vše" };
@@ -4144,6 +4167,8 @@ function isCurrentUserAdmin() {
 
 function syncAdminVisibility() {
   const isAdmin = isCurrentUserAdmin();
+  const role = String(currentUser?.role || "").toLowerCase();
+  const isOps = role === "ops" || role === "admin";
 
   // Horní tlačítko Admin
   showEl("adminBtn", isAdmin);
@@ -4152,6 +4177,12 @@ function syncAdminVisibility() {
   document.querySelectorAll(".adminOnlyNav, [data-admin-only='true']").forEach((el) => {
     el.style.display = isAdmin ? "" : "none";
     el.setAttribute("aria-hidden", isAdmin ? "false" : "true");
+  });
+
+  // OPS/Admin bloky mimo veřejný dashboard
+  document.querySelectorAll(".opsOnly, .opsOnlyNav").forEach((el) => {
+    el.style.display = isOps ? "" : "none";
+    el.setAttribute("aria-hidden", isOps ? "false" : "true");
   });
 
   // Admin-only ovládací prvky uvnitř karet
