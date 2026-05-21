@@ -4855,3 +4855,122 @@ tbody td {
     transform: none;
   }
 }
+
+
+/* =========================================================
+   FireWatch CZ v2.9.1 – oprava rozbitého desktop/tablet gridu
+   Problém: některé starší karty neměly grid-column a smrskly se
+   do jednoho z 12 sloupců. Výchozí pravidlo je teď bezpečně full-width.
+   ========================================================= */
+
+.grid {
+  grid-auto-flow: row !important;
+  grid-auto-columns: minmax(0, 1fr) !important;
+}
+
+.grid > section,
+.grid > .card,
+.grid > section.card {
+  grid-column: 1 / -1 !important;
+  width: 100% !important;
+  min-width: 0 !important;
+}
+
+/* Dvousloupcové rozložení jen pro kompaktní analytické bloky,
+   kde je to na desktopu skutečně čitelné. */
+@media (min-width: 1180px) {
+  .grid > #dailyStatsCard,
+  .grid > #activeClosedCard,
+  .grid > #topCitiesCard,
+  .grid > #longestEventsCard,
+  .grid > #regionalWeatherCard,
+  .grid > #majorEventsCard,
+  .grid > .chartCard.v28MiniPanel,
+  .grid > .activeClosedCard.v28MiniPanel {
+    grid-column: span 6 !important;
+  }
+
+  .grid > #mapCard,
+  .grid > #eventsTableCard,
+  .grid > #commandOverviewCard,
+  .grid > #statsProCard,
+  .grid > #reportsArchiveCard,
+  .grid > #watchCard,
+  .grid > #manualEventQuickCard {
+    grid-column: 1 / -1 !important;
+  }
+}
+
+/* Tablety: raději čitelnost než úzké sloupce. */
+@media (max-width: 1179px) {
+  .grid > section,
+  .grid > .card,
+  .grid > section.card {
+    grid-column: 1 / -1 !important;
+  }
+}
+
+/* Oprava přetékání úzkých prvků v kartách po redesignu. */
+.card,
+section.card,
+.cardHeader,
+.tableWrap,
+.canvasWrap,
+.splitStats,
+.typeBreakdownGrid,
+.majorEventsSummary,
+.majorEventsList,
+.manualQuickList {
+  min-width: 0 !important;
+}
+
+.cardHeader {
+  align-items: flex-start;
+}
+
+.tableHeaderControls,
+.btnRow,
+.v28QuickActions,
+.majorEventsControls,
+.manualQuickControls {
+  flex-wrap: wrap !important;
+}
+
+/* Karty žebříčků / mini statistik nesmí být vysoké úzké sloupce. */
+.cityRankList,
+.longestList,
+.rankingList,
+#topCitiesList,
+#longestEventsList {
+  width: 100%;
+  min-width: 0;
+}
+
+.cityRankList > *,
+.longestList > *,
+.rankingList > *,
+#topCitiesList > *,
+#longestEventsList > * {
+  max-width: 100%;
+}
+
+/* Ještě bezpečnější mobil/tablet chování pro filtry nahoře. */
+.filters,
+.filterGrid,
+.controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  align-items: end;
+}
+
+@media (max-width: 720px) {
+  .filters,
+  .filterGrid,
+  .controls {
+    grid-template-columns: 1fr;
+  }
+
+  .grid {
+    display: block !important;
+  }
+}
