@@ -4209,3 +4209,24 @@ button.btn {
   opacity:0.75;
   line-height:1.4;
 }
+
+/* FireWatchCZ fix – na desktopu schovat mobilní karty pod tabulkou výjezdů */
+.eventsMobileList {
+  display: none;
+}
+
+.desktopEventsTable {
+  display: block;
+}
+
+@media (max-width: 720px) {
+  .desktopEventsTable {
+    display: none;
+  }
+
+  .eventsMobileList {
+    display: grid;
+    gap: 10px;
+    margin-top: 12px;
+  }
+}
