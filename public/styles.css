@@ -5168,3 +5168,272 @@ section.card,
     width: 100% !important;
   }
 }
+
+
+/* =========================================================
+   FireWatch CZ v2.9.3 – clean layout repair
+   Oprava po v2.9.2:
+   - žádná vnitřní scrollovací okna v kartách
+   - filtry nesmí překážet jako velký levý blok
+   - desktop používá plnou šířku stránky
+   - tablet/mobil zůstává čitelný
+   ========================================================= */
+
+/* Zrušení vnitřních scroll boxů z předchozí verze */
+#watchCard,
+#regionalWeatherCard,
+#majorEventsCard,
+#cityRankCard,
+#longestEventsCard,
+.card,
+section.card,
+.tableWrap,
+.canvasWrap,
+.manualQuickList,
+.majorEventsList,
+.majorEventsSummary {
+  max-height: none !important;
+  overflow: visible !important;
+}
+
+/* Stránka má využívat šířku monitoru, ne tvořit prázdnou plochu vpravo. */
+.fwAppShell {
+  width: 100% !important;
+  max-width: none !important;
+}
+
+@media (min-width: 1160px) {
+  .fwAppShell {
+    padding-left: 258px !important;
+    padding-right: clamp(16px, 1.6vw, 28px) !important;
+  }
+}
+
+.landingPage,
+.grid {
+  width: 100% !important;
+  max-width: none !important;
+  padding-left: clamp(12px, 1.2vw, 22px) !important;
+  padding-right: clamp(12px, 1.2vw, 22px) !important;
+}
+
+/* Horní filtr jako kompaktní operační toolbar.
+   Důležité: přepisuje agresivní grid z v2.9.2. */
+section.filters {
+  width: 100% !important;
+  margin: 0 0 14px 0 !important;
+  padding: 12px !important;
+  border-radius: 18px !important;
+  display: flex !important;
+  flex-wrap: wrap !important;
+  align-items: flex-end !important;
+  gap: 10px !important;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.050), rgba(255,255,255,0.024)),
+    rgba(10,15,23,0.70) !important;
+  border: 1px solid rgba(255,255,255,0.085) !important;
+  box-shadow: 0 14px 34px rgba(0,0,0,0.18) !important;
+}
+
+section.filters .field {
+  flex: 1 1 175px !important;
+  min-width: 155px !important;
+  max-width: 270px !important;
+}
+
+section.filters .field:has(#cityInput) {
+  flex-basis: 220px !important;
+}
+
+section.filters .field:has(#monthInput) {
+  flex-basis: 190px !important;
+}
+
+section.filters .field.buttons {
+  flex: 0 0 auto !important;
+  min-width: 0 !important;
+  max-width: none !important;
+}
+
+section.filters label {
+  font-size: 11px !important;
+  margin-bottom: 4px !important;
+  color: rgba(238,245,255,0.66) !important;
+}
+
+section.filters input,
+section.filters select {
+  width: 100% !important;
+  min-height: 38px !important;
+}
+
+section.filters .btnRow {
+  display: flex !important;
+  flex-wrap: nowrap !important;
+  gap: 8px !important;
+}
+
+section.filters .btn {
+  min-height: 38px !important;
+  white-space: nowrap !important;
+}
+
+/* Desktop dashboard: přehledný, ale bez úzkých sloupců a bez vnitřních scrollů. */
+@media (min-width: 1180px) {
+  .grid {
+    display: grid !important;
+    grid-template-columns: repeat(12, minmax(0, 1fr)) !important;
+    gap: clamp(14px, 1.1vw, 20px) !important;
+    align-items: start !important;
+  }
+
+  .grid > section.card,
+  .grid > .card {
+    grid-column: span 6 !important;
+    min-width: 0 !important;
+    width: 100% !important;
+  }
+
+  .grid > #commandOverviewCard,
+  .grid > #eventsTableCard,
+  .grid > #statsProCard,
+  .grid > #reportsArchiveCard,
+  .grid > #manualEventQuickCard {
+    grid-column: 1 / -1 !important;
+  }
+
+  /* Mapa a poslední výjezdy patří mezi hlavní bloky, ne do úzkého panelu. */
+  .grid > #mapCard {
+    grid-column: 1 / -1 !important;
+  }
+
+  /* Menší analytické karty do dvou sloupců, nikdy do úzkých třetin. */
+  .grid > #dailyStatsCard,
+  .grid > #activeClosedCard,
+  .grid > #cityRankCard,
+  .grid > #longestEventsCard,
+  .grid > #regionalWeatherCard,
+  .grid > #majorEventsCard,
+  .grid > #watchCard,
+  .grid > #talkLauncherCard,
+  .grid > #talkLockedCard,
+  .grid > #opsRadioMount {
+    grid-column: span 6 !important;
+  }
+
+  #map {
+    min-height: clamp(420px, 48vh, 620px) !important;
+  }
+}
+
+/* Široké monitory: vybrané malé bloky mohou jít do třetin,
+   ale jen pokud zůstanou čitelné. */
+@media (min-width: 1650px) {
+  .grid > #dailyStatsCard,
+  .grid > #activeClosedCard,
+  .grid > #cityRankCard,
+  .grid > #longestEventsCard {
+    grid-column: span 3 !important;
+  }
+
+  .grid > #regionalWeatherCard,
+  .grid > #majorEventsCard,
+  .grid > #watchCard {
+    grid-column: span 4 !important;
+  }
+}
+
+/* Tablet: dvě kolony jen pro běžné karty, hlavní bloky přes celou šířku. */
+@media (min-width: 760px) and (max-width: 1179px) {
+  .grid {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    gap: 14px !important;
+  }
+
+  .grid > section.card,
+  .grid > .card {
+    grid-column: span 1 !important;
+  }
+
+  .grid > #commandOverviewCard,
+  .grid > #eventsTableCard,
+  .grid > #mapCard,
+  .grid > #statsProCard,
+  .grid > #reportsArchiveCard,
+  .grid > #manualEventQuickCard {
+    grid-column: 1 / -1 !important;
+  }
+
+  section.filters {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  section.filters .field,
+  section.filters .field.buttons {
+    max-width: none !important;
+    width: 100% !important;
+  }
+}
+
+/* Mobil: filtr pod sebe, ale pořád kompaktní. */
+@media (max-width: 759px) {
+  .fwAppShell {
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+  }
+
+  section.filters {
+    display: grid !important;
+    grid-template-columns: 1fr !important;
+    padding: 10px !important;
+    gap: 9px !important;
+  }
+
+  section.filters .field,
+  section.filters .field.buttons {
+    min-width: 0 !important;
+    max-width: none !important;
+    width: 100% !important;
+  }
+
+  section.filters .btnRow {
+    flex-wrap: wrap !important;
+  }
+
+  .grid {
+    display: block !important;
+  }
+
+  .grid > section.card,
+  .grid > .card {
+    width: 100% !important;
+  }
+}
+
+/* Menší vizuální dotažení, aby toolbar nepůsobil jako samostatná obří sekce. */
+.publicHero + section.filters,
+.landingPage + section.filters {
+  margin-top: 10px !important;
+}
+
+section.filters .ghost {
+  display: block !important;
+  visibility: hidden !important;
+  height: 15px !important;
+}
+
+/* Reset přetékání z předchozích verzí */
+html,
+body {
+  overflow-x: hidden !important;
+}
+
+.cardHeader,
+.tableHeaderControls,
+.v28QuickActions,
+.majorEventsControls,
+.manualQuickControls {
+  min-width: 0 !important;
+}
