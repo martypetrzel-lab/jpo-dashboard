@@ -32,13 +32,12 @@
     </div>
 
     <nav class="fwSidebarNav" aria-label="FireWatch navigace">
-      <button type="button" data-scroll-target="landingPage">Úvod</button>
-      <button type="button" data-scroll-target="commandOverviewCard">Přehled</button>
-      <button type="button" data-scroll-target="publicGuestHero">Veřejný režim</button>
+      <button type="button" data-scroll-target="landingPage">Přehled</button>
       <button type="button" data-scroll-target="mapCard">Mapa</button>
-      <button type="button" data-scroll-target="statsProCard">Statistiky PRO</button>
+      <button type="button" data-scroll-target="statsProCard">Statistiky</button>
+      <button type="button" data-scroll-target="reportsArchiveCard">Reporty</button>
+      <button type="button" data-scroll-target="talkLauncherCard">FireWatch Talk</button>
       <button type="button" data-scroll-target="regionalWeatherCard">Počasí</button>
-      <button type="button" data-scroll-target="majorEventsCard">Významné</button>
       <button type="button" class="adminOnlyNav" data-scroll-target="manualEventQuickCard" style="display:none;">Ruční úpravy</button>
       <button type="button" data-scroll-target="watchCard">Notifikace</button>
       <button type="button" data-scroll-target="reportsArchiveCard">Reporty</button>
@@ -48,12 +47,29 @@
 
     <div class="fwSidebarFooter">
       <span>v2.9 responsive</span>
-      <small>Neoficiální analytický projekt</small>
+      <small>Neoficiální analytický projekt • Simulované informace nejsou oficiální data IZS</small>
     </div>
   </aside>
 
 
   <div class="fwAppShell">
+<section class="fwQuickStart">
+  <a href="#mapCard" class="fwQuickCard">
+    <span class="fwQuickIcon">🗺️</span>
+    <strong>Mapa zásahů</strong>
+    <small>Aktuální výjezdy a přehled událostí</small>
+  </a>
+  <a href="#reportsArchiveCard" class="fwQuickCard">
+    <span class="fwQuickIcon">📊</span>
+    <strong>Reporty</strong>
+    <small>Denní a měsíční statistiky FireWatch CZ</small>
+  </a>
+  <a href="#talkLauncherCard" class="fwQuickCard">
+    <span class="fwQuickIcon">🎙️</span>
+    <strong>FireWatch Talk</strong>
+    <small>Internetová vysílačka pro týmy a dispečink</small>
+  </a>
+</section>
 <header class="topbar">
     <div class="title titleLogo">
       <img src="/logo-firewatch-cz.png" alt="FireWatch CZ – Přehled a statistiky zásahů JPO" class="fwBrandLogoTop" />

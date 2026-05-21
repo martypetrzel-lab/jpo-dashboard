@@ -4170,3 +4170,42 @@ button.btn {
 .card {
   scroll-margin-top: 90px;
 }
+
+
+.fwQuickStart{
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(220px,1fr));
+  gap:16px;
+  padding:18px;
+}
+
+.fwQuickCard{
+  background:linear-gradient(180deg, rgba(255,122,40,0.12), rgba(255,255,255,0.03));
+  border:1px solid rgba(255,255,255,0.1);
+  border-radius:20px;
+  padding:20px;
+  text-decoration:none;
+  transition:0.2s ease;
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+}
+
+.fwQuickCard:hover{
+  transform:translateY(-2px);
+  border-color:rgba(255,122,40,0.4);
+  background:linear-gradient(180deg, rgba(255,122,40,0.18), rgba(255,255,255,0.05));
+}
+
+.fwQuickIcon{
+  font-size:28px;
+}
+
+.fwQuickCard strong{
+  font-size:18px;
+}
+
+.fwQuickCard small{
+  opacity:0.75;
+  line-height:1.4;
+}
