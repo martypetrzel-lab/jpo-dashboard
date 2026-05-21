@@ -5437,3 +5437,263 @@ body {
 .manualQuickControls {
   min-width: 0 !important;
 }
+
+
+/* =========================================================
+   FireWatch CZ v2.9.4 – full width dashboard repair
+   Oprava: obsah se už nemačká vlevo. Hlavní sekce využívají
+   celou šířku a vícesloupcové rozložení se řeší uvnitř karet.
+   ========================================================= */
+
+/* Úplný reset předchozích pokusů s úzkými grid sloupci. */
+.fwAppShell {
+  width: 100% !important;
+  max-width: none !important;
+  margin: 0 !important;
+}
+
+@media (min-width: 1160px) {
+  .fwAppShell {
+    padding-left: 258px !important;
+    padding-right: 18px !important;
+  }
+}
+
+.landingPage,
+.grid,
+section.filters {
+  width: 100% !important;
+  max-width: none !important;
+  box-sizing: border-box !important;
+}
+
+.grid {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  gap: 16px !important;
+  align-items: start !important;
+  padding-left: 12px !important;
+  padding-right: 12px !important;
+}
+
+/* Každá hlavní sekce je přes celou použitelnou šířku. Žádné prázdné místo vpravo. */
+.grid > section,
+.grid > section.card,
+.grid > .card,
+.grid > * {
+  grid-column: 1 / -1 !important;
+  width: 100% !important;
+  max-width: none !important;
+  min-width: 0 !important;
+  justify-self: stretch !important;
+}
+
+/* Karty nesmí tvořit vlastní malé scrollovací okno. */
+.card,
+section.card,
+#watchCard,
+#regionalWeatherCard,
+#majorEventsCard,
+#cityRankCard,
+#longestEventsCard,
+#dailyStatsCard,
+#activeClosedCard,
+#statsProCard,
+#reportsArchiveCard {
+  max-height: none !important;
+  overflow: visible !important;
+}
+
+/* Horní filtr jako vodorovný toolbar přes celou šířku. */
+section.filters {
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: wrap !important;
+  align-items: end !important;
+  gap: 10px !important;
+  margin: 0 12px 14px 12px !important;
+  padding: 12px !important;
+  border-radius: 18px !important;
+  background: rgba(10,15,23,0.72) !important;
+  border: 1px solid rgba(255,255,255,0.09) !important;
+}
+
+section.filters .field {
+  flex: 1 1 170px !important;
+  min-width: 160px !important;
+  max-width: 260px !important;
+}
+
+section.filters .field:has(#cityInput) {
+  flex: 1 1 230px !important;
+  max-width: 320px !important;
+}
+
+section.filters .field:has(#monthInput) {
+  flex: 0 1 210px !important;
+}
+
+section.filters .field.buttons {
+  flex: 0 0 auto !important;
+  min-width: 0 !important;
+  max-width: none !important;
+}
+
+section.filters .btnRow {
+  display: flex !important;
+  flex-wrap: nowrap !important;
+  gap: 8px !important;
+}
+
+section.filters label {
+  font-size: 11px !important;
+  margin-bottom: 4px !important;
+  color: rgba(238,245,255,0.68) !important;
+}
+
+section.filters input,
+section.filters select {
+  min-height: 38px !important;
+}
+
+/* Nechci schované / svislé ghost labely tvořící divné mezery. */
+section.filters .ghost {
+  height: 14px !important;
+  visibility: hidden !important;
+}
+
+/* Počasí a podobné bloky: karta přes celou šířku, obsah uvnitř do sloupců. */
+#regionalWeatherCard .weatherRegionGrid,
+#regionalWeatherCard .regionalWeatherGrid,
+#regionalWeatherCard .weatherGrid,
+#regionalWeatherCard .regionWeatherGrid,
+#regionalWeatherCard .weatherCards,
+#regionalWeatherCard .regionsGrid,
+#regionalWeatherCard [class*="weather"][class*="Grid"],
+#regionalWeatherCard [class*="region"][class*="Grid"] {
+  display: grid !important;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)) !important;
+  gap: 12px !important;
+  width: 100% !important;
+}
+
+/* Pokud jsou regionální karty jen přímé děti některého kontejneru, pomůže i obecný fallback. */
+#regionalWeatherCard .regionalWeatherDetails,
+#regionalWeatherCard .regionalWeatherBody,
+#regionalWeatherCard .weatherDetails,
+#regionalWeatherCard .weatherSummaryGrid {
+  display: grid !important;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)) !important;
+  gap: 12px !important;
+  width: 100% !important;
+}
+
+/* Mini statistiky uvnitř karet do šířky. */
+#cityRankCard,
+#longestEventsCard,
+#dailyStatsCard,
+#activeClosedCard {
+  min-height: unset !important;
+}
+
+#cityRankCard .cityRankList,
+#longestEventsCard .longestList,
+#cityRankCard [class*="List"],
+#longestEventsCard [class*="List"] {
+  display: grid !important;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)) !important;
+  gap: 10px !important;
+  width: 100% !important;
+}
+
+/* Operační přehled – KPI dlaždice mají využít šířku. */
+.v28KpiGrid {
+  display: grid !important;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)) !important;
+  gap: 12px !important;
+  width: 100% !important;
+}
+
+/* Mapa a tabulka mají být dominantní full-width bloky. */
+#map {
+  min-height: clamp(420px, 52vh, 680px) !important;
+}
+
+#eventsTableCard,
+#mapCard,
+#commandOverviewCard {
+  width: 100% !important;
+}
+
+/* Desktop: analytické páry mohou být uvnitř jedné řady jen pokud je to explicitní grid,
+   ale samotné sekce zůstanou full width kvůli konzistenci. */
+@media (min-width: 1200px) {
+  #dailyStatsCard .canvasWrap,
+  #activeClosedCard .splitStats {
+    width: 100% !important;
+  }
+}
+
+/* Tablet: pořád přes celou šířku, žádné úzké panely. */
+@media (max-width: 1179px) {
+  .fwAppShell {
+    padding-right: 0 !important;
+  }
+
+  .grid {
+    display: block !important;
+    padding-left: 10px !important;
+    padding-right: 10px !important;
+  }
+
+  .grid > section,
+  .grid > section.card,
+  .grid > .card {
+    width: 100% !important;
+    margin-bottom: 12px !important;
+  }
+
+  section.filters {
+    margin-left: 10px !important;
+    margin-right: 10px !important;
+  }
+}
+
+/* Mobil: filtr do jednoho sloupce, obsah pod sebe. */
+@media (max-width: 720px) {
+  section.filters {
+    display: grid !important;
+    grid-template-columns: 1fr !important;
+  }
+
+  section.filters .field,
+  section.filters .field.buttons {
+    max-width: none !important;
+    width: 100% !important;
+  }
+
+  section.filters .btnRow {
+    flex-wrap: wrap !important;
+  }
+
+  #regionalWeatherCard .weatherRegionGrid,
+  #regionalWeatherCard .regionalWeatherGrid,
+  #regionalWeatherCard .weatherGrid,
+  #regionalWeatherCard .regionWeatherGrid,
+  #regionalWeatherCard .weatherCards,
+  #regionalWeatherCard .regionsGrid,
+  #regionalWeatherCard [class*="weather"][class*="Grid"],
+  #regionalWeatherCard [class*="region"][class*="Grid"],
+  #regionalWeatherCard .regionalWeatherDetails,
+  #regionalWeatherCard .regionalWeatherBody,
+  #regionalWeatherCard .weatherDetails,
+  #regionalWeatherCard .weatherSummaryGrid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+/* Žádné horizontální rozbití stránky. */
+html,
+body {
+  overflow-x: hidden !important;
+}
