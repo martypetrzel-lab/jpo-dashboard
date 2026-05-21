@@ -4974,3 +4974,197 @@ section.card,
     display: block !important;
   }
 }
+
+
+/* =========================================================
+   FireWatch CZ v2.9.2 – široký dashboard layout
+   Cíl: méně zbytečného scrollování na desktopu/tabletu.
+   Hlavní karty se rozkládají do 2–3 sloupců podle šířky,
+   ale žádná sekce nesmí spadnout do úzkého jednoho sloupce.
+   ========================================================= */
+
+@media (min-width: 1180px) {
+  .grid {
+    grid-template-columns: repeat(12, minmax(0, 1fr)) !important;
+    align-items: stretch !important;
+  }
+
+  /* Výchozí bezpečný rozměr pro běžné dashboardové karty: polovina šířky. */
+  .grid > section.card,
+  .grid > .card {
+    grid-column: span 6 !important;
+    min-width: 0 !important;
+    width: 100% !important;
+  }
+
+  /* Hlavní operační a tabulkové bloky přes celou šířku. */
+  .grid > #commandOverviewCard,
+  .grid > #eventsTableCard,
+  .grid > #statsProCard,
+  .grid > #reportsArchiveCard,
+  .grid > #manualEventQuickCard {
+    grid-column: 1 / -1 !important;
+  }
+
+  /* Mapa větší, vedle ní může být analytika / notifikace. */
+  .grid > #mapCard {
+    grid-column: span 8 !important;
+  }
+
+  .grid > #watchCard,
+  .grid > #regionalWeatherCard,
+  .grid > #majorEventsCard,
+  .grid > #talkLauncherCard,
+  .grid > #talkLockedCard,
+  .grid > #opsRadioMount {
+    grid-column: span 4 !important;
+  }
+
+  /* Mini statistiky po dvou nebo třech vedle sebe podle prostoru. */
+  .grid > #dailyStatsCard,
+  .grid > #activeClosedCard,
+  .grid > #cityRankCard,
+  .grid > #longestEventsCard {
+    grid-column: span 3 !important;
+  }
+
+  /* Když je karta s grafem moc malá, má mít aspoň rozumnou výšku. */
+  .grid > #dailyStatsCard,
+  .grid > #activeClosedCard {
+    min-height: 260px;
+  }
+
+  /* Obsah žebříčků ve sloupci nesmí tlačit kartu do výšky zbytečně. */
+  .grid > #cityRankCard,
+  .grid > #longestEventsCard {
+    max-height: 420px;
+    overflow: hidden;
+  }
+
+  .grid > #cityRankCard:hover,
+  .grid > #longestEventsCard:hover {
+    overflow: auto;
+  }
+
+  /* Regionální počasí a watch mají být vedle sebe čitelné. */
+  #regionalWeatherCard,
+  #watchCard {
+    align-self: stretch;
+  }
+}
+
+@media (min-width: 1500px) {
+  /* Na širokém monitoru může být mapa opravdu dominantní. */
+  .grid > #mapCard {
+    grid-column: span 8 !important;
+  }
+
+  .grid > #watchCard {
+    grid-column: span 4 !important;
+  }
+
+  /* Počasí + významné + talk do třetin, když to šířka dovolí. */
+  .grid > #regionalWeatherCard,
+  .grid > #majorEventsCard,
+  .grid > #talkLauncherCard,
+  .grid > #talkLockedCard,
+  .grid > #opsRadioMount {
+    grid-column: span 4 !important;
+  }
+}
+
+@media (min-width: 1180px) and (max-width: 1399px) {
+  /* Menší notebook: mini statistiky raději po dvou. */
+  .grid > #dailyStatsCard,
+  .grid > #activeClosedCard,
+  .grid > #cityRankCard,
+  .grid > #longestEventsCard {
+    grid-column: span 6 !important;
+  }
+
+  .grid > #mapCard,
+  .grid > #watchCard,
+  .grid > #regionalWeatherCard,
+  .grid > #majorEventsCard,
+  .grid > #talkLauncherCard,
+  .grid > #talkLockedCard,
+  .grid > #opsRadioMount {
+    grid-column: span 6 !important;
+  }
+}
+
+/* Filtry nad stránkou do vodorovného profesionálního toolbaru,
+   ne jako vysoký blok pod sebou. */
+@media (min-width: 900px) {
+  section.filters {
+    display: grid !important;
+    grid-template-columns:
+      minmax(160px, 1.2fr)
+      minmax(160px, 1.2fr)
+      minmax(180px, 1.3fr)
+      minmax(160px, 1.1fr)
+      auto
+      minmax(170px, 1fr)
+      auto
+      auto !important;
+    gap: 10px !important;
+    align-items: end !important;
+  }
+
+  section.filters .field,
+  section.filters .buttons {
+    min-width: 0 !important;
+  }
+
+  section.filters .btnRow {
+    flex-wrap: nowrap !important;
+  }
+}
+
+/* Zkrácení vysokých panelů v desktopu – obsah zůstane dostupný scrollováním uvnitř karty. */
+@media (min-width: 1180px) {
+  #watchCard,
+  #regionalWeatherCard,
+  #majorEventsCard {
+    max-height: 520px;
+    overflow: auto;
+  }
+
+  #eventsTableCard {
+    max-height: none;
+  }
+}
+
+/* Na tabletu zachováme dvě kolony, na mobilu vše pod sebe. */
+@media (min-width: 760px) and (max-width: 1179px) {
+  .grid {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    gap: 14px !important;
+  }
+
+  .grid > section.card,
+  .grid > .card {
+    grid-column: span 1 !important;
+  }
+
+  .grid > #commandOverviewCard,
+  .grid > #eventsTableCard,
+  .grid > #mapCard,
+  .grid > #statsProCard,
+  .grid > #reportsArchiveCard,
+  .grid > #manualEventQuickCard {
+    grid-column: 1 / -1 !important;
+  }
+}
+
+@media (max-width: 759px) {
+  .grid {
+    display: block !important;
+  }
+
+  .grid > section.card,
+  .grid > .card {
+    width: 100% !important;
+  }
+}
