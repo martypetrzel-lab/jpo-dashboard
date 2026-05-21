@@ -4160,73 +4160,6 @@ function setModePill(modeText, roleText = "") {
 
 
 
-const FW_PERMISSION_DEFS = [
-  ["canViewOps", "OPS režim"],
-  ["canUseAudio", "Audio OPS"],
-  ["canUseTalk", "FireWatch Talk"],
-  ["canEditIncidents", "Úprava výjezdů"],
-  ["canFixGps", "GPS / geokódování"],
-  ["canCreateReports", "Reporty/posty"],
-  ["canManageUsers", "Správa uživatelů"],
-  ["canViewDiagnostics", "Diagnostika"]
-];
-
-const FW_ROLE_DEFAULT_PERMISSIONS = {
-  public: {
-    canViewOps: false,
-    canUseAudio: false,
-    canUseTalk: false,
-    canEditIncidents: false,
-    canFixGps: false,
-    canCreateReports: false,
-    canManageUsers: false,
-    canViewDiagnostics: false
-  },
-  ops: {
-    canViewOps: true,
-    canUseAudio: true,
-    canUseTalk: true,
-    canEditIncidents: false,
-    canFixGps: false,
-    canCreateReports: false,
-    canManageUsers: false,
-    canViewDiagnostics: false
-  },
-  editor: {
-    canViewOps: true,
-    canUseAudio: false,
-    canUseTalk: true,
-    canEditIncidents: true,
-    canFixGps: true,
-    canCreateReports: true,
-    canManageUsers: false,
-    canViewDiagnostics: false
-  },
-  admin: {
-    canViewOps: true,
-    canUseAudio: true,
-    canUseTalk: true,
-    canEditIncidents: true,
-    canFixGps: true,
-    canCreateReports: true,
-    canManageUsers: true,
-    canViewDiagnostics: true
-  },
-  custom: {}
-};
-
-function normalizePermissions(role, permissions = {}) {
-  const base = FW_ROLE_DEFAULT_PERMISSIONS[String(role || "public").toLowerCase()] || FW_ROLE_DEFAULT_PERMISSIONS.public;
-  return { ...base, ...(permissions || {}) };
-}
-
-function hasPermission(name) {
-  const role = String(currentUser?.role || "public").toLowerCase();
-  if (role === "admin") return true;
-  const permissions = normalizePermissions(role, currentUser?.permissions || {});
-  return !!permissions[name];
-}
-
 // FireWatchCZ security/UI fix – admin menu only for admin role
 function isCurrentUserAdmin() {
   return String(currentUser?.role || "").toLowerCase() === "admin";
@@ -4234,11 +4167,11 @@ function isCurrentUserAdmin() {
 
 function syncAdminVisibility() {
   const isAdmin = isCurrentUserAdmin();
-  const role = String(currentUser?.role || "public").toLowerCase();
-  const isOps = isAdmin || role === "ops" || role === "editor" || hasPermission("canViewOps") || hasPermission("canUseTalk") || hasPermission("canUseAudio");
+  const role = String(currentUser?.role || "").toLowerCase();
+  const isOps = role === "ops" || role === "admin";
 
   // Horní tlačítko Admin
-  showEl("adminBtn", isAdmin || hasPermission("canManageUsers"));
+  showEl("adminBtn", isAdmin);
 
   // Levé sidebar menu Admin
   document.querySelectorAll(".adminOnlyNav, [data-admin-only='true']").forEach((el) => {
@@ -4394,7 +4327,7 @@ async function refreshMe() {
 
   if (currentUser) {
     const role = String(currentUser.role || "public");
-    const isOps = (role === "ops" || role === "admin" || role === "editor" || hasPermission("canViewOps") || hasPermission("canUseTalk") || hasPermission("canUseAudio"));
+    const isOps = (role === "ops" || role === "admin");
 
     setModePill(isOps ? "OPS" : "ÚČET", role);
 
@@ -4641,38 +4574,23 @@ function renderUsersTable(users) {
 
   for (const u of users) {
     const tr = document.createElement("tr");
-    const role = String(u.role || "public").toLowerCase();
-    const permissions = normalizePermissions(role, u.permissions || {});
-    const enabled = u.enabled ?? u.is_enabled ?? true;
 
     const roleSelect = `
-      <select data-role-user="${u.id}" class="miniSelect" style="min-width:120px;">
-        <option value="public" ${role === "public" ? "selected" : ""}>public</option>
-        <option value="ops" ${role === "ops" ? "selected" : ""}>ops</option>
-        <option value="editor" ${role === "editor" ? "selected" : ""}>editor</option>
-        <option value="admin" ${role === "admin" ? "selected" : ""}>admin</option>
-        <option value="custom" ${role === "custom" ? "selected" : ""}>custom</option>
+      <select data-role-user="${u.id}" class="miniSelect" style="min-width:110px;">
+        <option value="ops" ${u.role === "ops" ? "selected" : ""}>ops</option>
+        <option value="admin" ${u.role === "admin" ? "selected" : ""}>admin</option>
       </select>
     `;
 
-    const enabledBox = `<input type="checkbox" data-enabled-user="${u.id}" ${enabled ? "checked" : ""} />`;
-    const permissionGrid = FW_PERMISSION_DEFS.map(([key, label]) => {
-      const checked = permissions[key] ? "checked" : "";
-      const disabled = role === "admin" ? "disabled" : "";
-      return `<label class="permissionToggle ${disabled ? "isDisabled" : ""}">
-        <input type="checkbox" data-permission-user="${u.id}" data-permission-key="${key}" ${checked} ${disabled}/>
-        <span>${label}</span>
-      </label>`;
-    }).join("");
+    const enabledBox = `<input type="checkbox" data-enabled-user="${u.id}" ${u.enabled ? "checked" : ""} />`;
 
     const lastLogin = u.last_login_at ? new Date(u.last_login_at).toLocaleString("cs-CZ") : "—";
 
     tr.innerHTML = `
       <td>${escapeHtml(u.id)}</td>
-      <td>${escapeHtml(u.username)}<br><span class="roleBadge">${escapeHtml(role)}</span></td>
+      <td>${escapeHtml(u.username)}</td>
       <td>${roleSelect}</td>
       <td style="text-align:center;">${enabledBox}</td>
-      <td><div class="permissionsGrid">${permissionGrid}</div></td>
       <td>${escapeHtml(lastLogin)}</td>
       <td>
         <button class="btn" data-reset-user="${u.id}">Reset hesla</button>
@@ -4693,18 +4611,7 @@ function renderUsersTable(users) {
     ch.addEventListener("change", async (e) => {
       const id = e.target.getAttribute("data-enabled-user");
       const enabled = !!e.target.checked;
-      await adminPatchUser(id, { enabled, is_enabled: enabled });
-    });
-  });
-  tbody.querySelectorAll("[data-permission-user]").forEach(ch => {
-    ch.addEventListener("change", async (e) => {
-      const id = e.target.getAttribute("data-permission-user");
-      const key = e.target.getAttribute("data-permission-key");
-      const row = users.find(x => String(x.id) === String(id));
-      const role = String(row?.role || "custom").toLowerCase();
-      const nextPermissions = normalizePermissions(role, row?.permissions || {});
-      nextPermissions[key] = !!e.target.checked;
-      await adminPatchUser(id, { role: role === "admin" ? "admin" : "custom", permissions: nextPermissions });
+      await adminPatchUser(id, { enabled });
     });
   });
   tbody.querySelectorAll("[data-reset-user]").forEach(btn => {
@@ -4716,6 +4623,7 @@ function renderUsersTable(users) {
     });
   });
 }
+
 async function adminLoadAll() {
   if (!currentUser || currentUser.role !== "admin") {
     msg("adminUsersMsg", "Nemáš admin oprávnění.", false);
@@ -5409,8 +5317,8 @@ function toggleTvMode() {
   syncAudioUi();
 
   // buttons
-  document.getElementById("loginBtn")?.addEventListener("click", () => clickElementById("loginBtn"));
-  document.getElementById("registerBtn")?.addEventListener("click", () => clickElementById("registerBtn"));
+  document.getElementById("loginBtn")?.addEventListener("click", () => openModal("login"));
+  document.getElementById("registerBtn")?.addEventListener("click", () => openModal("register"));
   document.getElementById("requestOpsBtn")?.addEventListener("click", requestOpsAccess);
   document.getElementById("logoutBtn")?.addEventListener("click", doLogout);
   document.getElementById("adminBtn")?.addEventListener("click", async () => {
@@ -5690,12 +5598,12 @@ function fwOpenRegisterDialog() {
     }, true);
   }
 
-  wire("loginBtn", fwOpenLoginDialog);
-  wire("registerBtn", fwOpenRegisterDialog);
-  wire("guestLoginBtn", fwOpenLoginDialog);
-  wire("guestRegisterBtn", fwOpenRegisterDialog);
-  wire("talkLockedLoginBtn", fwOpenLoginDialog);
-  wire("talkLockedRegisterBtn", fwOpenRegisterDialog);
+  wire("loginBtn", () => openModal("login"));
+  wire("registerBtn", () => openModal("register"));
+  wire("guestLoginBtn", () => openModal("login"));
+  wire("guestRegisterBtn", () => openModal("register"));
+  wire("talkLockedLoginBtn", () => openModal("login"));
+  wire("talkLockedRegisterBtn", () => openModal("register"));
 })();
 
 

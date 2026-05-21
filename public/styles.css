@@ -4472,15 +4472,14 @@ body:not(.isLoggedMode) .opsOnlyNav {
   }
 }
 
-/* v2.2 – čistší homepage bez horních rychlých karet + seskupené admin menu */
+
+/* v2.2.1 hotfix – čistší homepage bez horních rychlých karet + seskupené menu */
 .fwQuickStart {
   display: none !important;
 }
-
 .groupedNav {
   gap: 14px;
 }
-
 .navGroup {
   display: flex;
   flex-direction: column;
@@ -4488,11 +4487,7 @@ body:not(.isLoggedMode) .opsOnlyNav {
   padding: 8px 0 10px;
   border-bottom: 1px solid rgba(255,255,255,.08);
 }
-
-.navGroup:last-child {
-  border-bottom: 0;
-}
-
+.navGroup:last-child { border-bottom: 0; }
 .navGroupTitle {
   padding: 0 12px 2px;
   font-size: 11px;
@@ -4501,89 +4496,7 @@ body:not(.isLoggedMode) .opsOnlyNav {
   text-transform: uppercase;
   color: rgba(226,232,240,.58);
 }
-
 .fwSidebarNav .navGroup button {
   width: calc(100% - 8px);
   margin: 0 4px;
-}
-
-.permissionsIntroCard {
-  border-color: rgba(59,130,246,.24) !important;
-  background: linear-gradient(135deg, rgba(59,130,246,.10), rgba(15,23,42,.72)) !important;
-}
-
-.permissionsLegend {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(120px, 1fr));
-  gap: 8px;
-  margin-top: 12px;
-}
-
-.permissionsLegend span,
-.permissionChip,
-.permissionToggle {
-  border: 1px solid rgba(255,255,255,.10);
-  background: rgba(255,255,255,.045);
-  border-radius: 12px;
-}
-
-.permissionsLegend span {
-  padding: 9px 10px;
-  color: rgba(226,232,240,.80);
-  font-size: 12px;
-}
-
-.permissionsLegend b {
-  display: block;
-  color: #f8fafc;
-  margin-bottom: 2px;
-}
-
-.permissionsGrid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(130px, 1fr));
-  gap: 6px;
-  min-width: 430px;
-}
-
-.permissionToggle {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 6px 8px;
-  color: rgba(226,232,240,.86);
-  font-size: 12px;
-  line-height: 1.2;
-  cursor: pointer;
-}
-
-.permissionToggle input {
-  accent-color: #38bdf8;
-}
-
-.permissionToggle.isDisabled {
-  opacity: .55;
-}
-
-.roleBadge {
-  display: inline-flex;
-  align-items: center;
-  padding: 4px 8px;
-  border-radius: 999px;
-  border: 1px solid rgba(255,255,255,.12);
-  background: rgba(255,255,255,.055);
-  color: rgba(226,232,240,.9);
-  font-size: 12px;
-  font-weight: 800;
-  text-transform: uppercase;
-}
-
-@media (max-width: 900px) {
-  .permissionsLegend {
-    grid-template-columns: 1fr 1fr;
-  }
-  .permissionsGrid {
-    grid-template-columns: 1fr;
-    min-width: 220px;
-  }
 }
