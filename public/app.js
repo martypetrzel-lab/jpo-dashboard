@@ -1067,7 +1067,7 @@ function bindInlineTableEditButtons() {
 function eventDetailButtonHtml(it) {
   const id = escapeHtml(it?.id || "");
   if (!id) return "";
-  return `<button type="button" class="btn miniBtn eventDetailBtn" data-event-id="${id}">Detail</button>`;
+  return `<button type="button" class="linkBtn eventDetailBtn" data-event-id="${id}">detail</button>`;
 }
 
 function detailDateText(value) {
@@ -1182,16 +1182,14 @@ function renderTable(items) {
     const alarmHtml = typeof alarmLevelBadge === "function" ? (alarmLevelBadge(it) || "") : "";
     const carryHtml = typeof carryoverBadgeHtml === "function" ? (carryoverBadgeHtml(it) || "") : "";
     const durationValue = typeof liveDurationForEvent === "function" ? liveDurationForEvent(it) : it.duration_min;
-    const titleShort = title.length > 82 ? `${title.slice(0, 82).trim()}…` : title;
-    const stateClass = it.is_closed ? "stateClosed" : "stateOpen";
 
     tr.innerHTML = `
       <td>${escapeHtml(formatDate(timeValue))}</td>
       <td title="${escapeHtml(meta.label || it.event_type || "")}">${escapeHtml(meta.emoji || "")}</td>
-      <td title="${escapeHtml(title)}"><span class="eventTitleCompact">${escapeHtml(titleShort)}</span></td>
+      <td>${escapeHtml(title)}</td>
       <td>${escapeHtml(city)}</td>
-      <td><span class="eventStateBadge ${stateClass}">${statusEmoji(it.is_closed)} ${escapeHtml(statusText)}</span> ${carryHtml}</td>
-      <td>${alarmHtml || '<span class="muted">—</span>'}</td>
+      <td>${statusEmoji(it.is_closed)} ${escapeHtml(statusText)} ${carryHtml}</td>
+      <td>${alarmHtml}</td>
       <td>${escapeHtml(formatDuration(durationValue))}</td>
       <td>${eventDetailButtonHtml(it)}</td>
       <td>${tableEditButtonHtml(it)}</td>
@@ -2882,27 +2880,6 @@ function updateCommandOverview(items = [], stats = null) {
     }
   }
 
-  const stripUpdated = document.getElementById("dataStripUpdated");
-  const stripLastEvent = document.getElementById("dataStripLastEvent");
-  const stripSource = document.getElementById("dataStripSource");
-  if (stripUpdated) {
-    try {
-      stripUpdated.textContent = new Intl.DateTimeFormat("cs-CZ", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date());
-    } catch {
-      stripUpdated.textContent = "nyní";
-    }
-  }
-  if (stripLastEvent) {
-    const newest = safeItems
-      .map(x => x?.pub_date || x?.start_time_iso || x?.created_at || "")
-      .filter(Boolean)
-      .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0];
-    stripLastEvent.textContent = newest ? formatDate(newest) : "bez dat";
-  }
-  if (stripSource) {
-    stripSource.textContent = safeItems.length ? "RSS aktivní" : "čekám na data";
-  }
-
   if (filterLabel) {
     const f = typeof getFiltersFromUi === "function" ? getFiltersFromUi() : {};
     const dayMap = { today: "dnes", yesterday: "včera", all: "vše" };
@@ -4094,13 +4071,10 @@ stationsReadyPromise = loadStations();
 
 loadAll();
 
-// AUTO REFRESH každou 1 minutu
-// Každý běh volá loadAll({ auto: true }) a používá cache-busting parametr _=Date.now(),
-// takže dashboard pravidelně stáhne čerstvá data z API bez nutnosti ručně obnovovat stránku.
-const AUTO_REFRESH_MS = 60 * 1000;
+// AUTO REFRESH každých 5 minut (stabilní 1.02 – beze změny)
 setInterval(() => {
   loadAll({ auto: true });
-}, AUTO_REFRESH_MS);
+}, 5 * 60 * 1000);
 
 // ==============================
 // OPS / ADMIN + SHIFT UI (frontend)
@@ -4170,8 +4144,6 @@ function isCurrentUserAdmin() {
 
 function syncAdminVisibility() {
   const isAdmin = isCurrentUserAdmin();
-  const role = String(currentUser?.role || "").toLowerCase();
-  const isOps = role === "ops" || role === "admin";
 
   // Horní tlačítko Admin
   showEl("adminBtn", isAdmin);
@@ -4180,12 +4152,6 @@ function syncAdminVisibility() {
   document.querySelectorAll(".adminOnlyNav, [data-admin-only='true']").forEach((el) => {
     el.style.display = isAdmin ? "" : "none";
     el.setAttribute("aria-hidden", isAdmin ? "false" : "true");
-  });
-
-  // OPS/Admin bloky mimo veřejný dashboard
-  document.querySelectorAll(".opsOnly, .opsOnlyNav").forEach((el) => {
-    el.style.display = isOps ? "" : "none";
-    el.setAttribute("aria-hidden", isOps ? "false" : "true");
   });
 
   // Admin-only ovládací prvky uvnitř karet
@@ -5320,8 +5286,8 @@ function toggleTvMode() {
   syncAudioUi();
 
   // buttons
-  document.getElementById("loginBtn")?.addEventListener("click", () => openModal("login"));
-  document.getElementById("registerBtn")?.addEventListener("click", () => openModal("register"));
+  document.getElementById("loginBtn")?.addEventListener("click", () => clickElementById("loginBtn"));
+  document.getElementById("registerBtn")?.addEventListener("click", () => clickElementById("registerBtn"));
   document.getElementById("requestOpsBtn")?.addEventListener("click", requestOpsAccess);
   document.getElementById("logoutBtn")?.addEventListener("click", doLogout);
   document.getElementById("adminBtn")?.addEventListener("click", async () => {
@@ -5601,12 +5567,12 @@ function fwOpenRegisterDialog() {
     }, true);
   }
 
-  wire("loginBtn", () => openModal("login"));
-  wire("registerBtn", () => openModal("register"));
-  wire("guestLoginBtn", () => openModal("login"));
-  wire("guestRegisterBtn", () => openModal("register"));
-  wire("talkLockedLoginBtn", () => openModal("login"));
-  wire("talkLockedRegisterBtn", () => openModal("register"));
+  wire("loginBtn", fwOpenLoginDialog);
+  wire("registerBtn", fwOpenRegisterDialog);
+  wire("guestLoginBtn", fwOpenLoginDialog);
+  wire("guestRegisterBtn", fwOpenRegisterDialog);
+  wire("talkLockedLoginBtn", fwOpenLoginDialog);
+  wire("talkLockedRegisterBtn", fwOpenRegisterDialog);
 })();
 
 
@@ -5705,3 +5671,43 @@ function fwOpenRegisterDialog() {
 })();
 
 document.getElementById("eventsLimitSelect")?.addEventListener("change", () => loadAll());
+
+
+// FireWatch CZ v2.11 – Podporovatelé jako samostatná záložka.
+// Sekce se nezobrazuje v běžném průchodu stránkou, otevře se až kliknutím v menu.
+function setupSupportersTab() {
+  const supporters = document.getElementById("supportersCard");
+  if (!supporters) return;
+
+  const navButtons = document.querySelectorAll('[data-scroll-target="supportersCard"]');
+
+  function openSupporters() {
+    supporters.classList.remove("supportersHidden");
+    supporters.setAttribute("aria-hidden", "false");
+
+    setTimeout(() => {
+      supporters.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 30);
+  }
+
+  function closeSupportersOnOtherNav(target) {
+    if (target === "supportersCard") return;
+    supporters.classList.add("supportersHidden");
+    supporters.setAttribute("aria-hidden", "true");
+  }
+
+  navButtons.forEach((btn) => {
+    btn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      openSupporters();
+    });
+  });
+
+  document.querySelectorAll("[data-scroll-target]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      closeSupportersOnOtherNav(btn.getAttribute("data-scroll-target"));
+    });
+  });
+}
+
+document.addEventListener("DOMContentLoaded", setupSupportersTab);

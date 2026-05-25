@@ -4376,3 +4376,24 @@ button.btn {
     width: 100%;
   }
 }
+
+
+/* =========================================================
+   FireWatch CZ v2.11 – Podporovatelé jako záložka
+   Sekce je schovaná, dokud uživatel neklikne na Podporovatelé.
+   ========================================================= */
+
+.supportersCard.supportersHidden {
+  display: none !important;
+}
+
+.supportersNavBtn {
+  position: relative;
+}
+
+.supportersNavBtn::after {
+  content: "☕";
+  float: right;
+  opacity: 0.75;
+  font-size: 12px;
+}
