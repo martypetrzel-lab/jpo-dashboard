@@ -375,83 +375,44 @@
     </section>
 
 
-    <section id="supportersCard" class="card supportersCard supportersHidden" aria-hidden="true">
-      <div class="cardHeader">
+    <section id="supportersCard" class="card supportersCard supportersHidden supportersSimpleCard" aria-hidden="true">
+      <div class="cardHeader supportersSimpleHeader">
         <div>
           <h2>Podporovatelé FireWatch CZ</h2>
-          <p class="hint">Pomáhají udržet neoficiální analytický projekt online a posouvat ho dál.</p>
+          <p class="hint">Děkujeme všem, kteří pomáhají udržet projekt v provozu.</p>
         </div>
-        <a class="supportersDonateBtn" href="https://ko-fi.com/firewatchcz" target="_blank" rel="noopener noreferrer">☕ Podpořit na Ko-fi</a>
+        <a class="supportersDonateBtn supportersSimpleDonate" href="https://ko-fi.com/firewatchcz" target="_blank" rel="noopener noreferrer">☕ Podpořit na Ko-fi</a>
       </div>
 
-      <div class="supportersHero">
-        <div class="supportersIntro">
-          <span class="supportersBadge">Podpora projektu</span>
-          <h3>FireWatch CZ vzniká ve volném čase a z vlastních prostředků.</h3>
-          <p>
-            Podpora přes Ko-fi pomáhá pokrýt provoz serveru, domény, další vývoj,
-            zlepšování webu a postupné rozšiřování projektu. Děkuji každému,
-            kdo pomůže FireWatch CZ udržet v chodu.
-          </p>
-          <div class="supportersActions">
-            <a class="btn supportersPrimary" href="https://ko-fi.com/firewatchcz" target="_blank" rel="noopener noreferrer">Podpořit projekt</a>
-            <button class="btn" type="button" onclick="navigator.share ? navigator.share({title:'FireWatch CZ', url: location.origin}) : navigator.clipboard?.writeText(location.origin)">Sdílet projekt</button>
-          </div>
-        </div>
-
-        <div class="supportersGoal">
-          <span class="supportersGoalLabel">Aktuální cíl</span>
-          <strong>Pokrytí provozu</strong>
-          <p>Server, databáze, doména a technické služby.</p>
-          <div class="supportersProgress">
-            <span style="width: 35%"></span>
-          </div>
-          <small>Orientační ručně nastavitelný cíl – automatické napojení na Ko-fi lze doplnit později.</small>
-        </div>
-      </div>
-
-      <div class="supportersGrid">
-        <article class="supportersInfoCard">
-          <span>🖥️</span>
-          <h3>Provoz webu</h3>
-          <p>Pomoc s náklady na server, databázi, doménu a monitoring.</p>
-        </article>
-        <article class="supportersInfoCard">
-          <span>🗺️</span>
-          <h3>Rozšíření projektu</h3>
-          <p>Postupné zlepšování map, statistik, reportů a pokrytí dalších oblastí.</p>
-        </article>
-        <article class="supportersInfoCard">
-          <span>📱</span>
-          <h3>Mobilní budoucnost</h3>
-          <p>Příprava lepšího mobilního zobrazení a později i mobilní aplikace.</p>
-        </article>
-      </div>
-
-      <div class="supportersMilestones">
-        <div>
-          <h3>Milníky</h3>
-          <ul>
+      <div class="supportersSimpleGrid">
+        <div class="supportersSimplePanel">
+          <h3>Milníky projektu</h3>
+          <ul class="supportersMilestoneList">
             <li><span>✅</span> Stabilní přehled zásahů JPO</li>
             <li><span>✅</span> Mapa, statistiky a reporty</li>
             <li><span>🔄</span> Lepší vzhled a mobilní použitelnost</li>
             <li><span>🔜</span> Mobilní aplikace a další rozšiřování</li>
           </ul>
         </div>
-        <div>
-          <h3>Transparentnost</h3>
-          <p>
-            FireWatch CZ není oficiální systém HZS ani JPO. Projekt pracuje s veřejně dostupnými
-            informacemi a slouží jako neoficiální analytický přehled.
-          </p>
-        </div>
-      </div>
 
-      <div class="supportersList">
-        <h3>Poděkování</h3>
-        <div class="supportersNames">
-          <span>Anonymní podporovatelé</span>
-          <span>Komunita FireWatch CZ</span>
+        <div class="supportersSimplePanel">
+          <h3>Poděkování podporovatelům</h3>
+          <p class="supportersSimpleNote">
+            Jména podporovatelů lze upravit ručně v souboru <strong>public/index.html</strong>.
+            Kdo chce zůstat anonymní, může být uveden jako anonymní podporovatel.
+          </p>
+
+          <div class="supportersNames supportersEditableList">
+            <!--
+              ZDE SI MŮŽEŠ RUČNĚ PŘIDÁVAT PODPOROVATELE:
+              Příklad:
+              <span>Jan Novák</span>
+              <span>SDH Ukázka</span>
+              <span>Anonymní podporovatel</span>
+            -->
+            <span>Anonymní podporovatelé</span>
+            <span>Komunita FireWatch CZ</span>
+          </div>
         </div>
       </div>
     </section>

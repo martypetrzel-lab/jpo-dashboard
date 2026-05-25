@@ -4397,3 +4397,101 @@ button.btn {
   opacity: 0.75;
   font-size: 12px;
 }
+
+
+/* =========================================================
+   FireWatch CZ v2.12 – zjednodušená sekce Podporovatelé
+   Pouze Ko-fi tlačítko, milníky a ruční seznam podporovatelů.
+   ========================================================= */
+
+.supportersSimpleCard .supportersHero,
+.supportersSimpleCard .supportersGrid,
+.supportersSimpleCard .supportersGoal,
+.supportersSimpleCard .supportersInfoCard,
+.supportersSimpleCard .supportersMilestones,
+.supportersSimpleCard .supportersList {
+  display: none !important;
+}
+
+.supportersSimpleHeader {
+  align-items: center;
+}
+
+.supportersSimpleDonate {
+  white-space: nowrap;
+}
+
+.supportersSimpleGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: 14px;
+}
+
+.supportersSimplePanel {
+  border: 1px solid rgba(255,255,255,0.09);
+  background: rgba(255,255,255,0.035);
+  border-radius: 18px;
+  padding: 18px;
+}
+
+.supportersSimplePanel h3 {
+  margin: 0 0 12px;
+  font-size: 18px;
+}
+
+.supportersMilestoneList {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 9px;
+}
+
+.supportersMilestoneList li {
+  color: rgba(235,242,255,0.84);
+  line-height: 1.45;
+}
+
+.supportersMilestoneList span {
+  display: inline-block;
+  width: 24px;
+}
+
+.supportersSimpleNote {
+  color: rgba(235,242,255,0.68);
+  line-height: 1.55;
+  margin: 0 0 13px;
+}
+
+.supportersEditableList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.supportersEditableList span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 7px 11px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.10);
+  color: rgba(235,242,255,0.86);
+  font-weight: 850;
+}
+
+@media (max-width: 900px) {
+  .supportersSimpleHeader {
+    display: grid;
+    gap: 12px;
+  }
+
+  .supportersSimpleDonate {
+    width: 100%;
+  }
+
+  .supportersSimpleGrid {
+    grid-template-columns: 1fr;
+  }
+}
