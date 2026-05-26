@@ -374,6 +374,47 @@
       </div>
     </section>
 
+<section id="eventsTableCard" class="card tableCard v28EventsCard">
+      <div class="cardHeader">
+        <h2>Poslední výjezdy</h2><div id="tableEditHelp" class="tableEditHelp adminOnly">Admin režim: události upravíš tlačítkem <b>Upravit</b> v posledním sloupci.</div>
+        <div class="tableHeaderControls">
+          <label class="miniInlineControl">
+            <span>Počet řádků</span>
+            <select id="eventsLimitSelect" class="miniSelect">
+              <option value="10">10</option>
+              <option value="25" selected>25</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+              <option value="200">200</option>
+            </select>
+          </label>
+          <div class="hint">Desktop tabulka / mobilní karty</div>
+        </div>
+      </div>
+
+      <div class="tableWrap desktopEventsTable" role="region" aria-label="Tabulka výjezdů" tabindex="0">
+        <table>
+          <thead>
+          <tr>
+            <th>Čas</th>
+            <th>Typ</th>
+            <th>Název</th>
+            <th>Město</th>
+            <th>Stav</th>
+            <th>Význam</th>
+            <th>Délka</th>
+            <th>Odkaz</th>
+            <th>Úprava</th>
+          </tr>
+        </thead>
+          <tbody id="eventsTbody"></tbody>
+        </table>
+      </div>
+      <div id="eventsMobileList" class="eventsMobileList" aria-label="Mobilní seznam výjezdů"></div>
+      <div id="eventsTableCountInfo" class="eventsTableCountInfo"></div>
+    </section>
+
+
 
     <section id="supportersCard" class="card supportersCard supportersHidden supportersSimpleCard" aria-hidden="true">
       <div class="cardHeader supportersSimpleHeader">
@@ -675,47 +716,7 @@
       <div id="majorEventsSummary" class="majorEventsSummary"></div>
       <div id="majorEventsList" class="majorEventsList"></div>
     </section>
-
-<section id="eventsTableCard" class="card tableCard v28EventsCard">
-      <div class="cardHeader">
-        <h2>Poslední výjezdy</h2><div id="tableEditHelp" class="tableEditHelp adminOnly">Admin režim: události upravíš tlačítkem <b>Upravit</b> v posledním sloupci.</div>
-        <div class="tableHeaderControls">
-          <label class="miniInlineControl">
-            <span>Počet řádků</span>
-            <select id="eventsLimitSelect" class="miniSelect">
-              <option value="10">10</option>
-              <option value="25" selected>25</option>
-              <option value="50">50</option>
-              <option value="100">100</option>
-              <option value="200">200</option>
-            </select>
-          </label>
-          <div class="hint">Desktop tabulka / mobilní karty</div>
-        </div>
-      </div>
-
-      <div class="tableWrap desktopEventsTable" role="region" aria-label="Tabulka výjezdů" tabindex="0">
-        <table>
-          <thead>
-          <tr>
-            <th>Čas</th>
-            <th>Typ</th>
-            <th>Název</th>
-            <th>Město</th>
-            <th>Stav</th>
-            <th>Význam</th>
-            <th>Délka</th>
-            <th>Odkaz</th>
-            <th>Úprava</th>
-          </tr>
-        </thead>
-          <tbody id="eventsTbody"></tbody>
-        </table>
-      </div>
-      <div id="eventsMobileList" class="eventsMobileList" aria-label="Mobilní seznam výjezdů"></div>
-      <div id="eventsTableCountInfo" class="eventsTableCountInfo"></div>
-    </section>
-  </main>
+</main>
 
   <!-- ============================
        MODALS (OPS / ADMIN)

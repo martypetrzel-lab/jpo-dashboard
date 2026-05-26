@@ -4495,3 +4495,40 @@ button.btn {
     grid-template-columns: 1fr;
   }
 }
+
+
+/* =========================================================
+   FireWatch CZ v2.14 – Poslední výjezdy nahoře + bez duplicit
+   Sekce je hned pod Aktuální situací. Mobilní karty se nezobrazují
+   na desktopu, aby nevznikal druhý rozbitý seznam pod tabulkou.
+   ========================================================= */
+
+#eventsTableCard {
+  scroll-margin-top: 96px;
+}
+
+.desktopEventsTable {
+  display: block;
+}
+
+.eventsMobileList {
+  display: none !important;
+}
+
+@media (max-width: 760px) {
+  .desktopEventsTable {
+    display: none !important;
+  }
+
+  .eventsMobileList {
+    display: grid !important;
+    gap: 10px;
+  }
+
+  .eventMobileCard {
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 16px;
+    padding: 12px;
+    background: rgba(255,255,255,0.035);
+  }
+}
