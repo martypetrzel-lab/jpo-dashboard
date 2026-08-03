@@ -7,7 +7,7 @@ import { fileURLToPath } from "url";
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import { attachOpsRadio } from "./radio-server.js";
-import { createRssWorker, readRssConfig } from "./rss-worker.js";
+import { createRssWorker, readRssConfig, testRssConnection } from "./rss-worker.js";
 
 
 // ======================
@@ -3565,6 +3565,11 @@ app.get("/api/admin/ingest-diagnostics", requireAdmin, async (req, res) => {
     console.error("[ingest-diagnostics]", e);
     return res.status(500).json({ ok: false, error: "ingest_diagnostics_failed", detail: String(e?.message || e) });
   }
+});
+
+app.post("/api/admin/rss-test", requireAdmin, async (_req, res) => {
+  const result = await testRssConnection(readRssConfig());
+  return res.status(result.success ? 200 : 502).json({ ok: result.success, ...result });
 });
 
 app.get("/api/admin/events/search", requireAdmin, async (req, res) => {

@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import { XMLParser, XMLValidator } from "fast-xml-parser";
+import { fetch as undiciFetch, ProxyAgent } from "undici";
 
 export const DEFAULT_RSS_URL = "https://pkr.kr-stredocesky.cz/pkr/zasahy-jpo/feed.xml";
 export const MIN_INTERVAL_MS = 30_000;
@@ -32,6 +33,7 @@ export function readRssConfig(env = process.env) {
     intervalMs: boundedInt(env.RSS_INTERVAL_MS, 60_000, MIN_INTERVAL_MS, 24 * 60 * 60 * 1000),
     maxItems: boundedInt(env.RSS_MAX_ITEMS, 35, 1, MAX_ITEMS_LIMIT),
     runOnStart: envFlag(env.RSS_RUN_ON_START, true),
+    proxyUrl: String(env.RSS_PROXY_URL || "").trim(),
     timeoutMs: boundedInt(env.RSS_TIMEOUT_MS, DEFAULT_TIMEOUT_MS, 1_000, 120_000),
     maxResponseBytes: boundedInt(env.RSS_MAX_RESPONSE_BYTES, DEFAULT_MAX_RESPONSE_BYTES, 64 * 1024, 10 * 1024 * 1024)
   };
@@ -131,36 +133,99 @@ export function rssItemToEvent(item = {}) {
 export function parseRssXml(xml, { maxItems = 35 } = {}) {
   const input = String(xml || "");
   const validation = XMLValidator.validate(input);
-  if (validation !== true) throw new Error(`Invalid RSS XML: ${validation.err?.msg || "validation failed"}`);
+  if (validation !== true) throw rssError("invalid_xml");
   const document = parser.parse(input);
   const channel = document?.rss?.channel;
-  if (!channel) throw new Error("Invalid RSS XML: rss/channel missing");
+  if (!channel) throw rssError("invalid_xml");
   const rawItems = channel.item == null ? [] : (Array.isArray(channel.item) ? channel.item : [channel.item]);
   return rawItems.slice(0, Math.max(0, maxItems)).map(rssItemToEvent);
 }
 
-export async function fetchRss(url, {
-  fetchImpl = globalThis.fetch,
+function errorCodes(error) {
+  const codes = [];
+  let current = error;
+  for (let depth = 0; current && depth < 5; depth++) {
+    if (current.code) codes.push(String(current.code).toUpperCase());
+    current = current.cause;
+  }
+  return codes;
+}
+
+export function sanitizeRssError(error, durationMs = null) {
+  const codes = errorCodes(error);
+  const httpStatus = Number.isFinite(Number(error?.rssHttpStatus)) ? Number(error.rssHttpStatus) : null;
+  let type = error?.rssType || "network_error";
+  if (httpStatus === 407) type = "proxy_authentication";
+  else if (error?.rssType === "http_status") type = "http_status";
+  else if (error?.rssType) type = error.rssType;
+  else if (error?.name === "AbortError" || codes.includes("ABORT_ERR") || codes.includes("UND_ERR_ABORTED")) type = "timeout";
+  else if (codes.some((code) => ["ENOTFOUND", "EAI_AGAIN", "EAI_FAIL"].includes(code))) type = "dns";
+  else if (codes.some((code) => ["ECONNREFUSED", "UND_ERR_CONNECT_TIMEOUT"].includes(code))) type = "connection_refused";
+  else if (codes.some((code) => code.includes("CERT") || code.includes("TLS") || code.includes("SSL"))) type = "tls";
+
+  const messages = {
+    dns: "DNS lookup failed",
+    timeout: "RSS request timed out",
+    connection_refused: "Connection refused",
+    tls: "TLS connection failed",
+    http_status: "RSS server returned an HTTP error",
+    proxy_authentication: "Proxy authentication failed",
+    invalid_xml: "RSS response is not valid XML",
+    response_too_large: "RSS response exceeded the size limit",
+    invalid_proxy: "Proxy configuration is invalid",
+    network_error: "RSS network request failed"
+  };
+  return {
+    type,
+    httpStatus,
+    durationMs: Number.isFinite(Number(durationMs)) ? Number(durationMs) : null,
+    message: messages[type] || messages.network_error
+  };
+}
+
+function rssError(type, httpStatus = null) {
+  const error = new Error(type);
+  error.rssType = type;
+  if (httpStatus != null) error.rssHttpStatus = httpStatus;
+  return error;
+}
+
+export async function fetchRssDetailed(url, {
+  fetchImpl = undiciFetch,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   maxResponseBytes = DEFAULT_MAX_RESPONSE_BYTES,
-  userAgent = "FirewatchCZ-RSS-Worker/1.0 (+https://firewatchcz.cz)"
+  userAgent = "FirewatchCZ-RSS-Worker/1.0 (+https://firewatchcz.cz)",
+  proxyUrl = "",
+  proxyAgentFactory = (uri) => new ProxyAgent(uri)
 } = {}) {
+  const started = Date.now();
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(new Error("RSS request timeout")), timeoutMs);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let dispatcher = null;
   try {
-    const response = await fetchImpl(url, {
+    if (proxyUrl) {
+      try {
+        dispatcher = proxyAgentFactory(proxyUrl);
+      } catch {
+        throw rssError("invalid_proxy");
+      }
+    }
+    const requestOptions = {
       signal: controller.signal,
       redirect: "follow",
       headers: { Accept: "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8", "User-Agent": userAgent }
-    });
-    if (!response?.ok) throw new Error(`RSS HTTP ${response?.status ?? "unknown"}`);
+    };
+    if (dispatcher) requestOptions.dispatcher = dispatcher;
+    const response = await fetchImpl(url, requestOptions);
+    if (!response?.ok) throw rssError(response?.status === 407 ? "proxy_authentication" : "http_status", response?.status ?? null);
     const declaredLength = Number(response.headers?.get?.("content-length") || 0);
-    if (declaredLength > maxResponseBytes) throw new Error(`RSS response too large (${declaredLength} bytes)`);
+    if (declaredLength > maxResponseBytes) throw rssError("response_too_large", response.status);
 
     if (!response.body?.getReader) {
       const text = await response.text();
-      if (Buffer.byteLength(text) > maxResponseBytes) throw new Error("RSS response too large");
-      return text;
+      const responseBytes = Buffer.byteLength(text);
+      if (responseBytes > maxResponseBytes) throw rssError("response_too_large", response.status);
+      return { xml: text, httpStatus: response.status, responseBytes, durationMs: Date.now() - started };
     }
 
     const reader = response.body.getReader();
@@ -172,16 +237,63 @@ export async function fetchRss(url, {
       bytes += value.byteLength;
       if (bytes > maxResponseBytes) {
         await reader.cancel();
-        throw new Error("RSS response too large");
+        throw rssError("response_too_large", response.status);
       }
       chunks.push(Buffer.from(value));
     }
-    return Buffer.concat(chunks).toString("utf8");
+    return { xml: Buffer.concat(chunks).toString("utf8"), httpStatus: response.status, responseBytes: bytes, durationMs: Date.now() - started };
   } catch (error) {
-    if (error?.name === "AbortError" || controller.signal.aborted) throw new Error("RSS request timeout");
+    if (controller.signal.aborted) {
+      const timeoutError = rssError("timeout");
+      timeoutError.name = "AbortError";
+      throw timeoutError;
+    }
     throw error;
   } finally {
     clearTimeout(timeout);
+    try { await dispatcher?.close?.(); } catch {}
+  }
+}
+
+export async function fetchRss(url, options = {}) {
+  const result = await fetchRssDetailed(url, options);
+  return result.xml;
+}
+
+export async function testRssConnection(config = readRssConfig(), options = {}) {
+  const started = Date.now();
+  try {
+    const result = await fetchRssDetailed(config.url, {
+      fetchImpl: options.fetchImpl,
+      proxyAgentFactory: options.proxyAgentFactory,
+      timeoutMs: config.timeoutMs,
+      maxResponseBytes: config.maxResponseBytes,
+      proxyUrl: config.proxyUrl
+    });
+    let items;
+    try {
+      items = parseRssXml(result.xml, { maxItems: config.maxItems });
+    } catch {
+      throw rssError("invalid_xml", result.httpStatus);
+    }
+    return {
+      success: true,
+      httpStatus: result.httpStatus,
+      responseBytes: result.responseBytes,
+      itemCount: items.length,
+      durationMs: result.durationMs,
+      error: null
+    };
+  } catch (error) {
+    const safeError = sanitizeRssError(error, Date.now() - started);
+    return {
+      success: false,
+      httpStatus: safeError.httpStatus,
+      responseBytes: 0,
+      itemCount: 0,
+      durationMs: safeError.durationMs,
+      error: safeError
+    };
   }
 }
 
@@ -192,6 +304,7 @@ export function createRssWorker({ config = readRssConfig(), ingestItems, acquire
   let inFlight = false;
   const state = {
     enabled: config.enabled,
+    proxyEnabled: !!config.proxyUrl,
     running: false,
     lastRunStartedAt: null,
     lastRunFinishedAt: null,
@@ -200,6 +313,9 @@ export function createRssWorker({ config = readRssConfig(), ingestItems, acquire
     lastFetchedItems: 0,
     lastInsertedOrUpdated: 0,
     lastSkipped: 0,
+    lastHttpStatus: null,
+    lastResponseBytes: 0,
+    lastDurationMs: null,
     totalRuns: 0
   };
 
@@ -225,18 +341,25 @@ export function createRssWorker({ config = readRssConfig(), ingestItems, acquire
         logger.info?.("[rss-worker] cycle skipped: advisory lock held by another instance");
         return snapshot();
       }
-      const xml = await fetchRss(config.url, { fetchImpl, timeoutMs: config.timeoutMs, maxResponseBytes: config.maxResponseBytes });
+      const fetchResult = await fetchRssDetailed(config.url, { fetchImpl, timeoutMs: config.timeoutMs, maxResponseBytes: config.maxResponseBytes, proxyUrl: config.proxyUrl });
+      const xml = fetchResult.xml;
       const items = parseRssXml(xml, { maxItems: config.maxItems });
       const result = await ingestItems(items, "server_rss_worker");
       state.lastFetchedItems = items.length;
+      state.lastHttpStatus = fetchResult.httpStatus;
+      state.lastResponseBytes = fetchResult.responseBytes;
+      state.lastDurationMs = Date.now() - started;
       state.lastInsertedOrUpdated = Number(result?.inserted || 0) + Number(result?.updated || 0);
       state.lastSkipped = Math.max(0, items.length - Number(result?.accepted || 0));
       state.lastSuccessAt = new Date().toISOString();
       state.lastError = null;
-      logger.info?.(`[rss-worker] cycle OK in ${Date.now() - started}ms; fetched=${items.length}; upserted=${state.lastInsertedOrUpdated}; skipped=${state.lastSkipped}`);
+      logger.info?.(`[rss-worker] cycle OK in ${Date.now() - started}ms; http=${fetchResult.httpStatus}; bytes=${fetchResult.responseBytes}; fetched=${items.length}; upserted=${state.lastInsertedOrUpdated}; skipped=${state.lastSkipped}`);
     } catch (error) {
-      state.lastError = String(error?.message || error).slice(0, 1000);
-      logger.error?.(`[rss-worker] cycle failed in ${Date.now() - started}ms: ${state.lastError}`);
+      state.lastError = sanitizeRssError(error, Date.now() - started);
+      state.lastHttpStatus = state.lastError.httpStatus;
+      state.lastResponseBytes = 0;
+      state.lastDurationMs = state.lastError.durationMs;
+      logger.error?.(`[rss-worker] cycle failed; type=${state.lastError.type}; http=${state.lastError.httpStatus ?? "none"}; durationMs=${state.lastError.durationMs}`);
     } finally {
       try { await releaseLock?.(); } catch (error) { logger.error?.("[rss-worker] advisory unlock failed:", error?.message || error); }
       state.running = false;

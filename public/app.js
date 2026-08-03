@@ -3892,6 +3892,7 @@ async function loadIngestDiagnostics() {
     const latestEvent = j.latestEvent;
     const latestIngestAt = j.latestIngestAt;
     const counts = j.counts || {};
+    const rss = j.rssWorker || {};
 
     const lastEventTime = latestEvent?.created_at || latestEvent?.last_seen_at || latestEvent?.pub_date || null;
     let gapText = "";
@@ -3909,6 +3910,9 @@ async function loadIngestDiagnostics() {
         <div><b>Čas poslední události:</b> ${escapeHtml(formatDiagTime(lastEventTime))}</div>
         <div><b>Počty:</b> 1 h: ${Number(counts.last1h || 0)} • 6 h: ${Number(counts.last6h || 0)} • 24 h: ${Number(counts.last24h || 0)}</div>
         <div><b>Stav:</b> ${escapeHtml(gapText || "—")}</div>
+        <div><b>RSS worker:</b> ${rss.enabled ? (rss.running ? "právě běží" : "zapnutý") : "vypnutý"} • ${rss.proxyEnabled ? "přes proxy" : "přímé připojení"}</div>
+        <div><b>Poslední RSS cyklus:</b> HTTP ${rss.lastHttpStatus ?? "—"} • ${Number(rss.lastResponseBytes || 0)} B • ${rss.lastDurationMs ?? "—"} ms • položek ${Number(rss.lastFetchedItems || 0)}</div>
+        ${rss.lastError ? `<div><b>Poslední RSS chyba:</b> ${escapeHtml(rss.lastError.type || "network_error")} • HTTP ${rss.lastError.httpStatus ?? "—"} • ${rss.lastError.durationMs ?? "—"} ms</div>` : ""}
       `;
     }
 
@@ -3925,6 +3929,32 @@ async function loadIngestDiagnostics() {
     }
   } catch (e) {
     if (summary) summary.textContent = `Diagnostiku se nepodařilo načíst: ${String(e.message || e)}`;
+  }
+}
+
+async function testRssConnectionFromAdmin() {
+  const button = document.getElementById("testRssConnectionBtn");
+  const result = document.getElementById("rssConnectionTestResult");
+  if (!result) return;
+  result.style.display = "grid";
+  result.textContent = "Testuji RSS připojení…";
+  if (button) button.disabled = true;
+  try {
+    const response = await fetch("/api/admin/rss-test", { method: "POST", credentials: "include", cache: "no-store" });
+    const data = await response.json();
+    const error = data.error || null;
+    result.innerHTML = `
+      <div><b>Spojení:</b> ${data.success ? "úspěšné" : "neúspěšné"}</div>
+      <div><b>HTTP status:</b> ${data.httpStatus ?? "—"}</div>
+      <div><b>Velikost odpovědi:</b> ${Number(data.responseBytes || 0)} B</div>
+      <div><b>Nalezené RSS položky:</b> ${Number(data.itemCount || 0)}</div>
+      <div><b>Délka požadavku:</b> ${data.durationMs ?? "—"} ms</div>
+      <div><b>Chyba:</b> ${error ? escapeHtml(`${error.type}: ${error.message}`) : "—"}</div>
+    `;
+  } catch {
+    result.innerHTML = `<div><b>Spojení:</b> neúspěšné</div><div><b>Chyba:</b> admin_test_failed</div>`;
+  } finally {
+    if (button) button.disabled = false;
   }
 }
 
@@ -3981,6 +4011,10 @@ function wireManualCreateAndDiagnostics() {
   document.getElementById("loadIngestDiagnosticsBtn")?.addEventListener("click", (ev) => {
     ev.preventDefault();
     loadIngestDiagnostics();
+  });
+  document.getElementById("testRssConnectionBtn")?.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    testRssConnectionFromAdmin();
   });
   document.getElementById("adminEventSearchBtn")?.addEventListener("click", (ev) => {
     ev.preventDefault();
