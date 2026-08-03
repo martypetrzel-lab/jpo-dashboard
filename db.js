@@ -8,6 +8,34 @@ export const pool = new pg.Pool({
   ssl: process.env.DATABASE_URL?.includes("railway") ? { rejectUnauthorized: false } : false
 });
 
+const RSS_WORKER_LOCK_KEY = 748_329_101;
+
+// Session-level advisory lock: the dedicated client stays checked out for the
+// whole RSS cycle, so only one Railway replica can ingest the feed at a time.
+export async function acquireRssWorkerLock() {
+  const client = await pool.connect();
+  try {
+    const result = await client.query("SELECT pg_try_advisory_lock($1) AS acquired", [RSS_WORKER_LOCK_KEY]);
+    if (!result.rows?.[0]?.acquired) {
+      client.release();
+      return null;
+    }
+    let released = false;
+    return async () => {
+      if (released) return;
+      released = true;
+      try {
+        await client.query("SELECT pg_advisory_unlock($1)", [RSS_WORKER_LOCK_KEY]);
+      } finally {
+        client.release();
+      }
+    };
+  } catch (error) {
+    client.release();
+    throw error;
+  }
+}
+
 async function colExists(table, col) {
   const res = await pool.query(
     `

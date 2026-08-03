@@ -5,16 +5,18 @@
   "type": "module",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
-    "express": "^4.19.2",
     "bcryptjs": "^2.4.3",
-    "pg": "^8.11.5",
+    "express": "^4.19.2",
+    "fast-xml-parser": "^5.7.0",
     "pdfkit": "^0.15.0",
+    "pg": "^8.11.5",
     "ws": "^8.18.0"
   }
 }
