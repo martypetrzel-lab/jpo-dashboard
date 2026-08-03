@@ -7,6 +7,7 @@ import { fileURLToPath } from "url";
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import { attachOpsRadio } from "./radio-server.js";
+import { createRssWorker, readRssConfig } from "./rss-worker.js";
 
 
 // ======================
@@ -87,7 +88,8 @@ import {
   upsertArchivedReport,
   listArchivedReports,
   getArchivedReport,
-  getEventsForPeriod
+  getEventsForPeriod,
+  acquireRssWorkerLock
 
 } from "./db.js";
 
@@ -96,6 +98,7 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
+let rssWorker = null;
 
 // ---------------- CONFIG ----------------
 const API_KEY = process.env.API_KEY || "JPO_KEY_123456";
@@ -2929,7 +2932,7 @@ function publicSafeManualSourceNote() {
 
 
 // ingest (data z ESP)
-app.post("/api/ingest", requireKey, async (req, res) => {
+async function handleIngest(req, res) {
   try {
     const { source, items } = req.body || {};
     if (!Array.isArray(items) || items.length === 0) {
@@ -3089,7 +3092,7 @@ if (!isClosed) {
 
     await insertIngestLog({
       source: source || "unknown",
-      sourceKind: "esp",
+      sourceKind: source === "server_rss_worker" ? "rss" : "esp",
       receivedCount: items.length,
       acceptedCount: accepted,
       newCount: inserted,
@@ -3114,7 +3117,7 @@ if (!isClosed) {
     try {
       await insertIngestLog({
         source: req.body?.source || "unknown",
-        sourceKind: "esp",
+        sourceKind: req.body?.source === "server_rss_worker" ? "rss" : "esp",
         receivedCount: Array.isArray(req.body?.items) ? req.body.items.length : 0,
         errorText: e?.message || String(e),
         ip: getClientIp(req),
@@ -3123,7 +3126,9 @@ if (!isClosed) {
     } catch {}
     res.status(500).json({ ok: false, error: "server error" });
   }
-});
+}
+
+app.post("/api/ingest", requireKey, handleIngest);
 
 
 
@@ -3555,7 +3560,7 @@ app.post("/api/admin/events/manual-create", requireAdmin, async (req, res) => {
 app.get("/api/admin/ingest-diagnostics", requireAdmin, async (req, res) => {
   try {
     const data = await getIngestDiagnostics({ limit: Number(req.query?.limit || 20) });
-    return res.json({ ok: true, ...data });
+    return res.json({ ok: true, ...data, rssWorker: rssWorker?.getState() || { enabled: readRssConfig().enabled, running: false } });
   } catch (e) {
     console.error("[ingest-diagnostics]", e);
     return res.status(500).json({ ok: false, error: "ingest_diagnostics_failed", detail: String(e?.message || e) });
@@ -4152,7 +4157,7 @@ async function initDbWithRetry() {
   let attempt = 0;
   while (true) {
     try {
-      await initDbWithRetry();
+      await initDb();
       return;
     } catch (e) {
       attempt++;
@@ -4164,18 +4169,77 @@ async function initDbWithRetry() {
 }
 
 
-await initDb();
+await initDbWithRetry();
 await ensureInitialAdmin();
 
 // start stale closer loop (ESP-only)
 await runStaleAutoClose();
-setInterval(runStaleAutoClose, STALE_CLOSE_INTERVAL_MS);
+const staleCloseTimer = setInterval(runStaleAutoClose, STALE_CLOSE_INTERVAL_MS);
 
 // archived analytical reports automation
 await runArchivedReportsAutomation("startup");
-setInterval(() => runArchivedReportsAutomation("interval"), 6 * 60 * 60 * 1000);
+const reportsTimer = setInterval(() => runArchivedReportsAutomation("interval"), 6 * 60 * 60 * 1000);
 
 const server = http.createServer(app);
 attachOpsRadio(server);
 
-server.listen(port, () => console.log(`listening on ${port}`));
+await new Promise((resolve, reject) => {
+  server.once("error", reject);
+  server.listen(port, () => {
+    server.off("error", reject);
+    console.log(`listening on ${port}`);
+    resolve();
+  });
+});
+
+// Reuse the exact ESP ingest pipeline without making an HTTP request back to
+// this application. This keeps status, duration, geocoding and deduplication
+// behavior identical for both sources.
+async function ingestRssItems(items, source = "server_rss_worker") {
+  return new Promise((resolve, reject) => {
+    let statusCode = 200;
+    const req = {
+      body: { source, items },
+      headers: {},
+      socket: { remoteAddress: "internal" },
+      get: () => "FirewatchCZ-RSS-Worker/1.0"
+    };
+    const res = {
+      status(code) { statusCode = code; return this; },
+      json(payload) {
+        if (statusCode >= 400 || payload?.ok === false) {
+          reject(new Error(payload?.detail || payload?.error || `Internal ingest failed (${statusCode})`));
+        } else {
+          resolve(payload);
+        }
+        return this;
+      }
+    };
+    Promise.resolve(handleIngest(req, res)).catch(reject);
+  });
+}
+
+rssWorker = createRssWorker({
+  config: readRssConfig(),
+  ingestItems: ingestRssItems,
+  acquireLock: acquireRssWorkerLock
+});
+rssWorker.start();
+
+let shuttingDown = false;
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[shutdown] ${signal}; stopping scheduled work`);
+  rssWorker?.stop();
+  clearInterval(staleCloseTimer);
+  clearInterval(reportsTimer);
+  const forceExit = setTimeout(() => process.exit(1), 10_000);
+  forceExit.unref();
+  await new Promise((resolve) => server.close(resolve));
+  clearTimeout(forceExit);
+  process.exit(0);
+}
+
+process.once("SIGTERM", () => void shutdown("SIGTERM"));
+process.once("SIGINT", () => void shutdown("SIGINT"));
