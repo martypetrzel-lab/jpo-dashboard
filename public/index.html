@@ -884,9 +884,12 @@
 
           <div class="adminRow" style="margin-top:10px;">
             <button id="loadIngestDiagnosticsBtn" class="btn" type="button">Načíst diagnostiku</button>
+            <button id="testRssConnectionBtn" class="btn" type="button">Otestovat RSS</button>
             <input id="adminEventSearchInput" class="miniInput" placeholder="Hledat výjezd v DB: město, název, ID…" />
             <button id="adminEventSearchBtn" class="btn" type="button">Hledat</button>
           </div>
+
+          <div id="rssConnectionTestResult" class="diagnosticsSummary" style="display:none; margin-top:10px;"></div>
 
           <div id="adminEventSearchResults" class="adminSearchResults"></div>
           <div id="ingestDiagnosticsLog" class="ingestDiagnosticsLog"></div>

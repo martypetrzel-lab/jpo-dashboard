@@ -45,6 +45,7 @@ RSS_URL=
 RSS_INTERVAL_MS=60000
 RSS_MAX_ITEMS=35
 RSS_RUN_ON_START=1
+RSS_PROXY_URL=
 ```
 
 - `RSS_ENABLED=0` worker úplně vypne.
@@ -52,6 +53,7 @@ RSS_RUN_ON_START=1
 - `RSS_INTERVAL_MS` má minimum 30000 ms.
 - `RSS_MAX_ITEMS` je omezeno na bezpečné rozmezí 1–200.
 - `RSS_RUN_ON_START=1` načte feed ihned po startu; hodnota `0` čeká na první interval.
+- Prázdné `RSS_PROXY_URL` používá přímé připojení. Pokud je nastavené, pouze RSS požadavky jsou směrovány přes HTTP/HTTPS proxy. URL může obsahovat přihlašovací údaje a nikdy se nevypisuje do logu ani diagnostiky.
 - Volitelně lze nastavit `RSS_TIMEOUT_MS` (výchozí 20000) a `RSS_MAX_RESPONSE_BYTES` (výchozí 2097152).
 
 Pro Railway se doporučují výše uvedené výchozí hodnoty a platné `DATABASE_URL`. Žádný API klíč worker nepotřebuje, protože nevolá veřejný endpoint vlastní aplikace.
@@ -59,6 +61,8 @@ Pro Railway se doporučují výše uvedené výchozí hodnoty a platné `DATABAS
 ## Ověření a provoz
 
 Po přihlášení administrátora otevřete existující endpoint `GET /api/admin/ingest-diagnostics`. Odpověď obsahuje objekt `rssWorker` s posledním během, chybou, počty položek a celkovým počtem cyklů. Ingest logy mají pro worker `source_kind: "rss"`. Základní průběh je také v Railway logu pod prefixem `[rss-worker]`.
+
+Ruční bezpečný test připojení lze spustit jako administrátor přes `POST /api/admin/rss-test`. Vrací pouze úspěšnost, HTTP status, velikost odpovědi, počet RSS položek, délku požadavku a bezpečnou kategorii chyby. Proxy URL ani jiné tajné proměnné endpoint nevrací.
 
 Při ukončení přes `SIGTERM` nebo `SIGINT` se zruší další naplánovaný cyklus. Chyba stažení, HTTP status, neplatné XML nebo chyba položky neshodí celý server.
 
