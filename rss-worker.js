@@ -133,6 +133,38 @@ export function rssItemToEvent(item = {}) {
   };
 }
 
+function pragueDateKey(date) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/Prague", year: "numeric", month: "2-digit", day: "2-digit"
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+export function rssDateKeyInPrague(value) {
+  const raw = textValue(value);
+  if (!raw) return null;
+  // rss2json returns a local timestamp without a timezone. Preserve its calendar day.
+  if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?$/.test(raw)) return raw.slice(0, 10);
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? null : pragueDateKey(parsed);
+}
+
+export function shouldIngestRssItemForToday(item = {}, { previouslyKnown = false, now = new Date() } = {}) {
+  const itemDay = rssDateKeyInPrague(item.pubDate || item.pub_date || item.startTimeIso || item.start_time_iso);
+  const today = pragueDateKey(now instanceof Date ? now : new Date(now));
+  if (!itemDay) return previouslyKnown;
+  if (itemDay === today) return true;
+  if (itemDay > today) return false;
+  if (previouslyKnown) return true; // allow an older carry-over event to receive its closing update
+
+  const status = `${item.statusText || item.status_text || ""} ${item.descriptionRaw || item.description || ""}`
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  const explicitlyClosed = /ukoncen|likvidace\s+ukoncena/.test(status);
+  const explicitlyOpen = /stav\s*:\s*(nova|novy|neupresnen)|probiha(?:jici)?(?:\s+zasah)?/.test(status);
+  return !explicitlyClosed && explicitlyOpen;
+}
+
 export function parseRssXml(xml, { maxItems = 35 } = {}) {
   const input = String(xml || "");
   const validation = XMLValidator.validate(input);
