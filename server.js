@@ -2990,8 +2990,9 @@ const rssStartIso = eventStartIsoFromEspRss(it, times);
 const startIso =
   it.startTimeIso ||
   times.startIso ||
-  rssStartIso ||
   prev?.start_time_iso ||
+  prev?.pub_date ||
+  rssStartIso ||
   null;
 
 let endIso =
@@ -3015,7 +3016,7 @@ if (Number.isFinite(it.durationMin)) {
 // 2) Nejlepší přesnost: RSS obsahuje "ukončení:".
 // Délka = ukončení z RSS - pubDate z RSS.
 if (durationMin == null && isClosed && endIso) {
-  durationMin = safeDurationFromStartEnd(rssStartIso || startIso, endIso);
+  durationMin = safeDurationFromStartEnd(startIso, endIso);
   if (durationMin != null) durationSource = "rss_end_time";
 }
 
@@ -3023,7 +3024,7 @@ if (durationMin == null && isClosed && endIso) {
 // Délka = čas zjištění ukončení - pubDate z RSS.
 if (durationMin == null && isClosed && closingKnownOpen) {
   if (!endIso) endIso = new Date().toISOString();
-  durationMin = safeDurationFromStartEnd(rssStartIso || startIso, endIso);
+  durationMin = safeDurationFromStartEnd(startIso, endIso);
   if (durationMin != null) durationSource = "close_update";
 }
 
@@ -3051,7 +3052,7 @@ if (!isClosed) {
         id: it.id,
         title: it.title,
         link: it.link,
-        pubDate: it.pubDate || null,
+        pubDate: prev?.pub_date || it.pubDate || null,
         placeText,
         cityText,
         statusText: statusAnalysis.label || it.statusText || null,
