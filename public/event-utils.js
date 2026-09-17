@@ -33,7 +33,7 @@
     if (event.is_closed) {
       if (!['rss_end_time','esp_duration','explicit','manual'].includes(event.duration_source)) return null;
       const n = Number(event.duration_min);
-      return event.duration_min != null && Number.isFinite(n) && n > 0 ? n : null;
+      return event.duration_min != null && Number.isFinite(n) && n > 0 && n <= 4320 ? n : null;
     }
     const start = Date.parse(event.start_time_iso || (event.source_kind==='rss' ? '' : event.pub_date) || '');
     if (!Number.isFinite(start) || start > now) return null;

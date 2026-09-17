@@ -3455,7 +3455,7 @@ app.get("/api/export.pdf", safeRoute(async (req, res) => {
   for (const r of rows) {
     const y = doc.y;
 
-    const time = fmtDate(r.pub_date || r.created_at);
+    const time = fmtDate(r.source_updated_at || r.pub_date || r.created_at);
     const state = r.is_closed ? "UKONČENO" : "AKTIVNÍ";
     const typ = typeLabel(r.event_type || "other");
     const city = r.city_text || r.place_text || "";
