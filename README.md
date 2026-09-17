@@ -81,3 +81,34 @@ Nastavte `RSS_ENABLED=0` a znovu nasaďte službu. Původní `POST /api/ingest` 
 Spusťte `npm test`. Testy používají vestavěný `node:test` a pokrývají běžnou RSS položku, HTML entity, chybějící volitelné hodnoty, stabilní ID, duplicitu, neplatné XML, přímý Agent a jeho connect timeout, skutečný proxy tunel přes ProxyAgent, bezpečné zavírání dispatcherů, retry a jeho vyloučení pro HTTP 4xx a neplatné XML, celkový timeout při čtení těla a vypnutý worker.
 
 ---
+
+# Záložní RSS import přes GitHub Actions
+
+Workflow `.github/workflows/rss-ingest.yml` stahuje RSS na GitHub runneru a přes existující `POST /api/ingest` posílá až 100 položek s `source: "github_actions_rss"`. Používá stejné parsování a stabilní ID jako Railway worker, takže opakované doručení skončí databázovým upsertem. ESP32 není potřeba. Serverové API ani databáze se nemění; diagnostika uchovává uvedenou hodnotu `source` (existující `source_kind` endpointu zůstává `esp`).
+
+## Nastavení GitHub Secrets
+
+1. Otevřete repozitář `martypetrzel-lab/jpo-dashboard` na GitHubu.
+2. Přejděte do **Settings → Secrets and variables → Actions → Repository secrets**.
+3. Přes **New repository secret** přidejte přesně tyto dva Secrets:
+
+   | Name | Secret |
+   | --- | --- |
+   | `FIREWATCH_INGEST_URL` | `https://firewatchcz.cz/api/ingest` |
+   | `FIREWATCH_API_KEY` | Přesná současná hodnota Railway proměnné `API_KEY` serveru FireWatch. |
+
+API klíč zjistíte v Railway u služby FireWatch v **Variables → API_KEY**. Nepoužívejte GitHub token ani administrátorské heslo a klíč nevkládejte do repozitáře. Pokud `API_KEY` na Railway nemáte nastavený, nastavte vlastní klíč, nasaďte službu a stejnou hodnotu vložte do GitHub Secret. Skutečný klíč se v tomto návodu nevytváří ani nezveřejňuje. Pokud provozujete jinou doménu, nastavte `FIREWATCH_INGEST_URL` na její přímou HTTPS adresu `/api/ingest` bez přesměrování.
+
+## Ruční test a spuštění plánu
+
+1. Otevřete **Actions → RSS ingest**. Pokud GitHub nabízí povolení Actions, nejprve je povolte.
+2. Klikněte **Run workflow**, vyberte větev **main** a potvrďte **Run workflow**.
+3. Otevřete běh a krok **Import RSS into FireWatch**. Úspěšný výstup obsahuje `RSS items=…`, `ingest HTTP status=200` a `accepted=…; inserted=…; updated=…`. Již uložené události mohou mít `inserted=0` a `updated>0`.
+4. Ověřte události na webu a v admin diagnostice příjmu dat vyhledejte `source: github_actions_rss`. Zelený běh s `RSS items=0` jen bezpečně přeskočil prázdný feed, nepotvrzuje funkčnost ingestu.
+5. Plán `*/5 * * * *` na výchozí větvi automaticky žádá spuštění každých 5 minut. GitHub může plánované běhy zpozdit; nejde o přesnou časovou garanci. Společná concurrency skupina brání souběhu ručního a plánovaného importu.
+
+Skript má pro RSS connect timeout 30000 ms a celkový timeout jednoho pokusu 30000 ms; pro ingest connect timeout 30000 ms a celkový timeout 60000 ms. Každá fáze má maximálně dva pokusy s prodlevou 1500 ms při síťové chybě, timeoutu nebo HTTP 5xx. HTTP 4xx, přesměrování, neplatné XML a neplatná odpověď ingestu se neopakují. Chyba vypíše pouze fázi, bezpečnou kategorii a případný HTTP status a skončí nenulovým návratovým kódem. Klíč, cílová URL ani text chybové odpovědi se nelogují. Timeout při ingestu může nastat i po uložení části položek; opakovaný POST používá stejná ID.
+
+**Railway worker zatím ponechte zapnutý.** Teprve po úspěšném ručním testu s neprázdným feedem a ověření plánovaných importů nastavte na Railway `RSS_ENABLED=0` a znovu nasaďte službu. Workflow ani skript tuto proměnnou nemění a worker nemažou.
+
+Lokálně lze se stejnými dvěma proměnnými prostředí spustit `npm ci` a `node scripts/rss-push.js`. `npm test` zahrnuje payload, limit 100 položek, autentizaci ingestu, timeout/retry, HTTP chyby, neplatné XML, prázdný feed, bezpečné logování a návratový kód skriptu.

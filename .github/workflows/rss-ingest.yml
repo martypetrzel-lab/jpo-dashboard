@@ -1,0 +1,33 @@
+name: RSS ingest
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/5 * * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rss-ingest
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Import RSS into FireWatch
+        run: node scripts/rss-push.js
+        env:
+          FIREWATCH_INGEST_URL: ${{ secrets.FIREWATCH_INGEST_URL }}
+          FIREWATCH_API_KEY: ${{ secrets.FIREWATCH_API_KEY }}
