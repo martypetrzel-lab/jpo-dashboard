@@ -463,7 +463,7 @@ export async function getLongestCutoffIso() {
 
 export async function getEventMeta(id) {
   const res = await pool.query(
-    `SELECT id, is_closed, first_seen_at, start_time_iso, end_time_iso, duration_min, alarm_level, is_major_event, status_text, source_kind, source_note FROM events WHERE id=$1`,
+    `SELECT id, is_closed, first_seen_at, pub_date, start_time_iso, end_time_iso, duration_min, alarm_level, is_major_event, status_text, source_kind, source_note FROM events WHERE id=$1`,
     [id]
   );
   return res.rows[0] || null;
@@ -506,7 +506,9 @@ export async function upsertEvent(ev) {
     ON CONFLICT (id) DO UPDATE SET
       title = EXCLUDED.title,
       link = EXCLUDED.link,
-      pub_date = EXCLUDED.pub_date,
+      -- RSS může při změně stavu poslat v pubDate čas aktualizace. Původní
+      -- čas zahájení proto po prvním vložení nikdy nepřepisujeme.
+      pub_date = COALESCE(events.pub_date, EXCLUDED.pub_date),
 
       place_text = COALESCE(EXCLUDED.place_text, events.place_text),
       city_text  = COALESCE(EXCLUDED.city_text,  events.city_text),
@@ -515,7 +517,7 @@ export async function upsertEvent(ev) {
       event_type  = COALESCE(EXCLUDED.event_type, events.event_type),
       description_raw = COALESCE(EXCLUDED.description_raw, events.description_raw),
 
-      start_time_iso = COALESCE(EXCLUDED.start_time_iso, events.start_time_iso),
+      start_time_iso = COALESCE(events.start_time_iso, EXCLUDED.start_time_iso),
       end_time_iso   = CASE
         WHEN EXCLUDED.status_source = 'explicit_open' THEN NULL
         WHEN NULLIF(EXCLUDED.end_time_iso,'' ) IS NOT NULL THEN EXCLUDED.end_time_iso
