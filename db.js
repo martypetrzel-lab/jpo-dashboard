@@ -1,3 +1,4 @@
+import { normalizeReportFilters, buildReportWhere } from "./report-query.js";
 import pg from "pg";
 
 // ✅ stejný limit jako v serveru (fallback), aby se do DB neukládaly extrémy
@@ -1686,32 +1687,32 @@ export async function upsertArchivedReport(report) {
   return r.rows[0];
 }
 
-export async function listArchivedReports({ type = "", limit = 120 } = {}) {
-  const params = [];
-  const where = [];
+export async function listArchivedReports(options = {}) {
+  const result = await listArchivedReportsPage({ include_empty: true, ...options });
+  return result.reports;
+}
 
-  if (type) {
-    params.push(type);
-    where.push(`period_type = $${params.length}`);
-  }
-
-  params.push(Math.max(1, Math.min(Number(limit || 120), 500)));
-
-  const r = await pool.query(
-    `
-    SELECT
-      id, period_type, period_key, period_start, period_end, title,
-      total_events, open_count, closed_count, missing_coords_count,
-      created_at, updated_at
-    FROM archived_reports
-    ${where.length ? "WHERE " + where.join(" AND ") : ""}
-    ORDER BY period_start DESC, period_type
-    LIMIT $${params.length}
-    `,
-    params
-  );
-
-  return r.rows || [];
+export async function listArchivedReportsPage(options = {}) {
+  const filters = normalizeReportFilters(options);
+  const { sql, params } = buildReportWhere(filters);
+  const count = await pool.query(`SELECT COUNT(*)::int AS total FROM archived_reports ${sql}`, params);
+  const groups = await pool.query(`
+    SELECT to_char(period_start, 'YYYY-MM') AS month_key,
+           COUNT(*)::int AS report_count, SUM(total_events)::int AS event_count
+    FROM archived_reports ${sql}
+    GROUP BY to_char(period_start, 'YYYY-MM') ORDER BY month_key DESC
+  `, params);
+  const pageParams = [...params, filters.limit, filters.offset];
+  const r = await pool.query(`
+    SELECT id, period_type, period_key, to_char(period_start, 'YYYY-MM-DD') AS period_start,
+      to_char(period_end, 'YYYY-MM-DD') AS period_end, title,
+      total_events, open_count, closed_count, missing_coords_count, created_at, updated_at
+    FROM archived_reports ${sql}
+    ORDER BY period_start DESC, period_type, id DESC
+    LIMIT $${params.length + 1} OFFSET $${params.length + 2}
+  `, pageParams);
+  return { reports: r.rows || [], total: count.rows[0]?.total || 0,
+    limit: filters.limit, offset: filters.offset, groups: groups.rows || [] };
 }
 
 export async function getArchivedReport(periodType, periodKey) {

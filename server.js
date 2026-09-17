@@ -87,6 +87,7 @@ import {
   listEventsWithCoords,
   upsertArchivedReport,
   listArchivedReports,
+  listArchivedReportsPage,
   getArchivedReport,
   getEventsForPeriod,
   acquireRssWorkerLock
@@ -234,6 +235,15 @@ function requireOps(req, res, next) {
     if (!["ops", "editor", "admin"].includes(String(auth.user.role)) && !userHasPermission(auth.user, "canViewOps")) {
       return res.status(403).json({ ok: false, error: "forbidden" });
     }
+    req.auth = auth;
+    next();
+  });
+}
+
+function requireReportAuthor(req, res, next) {
+  authFromRequest(req).then(auth => {
+    if (!auth?.user) return res.status(401).json({ ok: false, error: "unauthorized" });
+    if (!userHasPermission(auth.user, "canCreateReports")) return res.status(403).json({ ok: false, error: "forbidden" });
     req.auth = auth;
     next();
   });
@@ -860,7 +870,7 @@ function addDays(date, days) {
 }
 
 function startOfIsoWeek(date) {
-  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
   const day = d.getUTCDay() || 7;
   d.setUTCDate(d.getUTCDate() - day + 1);
   return d;
@@ -873,6 +883,7 @@ function reportPeriodFromKey(type, key) {
   if (t === "month") {
     if (!/^\d{4}-\d{2}$/.test(k)) throw new Error("bad_period");
     const [y, m] = k.split("-").map(Number);
+    if (y < 2000 || y > 2100 || m < 1 || m > 12) throw new Error("bad_period");
     const start = new Date(Date.UTC(y, m - 1, 1));
     const endExclusive = new Date(Date.UTC(y, m, 1));
     return {
@@ -891,9 +902,11 @@ function reportPeriodFromKey(type, key) {
     const [yStr, wStr] = k.split("-W");
     const y = Number(yStr);
     const w = Number(wStr);
+    if (y < 2000 || y > 2100 || w < 1 || w > 53) throw new Error("bad_period");
     const jan4 = new Date(Date.UTC(y, 0, 4));
     const week1 = startOfIsoWeek(jan4);
     const start = addDays(week1, (w - 1) * 7);
+    if (isoWeekKey(start) !== k) throw new Error("bad_period");
     const endExclusive = addDays(start, 7);
     return {
       type: t,
@@ -909,6 +922,7 @@ function reportPeriodFromKey(type, key) {
   if (t === "day") {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(k)) throw new Error("bad_period");
     const start = new Date(`${k}T00:00:00.000Z`);
+    if (!Number.isFinite(start.getTime()) || isoDateOnly(start) !== k || start.getUTCFullYear() < 2000 || start.getUTCFullYear() > 2100) throw new Error("bad_period");
     const endExclusive = addDays(start, 1);
     return {
       type: t,
@@ -925,7 +939,7 @@ function reportPeriodFromKey(type, key) {
 }
 
 function isoWeekKey(date) {
-  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
   const day = d.getUTCDay() || 7;
   d.setUTCDate(d.getUTCDate() + 4 - day);
   const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
@@ -940,7 +954,7 @@ function reportPeriodLabel(type, key) {
       const [y, m] = key.split("-").map(Number);
       return new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString("cs-CZ", { month: "long", year: "numeric", timeZone: "UTC" });
     }
-    if (type === "week") return `${key} (${p.startIso} – ${p.endIso})`;
+    if (type === "week") return `${new Date(p.startIso).toLocaleDateString("cs-CZ", { timeZone: "UTC" })}–${new Date(p.endIso).toLocaleDateString("cs-CZ", { timeZone: "UTC" })}`;
     if (type === "day") return new Date(`${key}T00:00:00Z`).toLocaleDateString("cs-CZ", { timeZone: "UTC" });
   } catch {}
   return key;
@@ -958,7 +972,7 @@ function safePercent(part, total) {
 function eventDayKey(ev) {
   const d = new Date(ev.pub_date || ev.created_at || Date.now());
   if (Number.isNaN(d.getTime())) return "neznámé datum";
-  return d.toISOString().slice(0, 10);
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Prague", year: "numeric", month: "2-digit", day: "2-digit" }).format(d);
 }
 
 function formatMinutesLong(min) {
@@ -1048,7 +1062,8 @@ function buildAnalyticalReport(type, key, rows) {
       link: r.link || ""
     }));
 
-  const avgPerDay = byDayArr.length ? Math.round((total / byDayArr.length) * 10) / 10 : 0;
+  const periodDays = Math.max(1, Math.round((p.endExclusive - p.start) / 86400000));
+  const avgPerDay = Math.round((total / periodDays) * 10) / 10;
 
   let summary = "Za vybrané období nebyly nalezeny žádné události.";
   if (total > 0) {
@@ -1097,6 +1112,7 @@ function buildAnalyticalReport(type, key, rows) {
 
 async function generateArchivedReport(type, key, { force = false } = {}) {
   const p = reportPeriodFromKey(type, key);
+  if (p.startIso > todayPragueISO()) throw new Error("future_period");
   const existing = await getArchivedReport(type, key);
   if (existing && !force) return existing;
 
@@ -1111,8 +1127,8 @@ function reportJson(row) {
     id: row.id,
     period_type: row.period_type,
     period_key: row.period_key,
-    period_start: row.period_start,
-    period_end: row.period_end,
+    period_start: isoDateOnly(row.period_start),
+    period_end: isoDateOnly(row.period_end),
     title: row.title,
     total_events: row.total_events,
     open_count: row.open_count,
@@ -4061,16 +4077,15 @@ app.get("/api/stats/pro", async (req, res) => {
 
 app.get("/api/reports", async (req, res) => {
   try {
-    const type = String(req.query.type || "").trim();
-    const reports = await listArchivedReports({ type, limit: Number(req.query.limit || 120) });
-    res.json({ ok: true, reports });
+    const page = await listArchivedReportsPage(req.query);
+    res.json({ ok: true, ...page });
   } catch (e) {
     console.error(e);
-    res.status(500).json({ ok: false, error: "reports_list_failed" });
+    res.status(e.statusCode || 500).json({ ok: false, error: e.statusCode === 400 ? "bad_report_filters" : "reports_list_failed" });
   }
 });
 
-app.post("/api/reports/generate", async (req, res) => {
+app.post("/api/reports/generate", requireReportAuthor, async (req, res) => {
   try {
     const type = String(req.body?.type || req.query.type || "").trim();
     const key = String(req.body?.key || req.query.key || "").trim();
@@ -4084,7 +4099,7 @@ app.post("/api/reports/generate", async (req, res) => {
   }
 });
 
-app.post("/api/reports/automation/run", async (req, res) => {
+app.post("/api/reports/automation/run", requireReportAuthor, async (req, res) => {
   try {
     await runArchivedReportsAutomation("manual");
     const reports = await listArchivedReports({ limit: 20 });
@@ -4102,9 +4117,7 @@ app.get(/^\/api\/reports\/([^/]+)\/(.+)\.pdf$/, async (req, res) => {
     const key = decodeURIComponent(req.params[1] || "");
 
     let row = await getArchivedReport(type, key);
-    if (!row) {
-      row = await generateArchivedReport(type, key, { force: false });
-    }
+    if (!row) return res.status(404).json({ ok: false, error: "report_not_found" });
 
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `attachment; filename="firewatch_report_${type}_${key}.pdf"`);
@@ -4126,9 +4139,7 @@ app.get("/api/reports/:type/:key", async (req, res) => {
     }
 
     let row = await getArchivedReport(req.params.type, req.params.key);
-    if (!row) {
-      row = await generateArchivedReport(req.params.type, req.params.key, { force: false });
-    }
+    if (!row) return res.status(404).json({ ok: false, error: "report_not_found" });
     res.json({ ok: true, report: reportJson(row) });
   } catch (e) {
     console.error(e);

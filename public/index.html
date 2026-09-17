@@ -672,20 +672,22 @@
         <div class="hint">Denní / týdenní / měsíční snapshoty pro zpětné zobrazení a tisk</div>
       </div>
 
-      <div class="reportControls">
-        <select id="reportTypeSelect">
-          <option value="month">měsíční</option>
-          <option value="week">týdenní</option>
-          <option value="day">denní</option>
-        </select>
-        <input id="reportKeyInput" type="text" placeholder="měsíc: 2026-05 | týden: 2026-W21 | den: 2026-05-18" />
-        <button id="generateReportBtn" class="btn primary">Vygenerovat / otevřít</button>
-        <button id="refreshReportsBtn" class="btn">Načíst archiv</button>
-        <button id="runReportsAutomationBtn" class="btn">Doplnit automatiku</button>
+      <div class="archiveTabs" role="group" aria-label="Typ souhrnu">
+        <button class="btn" data-archive-type="day" aria-pressed="true">Denní</button><button class="btn" data-archive-type="week" aria-pressed="false">Týdenní</button><button class="btn" data-archive-type="month" aria-pressed="false">Měsíční</button>
       </div>
-
+      <form id="reportsFilters" class="archiveFilters">
+        <label>Od<input id="reportsFrom" type="date" /></label><label>Do<input id="reportsTo" type="date" /></label><label class="archiveSearch">Vyhledat<input id="reportsSearch" type="search" maxlength="120" placeholder="Datum nebo název" /></label>
+        <label class="checkLabel"><input id="reportsHideEmpty" type="checkbox" checked /> Skrýt prázdné souhrny</label><button class="btn primary" type="submit">Použít filtry</button><button id="refreshReportsBtn" class="btn" type="button">Obnovit</button>
+      </form>
+      <details id="reportAuthorControls" class="reportAuthorControls" style="display:none"><summary>Správa souhrnů</summary><div class="reportControls">
+        <label>Typ<select id="reportTypeSelect"><option value="day">Denní</option><option value="week">Týdenní</option><option value="month">Měsíční</option></select></label>
+        <label>Období<input id="reportKeyInput" type="text" aria-describedby="reportKeyHint" /></label><small id="reportKeyHint">Den: RRRR-MM-DD · týden: RRRR-WTT · měsíc: RRRR-MM</small>
+        <button id="generateReportBtn" class="btn primary">Vygenerovat / aktualizovat</button><button id="runReportsAutomationBtn" class="btn">Doplnit automatiku</button>
+      </div></details>
+      <p id="reportsCount" class="muted" aria-live="polite"></p>
       <div id="reportsList" class="reportsList"></div>
-      <div id="reportDetail" class="reportDetail"></div>
+      <button id="reportsMoreBtn" class="btn" hidden>Načíst další souhrny</button>
+      <div id="reportDetail" class="reportDetail" aria-live="polite"></div>
     </section>
 
 
