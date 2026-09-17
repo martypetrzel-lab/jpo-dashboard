@@ -857,11 +857,11 @@
 
             <label>
               Začátek
-              <input id="manualCreateStart" class="miniInput" type="datetime-local" />
+              <input id="manualCreateStart" class="miniInput" type="datetime-local" step="1" />
             </label>
             <label>
               Konec
-              <input id="manualCreateEnd" class="miniInput" type="datetime-local" />
+              <input id="manualCreateEnd" class="miniInput" type="datetime-local" step="1" />
             </label>
 
             <input id="manualCreateLat" class="miniInput" type="number" step="0.000001" placeholder="Latitude" />
@@ -1212,11 +1212,11 @@ Události bez souřadnic</div>
         <div class="manualEventTimeGrid">
           <label>
             Začátek zásahu
-            <input id="manualEventStart" type="datetime-local" />
+            <input id="manualEventStart" type="datetime-local" step="1" />
           </label>
           <label id="manualEventEndLabel">
             Konec zásahu
-            <input id="manualEventEnd" type="datetime-local" />
+            <input id="manualEventEnd" type="datetime-local" step="1" />
             <small id="manualEventEndHint" class="manualInputHint">U aktivního zásahu se konec nevyplňuje. Doplní se až po ukončení.</small>
           </label>
         </div>

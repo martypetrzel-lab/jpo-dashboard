@@ -2941,20 +2941,8 @@ function restoreManualModalAfterMapPick() {
 
 let __manualEventCurrentId = null;
 
-function toLocalDateTimeInput(value) {
-  if (!value) return "";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "";
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
-function fromLocalDateTimeInput(value) {
-  if (!value) return null;
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return null;
-  return d.toISOString();
-}
+function toLocalDateTimeInput(value) {return FireWatchData.pragueInput(value);}
+function fromLocalDateTimeInput(value) {return FireWatchData.pragueIso(value);}
 
 function syncManualEndInput() {
   const mode = document.getElementById("manualEventStatusMode")?.value || "auto";
@@ -3060,8 +3048,8 @@ async function openManualEventEditor(id) {
 
     const latInput = document.getElementById("manualEventLat");
     const lonInput = document.getElementById("manualEventLon");
-    const lat = Number(String(ev.lat ?? "").replace(",", "."));
-    const lon = Number(String(ev.lon ?? "").replace(",", "."));
+    const lat = FireWatchData.coordinate(ev.lat);
+    const lon = FireWatchData.coordinate(ev.lon);
     if (latInput) latInput.value = Number.isFinite(lat) ? lat.toFixed(6) : "";
     if (lonInput) lonInput.value = Number.isFinite(lon) ? lon.toFixed(6) : "";
 
@@ -3672,12 +3660,7 @@ function wireDurationAdminButtons() {
 let __manualCreatePickMode = false;
 let __manualCreatePickMarker = null;
 
-function manualCreateToIso(value) {
-  if (!value) return null;
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return null;
-  return d.toISOString();
-}
+function manualCreateToIso(value) {return FireWatchData.pragueIso(value);}
 
 function setManualCreateCoords(lat, lon) {
   const latInput = document.getElementById("manualCreateLat");
@@ -3724,9 +3707,7 @@ function startManualCreateMapPick() {
 function fillManualCreateStartDefault() {
   const start = document.getElementById("manualCreateStart");
   if (!start || start.value) return;
-  const d = new Date();
-  const pad = (n) => String(n).padStart(2, "0");
-  start.value = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  start.value=FireWatchData.pragueInput(new Date().toISOString());
 }
 
 async function submitManualCreateEvent() {

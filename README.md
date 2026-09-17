@@ -116,3 +116,22 @@ Lokálně lze se stejnými dvěma proměnnými prostředí spustit `npm ci` a `n
 Pokud původní server odmítne síť GitHub Actions, importer automaticky použije veřejnou bránu rss2json. Volitelný GitHub Secret `RSS2JSON_API_KEY` zapne požadavek na až 100 nejnovějších položek (`count=100`, řazení podle data sestupně). Bez tohoto klíče brána vrací posledních 10 položek. URL zdroje obsahuje pětiminutový cache bucket, aby brána nevracela dlouhodobě zastaralý výsledek. Stabilní ID a databázový upsert zajistí, že nové zásahy vzniknou jednou a dříve uložené zásahy se pouze aktualizují.
 
 Příjem RSS je omezen na aktuální kalendářní den v časovém pásmu `Europe/Prague`. Ze starších dnů se nově přijmou jen výslovně otevřené zásahy, které pokračují přes půlnoc. Již známý přesah lze následným RSS během aktualizovat nebo ukončit; neznámé starší ukončené události se nevkládají. Pohled „dnes“ zobrazuje dnešní zásahy a všechny stále otevřené přesahy.
+## Audit a změny spolehlivosti (17. 9. 2026)
+
+Architektura, výchozí stav a priority jsou v `docs/audit-2026-09-17.md`. Stack zůstává Express, PostgreSQL a klasický JavaScript; RSS worker i GitHub Actions/RSS2JSON zůstávají zachované.
+
+- `/api/ingest` vyžaduje nastavenou Railway proměnnou `API_KEY`; pokud chybí, vrací bezpečně 503. Již nastavený klíč se nemění. Limit je 200 položek a 2 MB, GitHub import nadále posílá nejvýše 100. Odpověď navíc obsahuje `skipped` a `skipped_older`.
+- Časy událostí a ruční formuláře používají `Europe/Prague`, včetně sekund a přechodů letního času. Prázdné `ukončení:` neuzavírá aktivní zásah. Při RSS aktualizaci se zachovává původní začátek a ručně opravená poloha. Automatické uzavírání po neaktivitě je omezené na ESP zdroj.
+- `GET /api/events` přidává pouze veřejné `data_status.last_success` a `last_attempt`. Neobsahují IP, uživatele, text chyby ani přístupové údaje. Výpadek obnovení se zobrazuje jako chyba s časem posledního úspěšného načtení.
+- `GET /api/reports` podporuje `type=day|week|month`, `year`, `month`, `from`, `to`, `q`, `include_empty=true|false`, `limit` (výchozí 30, nejvýše 100) a `offset`. Vrací `reports`, `total`, `limit`, `offset` a měsíční `groups`. Seznam neobsahuje velké `data_json`. Příklad: `/api/reports?type=day&include_empty=false&limit=30&offset=0`.
+- Prázdné souhrny zůstávají uložené pro kontinuitu, ve výchozím zobrazení jsou skryté. Kombinace typu a období je už chráněná PostgreSQL unikátností a upsertem. Detail a PDF chybějícího souhrnu vrátí 404; čtení už nic nevytváří. Generování a spuštění automatiky vyžaduje relaci s oprávněním `canCreateReports` (editor/admin ve výchozím nastavení). Starý servisní `/api/admin/fix-geocode` nyní vyžaduje admin relaci; ingest klíč není admin přihlášení.
+- FireWatch Talk má nejvýše šest pokusů o obnovení s rostoucí prodlevou, poté ruční připojení. Mikrofon se otevírá až při PTT a uvolní po skončení, ztrátě sítě či změně místnosti. PCM protokol `/ops-radio` zůstává kompatibilní. WebSocket payload je omezen na 64 KiB a browser musí mít stejný Origin jako host služby.
+- `TRUST_PROXY_HOPS` určuje počet důvěryhodných proxy před Express (výchozí 1 pro Railway). Pro přímý lokální provoz nastavte 0; pro jinou infrastrukturu nastavte skutečný počet proxy. Login/register mají omezené počty pokusů a omezenou paměť limiteru. Více replik vyžaduje sdílený limiter na edge nebo v Redis.
+
+### Databázová změna a návrat
+
+`initDb()` opakovatelně přidává do `ingest_log` dvě číselné metriky `skipped_count` a `skipped_older_count`, výchozí 0. Historie se nemaže a nová tabulka se nevytváří. PostgreSQL při `ALTER TABLE` krátce vyžaduje zámek; proveďte běžný restart nasazení v klidnějším provozu. Návrat: nasaďte předchozí commit, sloupce bezpečně ponechte. Není potřeba ruční SQL ani mazání dat.
+
+### Ověření
+
+`npm test` spouští původní RSS unit testy, testy mapových pravidel a reconnectu a integrační testy proti izolovanému PostgreSQL (PGlite). Nepoužívají produkční `DATABASE_URL`, API klíč ani relace. PGlite je pouze vývojová závislost. Před nasazením spusťte `npm ci`, `npm test` a `npm audit --omit=dev`. Vizuální a produkční výsledky jsou v dokončeném auditním reportu.

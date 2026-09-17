@@ -1,4 +1,5 @@
 import express from "express";
+import {createRateLimiter} from "./security.js";
 import http from "http";
 import PDFDocument from "pdfkit";
 import fs from "fs";
@@ -98,12 +99,22 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+function safeRoute(handler) {return(req,res,next)=>Promise.resolve(handler(req,res,next)).catch(next);}
 export const app = express();
-app.use(express.json({ limit: "2mb" }));
+app.disable('x-powered-by');
+app.set('trust proxy',Math.max(0,Math.min(5,Number(process.env.TRUST_PROXY_HOPS ?? 1)||0)));
+app.use(express.json({limit:'2mb'}));
+app.use((req,res,next)=>{
+  res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','strict-origin-when-cross-origin');
+  if(['POST','PUT','PATCH','DELETE'].includes(req.method)&&req.headers.origin){
+    try {if(new URL(req.headers.origin).host!==req.headers.host)return res.status(403).json({ok:false,error:'forbidden_origin'});}catch{return res.status(403).json({ok:false,error:'forbidden_origin'});}
+  }
+  next();
+});
 let rssWorker = null;
 
 // ---------------- CONFIG ----------------
-const API_KEY = process.env.API_KEY || "JPO_KEY_123456";
+const API_KEY = process.env.API_KEY || "";
 const GEOCODE_UA = process.env.GEOCODE_UA || "firewatchcz/1.0 (contact: admin@firewatchcz.local)";
 
 // omez geo na Středočeský kraj (bounding box)
@@ -125,13 +136,9 @@ const SESSION_TTL_SECONDS = Math.max(300, Number(process.env.SESSION_TTL_SECONDS
 const LOGIN_MAX_ATTEMPTS = Math.max(3, Number(process.env.LOGIN_MAX_ATTEMPTS || 8));
 const LOGIN_WINDOW_MS = Math.max(60_000, Number(process.env.LOGIN_WINDOW_MS || 10 * 60_000));
 
-// In-memory rate limiter for login (good enough for single-instance Railway)
-const loginAttempts = new Map(); // key: ip, value: { count, firstTs }
-
-function getClientIp(req) {
-  const xf = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
-  return xf || req.socket?.remoteAddress || "";
-}
+const loginLimiter=createRateLimiter({max:LOGIN_MAX_ATTEMPTS,windowMs:LOGIN_WINDOW_MS});
+const registerLimiter=createRateLimiter({max:5,windowMs:LOGIN_WINDOW_MS});
+function getClientIp(req) {return req.ip || req.socket?.remoteAddress || '';}
 
 function parseCookies(req) {
   const h = String(req.headers.cookie || "");
@@ -141,7 +148,7 @@ function parseCookies(req) {
     if (i < 0) return;
     const k = pair.substring(0, i).trim();
     const v = pair.substring(i + 1).trim();
-    out[k] = decodeURIComponent(v);
+    try {out[k]=decodeURIComponent(v);} catch {}
   });
   return out;
 }
@@ -264,7 +271,9 @@ function requireAdmin(req, res, next) {
 // ---------------- AUTH (ESP ingest key) ----------------
 function requireKey(req, res, next) {
   const key = req.header("X-API-Key") || "";
-  if (key !== API_KEY) return res.status(401).json({ ok: false, error: "bad key" });
+  if(!API_KEY)return res.status(503).json({ok:false,error:'ingest_not_configured'});
+  const expected=crypto.createHash('sha256').update(API_KEY).digest(),supplied=crypto.createHash('sha256').update(String(key)).digest();
+  if(!crypto.timingSafeEqual(expected,supplied))return res.status(401).json({ok:false,error:'bad key'});
   next();
 }
 
@@ -830,6 +839,7 @@ function parseFilters(req) {
   const status = String(req.query.status || "all").trim();
   const day = String(req.query.day || "all").trim();
   const month = String(req.query.month || "").trim();
+  if(types.length>10||types.some(value=>value.length>64)||city.length>120||!['all','open','closed'].includes(status)||!['all','today','yesterday'].includes(day)|| (month && (!/^\d{4}-\d{2}$/.test(month)||Number(month.slice(5))<1||Number(month.slice(5))>12))) {const error=new Error('bad_filters');error.status=400;throw error;}
   return { types, city, status, day, month };
 }
 
@@ -2225,12 +2235,12 @@ function buildRegionalWeatherSummary(zones) {
 
 async function buildRegionalWeatherPayload(days = 30) {
   const now = new Date();
-  const endIso = now.toISOString().slice(0, 10);
-  const start = new Date(now);
-  start.setUTCDate(start.getUTCDate() - days);
+  const endIso=todayPragueISO();
+  const start=new Date(endIso+"T00:00:00Z");
+  start.setUTCDate(start.getUTCDate() - days + 1);
   const startIso = start.toISOString().slice(0, 10);
 
-  const events = await getEventsForPeriod(startIso, endIso);
+  const events = await getEventsForPeriod(startIso, new Date(new Date(endIso+"T00:00:00Z").getTime()+86400000).toISOString().slice(0,10));
   const eventAggMap = aggregateRegionalEvents(events);
 
   const zonePayloads = [];
@@ -2268,33 +2278,20 @@ app.use(express.static(path.join(__dirname, "public")));
 // ---------------- ROUTES ----------------
 
 // --- auth ---
-app.get("/api/auth/me", async (req, res) => {
+app.get("/api/auth/me", safeRoute(async (req, res) => {
   const auth = await authFromRequest(req);
   if (!auth?.user) return res.json({ ok: true, user: null });
   return res.json({ ok: true, user: auth.user, expires_in_s: SESSION_TTL_SECONDS });
-});
-
-app.post("/api/auth/login", async (req, res) => {
+}));
+app.post("/api/auth/login", loginLimiter, safeRoute(async (req, res) => {
   try {
     await deleteExpiredSessions();
 
-    const ip = getClientIp(req);
-    const key = ip || "unknown";
-    const now = Date.now();
-    const row = loginAttempts.get(key) || { count: 0, firstTs: now };
-    if (now - row.firstTs > LOGIN_WINDOW_MS) {
-      row.count = 0;
-      row.firstTs = now;
-    }
-    row.count += 1;
-    loginAttempts.set(key, row);
-    if (row.count > LOGIN_MAX_ATTEMPTS) {
-      return res.status(429).json({ ok: false, error: "too_many_attempts" });
-    }
+    const ip=getClientIp(req);
 
     const username = String(req.body?.username || "").trim();
     const password = String(req.body?.password || "");
-    if (username.length < 2 || password.length < 4) {
+    if (username.length < 2 || username.length>32 || password.length < 4 || password.length>128) {
       return res.status(400).json({ ok: false, error: "bad_request" });
     }
 
@@ -2320,18 +2317,17 @@ app.post("/api/auth/login", async (req, res) => {
     setSessionCookie(res, token, req);
     return res.json({ ok: true, user: { id: u.id, username: u.username, role: u.role }, expires_at: expiresAt });
   } catch (e) {
-    console.error(e);
+    console.error(e.code || "operation_failed");
     return res.status(500).json({ ok: false, error: "server_error" });
   }
-});
-
+}));
 
 // ---------------- AUTH: Registration + OPS request ----------------
 function isValidUsername(u) {
   return /^[A-Za-z0-9._-]{3,32}$/.test(String(u || ""));
 }
 
-app.post("/api/auth/register", async (req, res) => {
+app.post("/api/auth/register", registerLimiter, safeRoute(async (req, res) => {
   try {
     await deleteExpiredSessions();
 
@@ -2342,7 +2338,7 @@ app.post("/api/auth/register", async (req, res) => {
     if (!isValidUsername(username)) {
       return res.status(400).json({ ok: false, error: "bad_username" });
     }
-    if (password.length < 6) {
+    if (password.length < 6 || password.length>128) {
       return res.status(400).json({ ok: false, error: "bad_password" });
     }
 
@@ -2369,12 +2365,11 @@ app.post("/api/auth/register", async (req, res) => {
     setSessionCookie(res, token, req);
     return res.json({ ok: true, user: { id: u.id, username: u.username, role: "public" }, request_ops: requestOps });
   } catch (e) {
-    console.error(e);
+    console.error(e.code || "operation_failed");
     return res.status(500).json({ ok: false, error: "server_error" });
   }
-});
-
-app.post("/api/auth/request-ops", requireAuthAny, async (req, res) => {
+}));
+app.post("/api/auth/request-ops", requireAuthAny, safeRoute(async (req, res) => {
   try {
     if (String(req.auth?.user?.role) !== "public") {
       return res.status(400).json({ ok: false, error: "not_public" });
@@ -2382,23 +2377,21 @@ app.post("/api/auth/request-ops", requireAuthAny, async (req, res) => {
     const created = await createOpsRequest(req.auth.user.id);
     return res.json({ ok: true, created: !!created });
   } catch (e) {
-    console.error(e);
+    console.error(e.code || "operation_failed");
     return res.status(500).json({ ok: false, error: "server_error" });
   }
-});
-
-app.get("/api/admin/ops-requests", requireAdmin, async (req, res) => {
+}));
+app.get("/api/admin/ops-requests", requireAdmin, safeRoute(async (req, res) => {
   try {
     const limit = Math.max(1, Math.min(200, Number(req.query?.limit || 50)));
     const rows = await listPendingOpsRequests(limit);
     return res.json({ ok: true, rows });
   } catch (e) {
-    console.error(e);
+    console.error(e.code || "operation_failed");
     return res.status(500).json({ ok: false, error: "server_error" });
   }
-});
-
-app.post("/api/admin/ops-requests/:id/approve", requireAdmin, async (req, res) => {
+}));
+app.post("/api/admin/ops-requests/:id/approve", requireAdmin, safeRoute(async (req, res) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: "bad_id" });
@@ -2407,12 +2400,11 @@ app.post("/api/admin/ops-requests/:id/approve", requireAdmin, async (req, res) =
     await insertAudit({ userId: req.auth.user.id, action: "ops_request_approved", details: JSON.stringify({ request_id: id, user_id: out.user_id }) });
     return res.json({ ok: true });
   } catch (e) {
-    console.error(e);
+    console.error(e.code || "operation_failed");
     return res.status(500).json({ ok: false, error: "server_error" });
   }
-});
-
-app.post("/api/admin/ops-requests/:id/reject", requireAdmin, async (req, res) => {
+}));
+app.post("/api/admin/ops-requests/:id/reject", requireAdmin, safeRoute(async (req, res) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: "bad_id" });
@@ -2421,14 +2413,13 @@ app.post("/api/admin/ops-requests/:id/reject", requireAdmin, async (req, res) =>
     await insertAudit({ userId: req.auth.user.id, action: "ops_request_rejected", details: JSON.stringify({ request_id: id, user_id: out.user_id }) });
     return res.json({ ok: true });
   } catch (e) {
-    console.error(e);
+    console.error(e.code || "operation_failed");
     return res.status(500).json({ ok: false, error: "server_error" });
   }
-});
+}));
 
 
-
-app.get("/api/admin/geocode-suggestions/:id", requireAdmin, async (req, res) => {
+app.get("/api/admin/geocode-suggestions/:id", requireAdmin, safeRoute(async (req, res) => {
   try {
     const ev = await getEventById(req.params.id);
     if (!ev) return res.status(404).json({ ok: false, error: "not_found" });
@@ -2470,12 +2461,11 @@ app.get("/api/admin/geocode-suggestions/:id", requireAdmin, async (req, res) => 
 
     return res.json({ ok: true, event: ev, suggestions: out.slice(0, 10) });
   } catch (e) {
-    console.error(e);
+    console.error(e.code || "operation_failed");
     return res.status(500).json({ ok: false, error: "suggestions_failed" });
   }
-});
-
-app.post("/api/admin/events/:id/coords", requireAdmin, async (req, res) => {
+}));
+app.post("/api/admin/events/:id/coords", requireAdmin, safeRoute(async (req, res) => {
   try {
     const lat = Number(req.body?.lat);
     const lon = Number(req.body?.lon);
@@ -2498,23 +2488,21 @@ app.post("/api/admin/events/:id/coords", requireAdmin, async (req, res) => {
 
     return res.json({ ok: true });
   } catch (e) {
-    console.error(e);
+    console.error(e.code || "operation_failed");
     return res.status(500).json({ ok: false, error: "coords_update_failed" });
   }
-});
-
-app.get("/api/admin/events-with-coords", requireAdmin, async (req, res) => {
+}));
+app.get("/api/admin/events-with-coords", requireAdmin, safeRoute(async (req, res) => {
   try {
     const rows = await listEventsWithCoords(Number(req.query.limit || 100));
     return res.json({ ok: true, items: rows });
   } catch (e) {
-    console.error(e);
+    console.error(e.code || "operation_failed");
     return res.status(500).json({ ok: false, error: "coords_list_failed" });
   }
-});
+}));
 
-
-app.post("/api/admin/geocode-missing", requireAdmin, async (req, res) => {
+app.post("/api/admin/geocode-missing", requireAdmin, safeRoute(async (req, res) => {
   try {
     const limit = Math.max(1, Math.min(30, Number(req.body?.limit || req.query?.limit || 10)));
     const rows = await getEventsMissingCoords(limit, req.query?.day || req.body?.day || "today");
@@ -2575,26 +2563,24 @@ app.post("/api/admin/geocode-missing", requireAdmin, async (req, res) => {
 
     return res.json({ ok: true, checked, fixed, results });
   } catch (e) {
-    console.error(e);
+    console.error(e.code || "operation_failed");
     return res.status(500).json({ ok: false, error: "geocode_missing_failed" });
   }
-});
-
+}));
 
 // ---------------- ADMIN: Missing coordinates management ----------------
-app.get("/api/admin/events-missing-coords", requireAdmin, async (req, res) => {
+app.get("/api/admin/events-missing-coords", requireAdmin, safeRoute(async (req, res) => {
   try {
     const limit = Math.max(1, Math.min(200, Number(req.query?.limit || 50)));
     const day = String(req.query?.day || "today");
     const rows = await getEventsMissingCoords(limit, day);
     return res.json({ ok: true, rows, day });
   } catch (e) {
-    console.error(e);
+    console.error(e.code || "operation_failed");
     return res.status(500).json({ ok: false, error: "server_error" });
   }
-});
-
-app.put("/api/admin/events/:id/coords", requireAdmin, async (req, res) => {
+}));
+app.put("/api/admin/events/:id/coords", requireAdmin, safeRoute(async (req, res) => {
   try {
     const id = String(req.params.id || "").trim();
     const lat = Number(req.body?.lat);
@@ -2607,12 +2593,11 @@ app.put("/api/admin/events/:id/coords", requireAdmin, async (req, res) => {
     await insertAudit({ userId: req.auth.user.id, action: "event_coords_set", details: JSON.stringify({ event_id: id, lat, lon }) });
     return res.json({ ok: true });
   } catch (e) {
-    console.error(e);
+    console.error(e.code || "operation_failed");
     return res.status(500).json({ ok: false, error: "server_error" });
   }
-});
-
-app.delete("/api/admin/events/:id/coords", requireAdmin, async (req, res) => {
+}));
+app.delete("/api/admin/events/:id/coords", requireAdmin, safeRoute(async (req, res) => {
   try {
     const id = String(req.params.id || "").trim();
     if (!id) return res.status(400).json({ ok: false, error: "bad_id" });
@@ -2620,12 +2605,11 @@ app.delete("/api/admin/events/:id/coords", requireAdmin, async (req, res) => {
     await insertAudit({ userId: req.auth.user.id, action: "event_coords_cleared", details: JSON.stringify({ event_id: id }) });
     return res.json({ ok: true });
   } catch (e) {
-    console.error(e);
+    console.error(e.code || "operation_failed");
     return res.status(500).json({ ok: false, error: "server_error" });
   }
-});
-
-app.post("/api/auth/logout", async (req, res) => {
+}));
+app.post("/api/auth/logout", safeRoute(async (req, res) => {
   try {
     const cookies = parseCookies(req);
     const token = cookies[SESSION_COOKIE];
@@ -2639,15 +2623,13 @@ app.post("/api/auth/logout", async (req, res) => {
     clearSessionCookie(res, req);
     return res.json({ ok: true });
   }
-});
-
+}));
 // --- admin: users ---
-app.get("/api/admin/users", requireAdmin, async (req, res) => {
+app.get("/api/admin/users", requireAdmin, safeRoute(async (req, res) => {
   const users = await listUsers(300);
   res.json({ ok: true, users });
-});
-
-app.post("/api/admin/users", requireAdmin, async (req, res) => {
+}));
+app.post("/api/admin/users", requireAdmin, safeRoute(async (req, res) => {
   try {
     const username = String(req.body?.username || "").trim();
     const password = String(req.body?.password || "");
@@ -2674,12 +2656,11 @@ app.post("/api/admin/users", requireAdmin, async (req, res) => {
     if (msg.includes("duplicate") || msg.includes("unique")) {
       return res.status(409).json({ ok: false, error: "username_taken" });
     }
-    console.error(e);
+    console.error(e.code || "operation_failed");
     return res.status(500).json({ ok: false, error: "server_error" });
   }
-});
-
-app.patch("/api/admin/users/:id", requireAdmin, async (req, res) => {
+}));
+app.patch("/api/admin/users/:id", requireAdmin, safeRoute(async (req, res) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ ok: false, error: "bad_id" });
@@ -2708,11 +2689,10 @@ app.patch("/api/admin/users/:id", requireAdmin, async (req, res) => {
     await insertAudit({ userId: req.auth.user.id, username: req.auth.user.username, action: "user_update", details: `${updated.username}`, ip: getClientIp(req) });
     return res.json({ ok: true, user: updated });
   } catch (e) {
-    console.error(e);
+    console.error(e.code || "operation_failed");
     return res.status(500).json({ ok: false, error: "server_error" });
   }
-});
-
+}));
 
 // ======================
 // FireWatchCZ Web v2.2 – Významné události / stupeň poplachu
@@ -2954,7 +2934,8 @@ function publicSafeManualSourceNote() {
 // ingest (data z ESP)
 async function handleIngest(req, res) {
   try {
-    const { source, items } = req.body || {};
+    const { items } = req.body || {};
+    const source=String(req.body?.source || "unknown").slice(0,80);
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ ok: false, error: "items missing" });
     }
@@ -2967,6 +2948,7 @@ async function handleIngest(req, res) {
     for (const item of items) {
       if (!item || typeof item.id !== "string" || item.id.length > 512 || !item.id.trim()
           || typeof item.title !== "string" || !item.title.trim() || item.title.length > 2000
+          || [item.descriptionRaw,item.descRaw,item.description].some(value=>value!=null&&(typeof value!=="string"||value.length>65536))
           || typeof item.link !== "string" || item.link.length > 4096 || !/^https?:\/\//i.test(item.link)) { skippedInvalid++; continue; }
       uniqueItems.set(item.id, item);
     }
@@ -3151,13 +3133,13 @@ if (!isClosed) {
       skipped_older: skippedOlder
     });
   } catch (e) {
-    console.error(e);
+    console.error(e.code || "operation_failed");
     try {
       await insertIngestLog({
-        source: req.body?.source || "unknown",
+        source: String(req.body?.source || "unknown").slice(0,80),
         sourceKind: ["server_rss_worker", "github_actions_rss", "github_actions_rss2json"].includes(req.body?.source) ? "rss" : "esp",
         receivedCount: Array.isArray(req.body?.items) ? req.body.items.length : 0,
-        errorText: e?.message || String(e),
+        errorText: "ingest_failed",
         ip: getClientIp(req),
         userAgent: req.get("user-agent") || null
       });
@@ -3208,7 +3190,7 @@ function computeManualDurationMin(startIso, endIso, isClosed) {
 
 // ---------------- MAJOR EVENTS BACKFILL ----------------
 
-app.post("/api/admin/recheck-event-statuses", requireAdmin, async (req, res) => {
+app.post("/api/admin/recheck-event-statuses", requireAdmin, safeRoute(async (req, res) => {
   try {
     const limit = Math.max(1, Math.min(Number(req.body?.limit || req.query?.limit || 5000), 20000));
     const rows = await listEventsForMajorBackfill(limit);
@@ -3254,13 +3236,12 @@ app.post("/api/admin/recheck-event-statuses", requireAdmin, async (req, res) => 
 
     return res.json({ ok: true, scanned, changed, reopened, closed });
   } catch (e) {
-    console.error("[recheck-event-statuses]", e);
-    return res.status(500).json({ ok: false, error: "recheck_event_statuses_failed", detail: String(e?.message || e) });
+    console.error("[recheck-event-statuses]", e.code || "operation_failed");
+    return res.status(500).json({ ok: false, error: "recheck_event_statuses_failed" });
   }
-});
+}));
 
-
-app.post("/api/admin/major-events/backfill", requireAdmin, async (req, res) => {
+app.post("/api/admin/major-events/backfill", requireAdmin, safeRoute(async (req, res) => {
   try {
     const limit = Math.max(1, Math.min(Number(req.body?.limit || req.query?.limit || 5000), 20000));
     const rows = await listEventsForMajorBackfill(limit);
@@ -3351,27 +3332,25 @@ app.post("/api/admin/major-events/backfill", requireAdmin, async (req, res) => {
       examples
     });
   } catch (e) {
-    console.error("[major-events-backfill]", e);
-    return res.status(500).json({ ok: false, error: "major_events_backfill_failed", detail: String(e?.message || e) });
+    console.error("[major-events-backfill]", e.code || "operation_failed");
+    return res.status(500).json({ ok: false, error: "major_events_backfill_failed" });
   }
-});
-
-app.get("/api/admin/major-events", requireAdmin, async (req, res) => {
+}));
+app.get("/api/admin/major-events", requireAdmin, safeRoute(async (req, res) => {
   try {
     const limit = Math.max(1, Math.min(Number(req.query?.limit || 50), 200));
     const rows = await getMajorEventsSummary(limit);
     return res.json({ ok: true, items: rows });
   } catch (e) {
-    console.error("[major-events-list]", e);
-    return res.status(500).json({ ok: false, error: "major_events_list_failed", detail: String(e?.message || e) });
+    console.error("[major-events-list]", e.code || "operation_failed");
+    return res.status(500).json({ ok: false, error: "major_events_list_failed" });
   }
-});
+}));
 
 
 
 
-
-app.post("/api/admin/repair-closed-times", requireAdmin, async (req, res) => {
+app.post("/api/admin/repair-closed-times", requireAdmin, safeRoute(async (req, res) => {
   try {
     const rows = await repairClosedEventsMissingEndTime({ limit: Number(req.body?.limit || req.query?.limit || 1000) });
     await insertAudit({
@@ -3383,16 +3362,15 @@ app.post("/api/admin/repair-closed-times", requireAdmin, async (req, res) => {
     });
     return res.json({ ok: true, repaired: rows.length, rows });
   } catch (e) {
-    console.error("[repair-closed-times]", e);
-    return res.status(500).json({ ok: false, error: "repair_closed_times_failed", detail: String(e?.message || e) });
+    console.error("[repair-closed-times]", e.code || "operation_failed");
+    return res.status(500).json({ ok: false, error: "repair_closed_times_failed" });
   }
-});
+}));
 
 
 
 
-
-app.post("/api/admin/clear-observed-durations", requireAdmin, async (req, res) => {
+app.post("/api/admin/clear-observed-durations", requireAdmin, safeRoute(async (req, res) => {
   try {
     const rows = await clearObservedDurations({
       limit: Number(req.body?.limit || req.query?.limit || 10000)
@@ -3408,13 +3386,12 @@ app.post("/api/admin/clear-observed-durations", requireAdmin, async (req, res) =
 
     return res.json({ ok: true, cleared: rows.length, rows });
   } catch (e) {
-    console.error("[clear-observed-durations]", e);
-    return res.status(500).json({ ok: false, error: "clear_observed_durations_failed", detail: String(e?.message || e) });
+    console.error("[clear-observed-durations]", e.code || "operation_failed");
+    return res.status(500).json({ ok: false, error: "clear_observed_durations_failed" });
   }
-});
+}));
 
-
-app.post("/api/admin/recompute-observed-durations", requireAdmin, async (req, res) => {
+app.post("/api/admin/recompute-observed-durations", requireAdmin, safeRoute(async (req, res) => {
   try {
     const rows = await recomputeObservedDurationsForClosedEvents({
       limit: Number(req.body?.limit || req.query?.limit || 1000)
@@ -3430,13 +3407,12 @@ app.post("/api/admin/recompute-observed-durations", requireAdmin, async (req, re
 
     return res.json({ ok: true, recomputed: rows.length, rows });
   } catch (e) {
-    console.error("[recompute-observed-durations]", e);
-    return res.status(500).json({ ok: false, error: "recompute_observed_durations_failed", detail: String(e?.message || e) });
+    console.error("[recompute-observed-durations]", e.code || "operation_failed");
+    return res.status(500).json({ ok: false, error: "recompute_observed_durations_failed" });
   }
-});
+}));
 
-
-app.post("/api/admin/clear-bogus-durations", requireAdmin, async (req, res) => {
+app.post("/api/admin/clear-bogus-durations", requireAdmin, safeRoute(async (req, res) => {
   try {
     const rows = await clearEstimatedDurationsForAlreadyClosedEvents({
       maxMinutes: Number(req.body?.maxMinutes || req.query?.maxMinutes || 20)
@@ -3452,25 +3428,23 @@ app.post("/api/admin/clear-bogus-durations", requireAdmin, async (req, res) => {
 
     return res.json({ ok: true, cleared: rows.length, rows });
   } catch (e) {
-    console.error("[clear-bogus-durations]", e);
-    return res.status(500).json({ ok: false, error: "clear_bogus_durations_failed", detail: String(e?.message || e) });
+    console.error("[clear-bogus-durations]", e.code || "operation_failed");
+    return res.status(500).json({ ok: false, error: "clear_bogus_durations_failed" });
   }
-});
-
+}));
 
 // ---------------- OWN EVENT DETAIL / MANUAL NOTES ----------------
-app.get("/api/events/:id/detail", async (req, res) => {
+app.get("/api/events/:id/detail", safeRoute(async (req, res) => {
   try {
     const row = await getEventDetailById(req.params.id);
     if (!row) return res.status(404).json({ ok: false, error: "event_not_found" });
     return res.json({ ok: true, event: row });
   } catch (e) {
-    console.error("[event-detail-get]", e);
-    return res.status(500).json({ ok: false, error: "event_detail_get_failed", detail: String(e?.message || e) });
+    console.error("[event-detail-get]", e.code || "operation_failed");
+    return res.status(500).json({ ok: false, error: "event_detail_get_failed" });
   }
-});
-
-app.post("/api/admin/events/:id/detail", requireAdmin, async (req, res) => {
+}));
+app.post("/api/admin/events/:id/detail", requireAdmin, safeRoute(async (req, res) => {
   try {
     const updated = await updateEventManualDetail(req.params.id, {
       manualDetailText: req.body?.manualDetailText || "",
@@ -3489,15 +3463,14 @@ app.post("/api/admin/events/:id/detail", requireAdmin, async (req, res) => {
 
     return res.json({ ok: true, event: updated });
   } catch (e) {
-    console.error("[event-detail-save]", e);
-    return res.status(500).json({ ok: false, error: "event_detail_save_failed", detail: String(e?.message || e) });
+    console.error("[event-detail-save]", e.code || "operation_failed");
+    return res.status(500).json({ ok: false, error: "event_detail_save_failed" });
   }
-});
-
+}));
 
 
 // ---------------- MANUAL EVENT CREATE + INGEST DIAGNOSTICS ----------------
-app.post("/api/admin/events/manual-create", requireAdmin, async (req, res) => {
+app.post("/api/admin/events/manual-create", requireAdmin, safeRoute(async (req, res) => {
   try {
     const title = String(req.body?.title || "").trim();
     if (!title) return res.status(400).json({ ok: false, error: "title_required" });
@@ -3587,30 +3560,28 @@ app.post("/api/admin/events/manual-create", requireAdmin, async (req, res) => {
 
     return res.json({ ok: true, id });
   } catch (e) {
-    console.error("[manual-event-create]", e);
+    console.error("[manual-event-create]", e.code || "operation_failed");
     return res.status(e.statusCode || 500).json({
       ok: false,
       error: e?.message || "manual_event_create_failed"
     });
   }
-});
-
-app.get("/api/admin/ingest-diagnostics", requireAdmin, async (req, res) => {
+}));
+app.get("/api/admin/ingest-diagnostics", requireAdmin, safeRoute(async (req, res) => {
   try {
     const data = await getIngestDiagnostics({ limit: Number(req.query?.limit || 20) });
     return res.json({ ok: true, ...data, rssWorker: rssWorker?.getState() || { enabled: readRssConfig().enabled, running: false } });
   } catch (e) {
-    console.error("[ingest-diagnostics]", e);
-    return res.status(500).json({ ok: false, error: "ingest_diagnostics_failed", detail: String(e?.message || e) });
+    console.error("[ingest-diagnostics]", e.code || "operation_failed");
+    return res.status(500).json({ ok: false, error: "ingest_diagnostics_failed" });
   }
-});
-
+}));
 app.post("/api/admin/rss-test", requireAdmin, async (_req, res) => {
   const result = await testRssConnection(readRssConfig());
   return res.status(result.success ? 200 : 502).json({ ok: result.success, ...result });
 });
 
-app.get("/api/admin/events/search", requireAdmin, async (req, res) => {
+app.get("/api/admin/events/search", requireAdmin, safeRoute(async (req, res) => {
   try {
     const items = await searchEventsAdmin({
       q: req.query?.q || "",
@@ -3629,25 +3600,23 @@ app.get("/api/admin/events/search", requireAdmin, async (req, res) => {
 
     return res.json({ ok: true, items });
   } catch (e) {
-    console.error("[admin-events-search]", e);
-    return res.status(500).json({ ok: false, error: "admin_events_search_failed", detail: String(e?.message || e) });
+    console.error("[admin-events-search]", e.code || "operation_failed");
+    return res.status(500).json({ ok: false, error: "admin_events_search_failed" });
   }
-});
-
+}));
 
 // ---------------- MANUAL EVENT EDIT ----------------
-app.get("/api/admin/events/:id/manual", requireAdmin, async (req, res) => {
+app.get("/api/admin/events/:id/manual", requireAdmin, safeRoute(async (req, res) => {
   try {
     const row = await getEventForManualEdit(req.params.id);
     if (!row) return res.status(404).json({ ok: false, error: "event_not_found" });
     return res.json({ ok: true, event: row });
   } catch (e) {
-    console.error("[manual-event-get]", e);
-    return res.status(500).json({ ok: false, error: "manual_event_get_failed", detail: String(e?.message || e) });
+    console.error("[manual-event-get]", e.code || "operation_failed");
+    return res.status(500).json({ ok: false, error: "manual_event_get_failed" });
   }
-});
-
-app.post("/api/admin/events/:id/manual", requireAdmin, async (req, res) => {
+}));
+app.post("/api/admin/events/:id/manual", requireAdmin, safeRoute(async (req, res) => {
   try {
     const current = await getEventForManualEdit(req.params.id);
     if (!current) return res.status(404).json({ ok: false, error: "event_not_found" });
@@ -3721,16 +3690,15 @@ app.post("/api/admin/events/:id/manual", requireAdmin, async (req, res) => {
     const updated = await getEventForManualEdit(req.params.id);
     return res.json({ ok: true, event: updated });
   } catch (e) {
-    console.error("[manual-event-post]", e);
-    return res.status(500).json({ ok: false, error: "manual_event_update_failed", detail: String(e?.message || e) });
+    console.error("[manual-event-post]", e.code || "operation_failed");
+    return res.status(500).json({ ok: false, error: "manual_event_update_failed" });
   }
-});
-
+}));
 
 // ---------------- VISITS (no cookies, no identifiers; admin-only viewing) ----------------
 
 // ---------------- SETTINGS ----------------
-app.get("/api/settings", async (req, res) => {
+app.get("/api/settings", safeRoute(async (req, res) => {
   try {
     const v = await getSetting("default_shift_mode");
     const mode = (v === "HZSP" || v === "HZS") ? v : "HZS";
@@ -3738,9 +3706,8 @@ app.get("/api/settings", async (req, res) => {
   } catch (e) {
     return res.status(500).json({ ok: false, error: "settings_failed" });
   }
-});
-
-app.get("/api/admin/settings", requireAdmin, async (req, res) => {
+}));
+app.get("/api/admin/settings", requireAdmin, safeRoute(async (req, res) => {
   try {
     const v = await getSetting("default_shift_mode");
     const mode = (v === "HZSP" || v === "HZS") ? v : "HZS";
@@ -3748,9 +3715,8 @@ app.get("/api/admin/settings", requireAdmin, async (req, res) => {
   } catch (e) {
     return res.status(500).json({ ok: false, error: "settings_failed" });
   }
-});
-
-app.put("/api/admin/settings", requireAdmin, async (req, res) => {
+}));
+app.put("/api/admin/settings", requireAdmin, safeRoute(async (req, res) => {
   try {
     const mode = String(req.body?.default_shift_mode || "").toUpperCase();
     if (mode !== "HZS" && mode !== "HZSP") {
@@ -3764,9 +3730,8 @@ app.put("/api/admin/settings", requireAdmin, async (req, res) => {
   } catch (e) {
     return res.status(500).json({ ok: false, error: "save_failed" });
   }
-});
-
-app.post("/api/visit", async (req, res) => {
+}));
+app.post("/api/visit", safeRoute(async (req, res) => {
   try {
     const auth = await authFromRequest(req);
     const role = String(auth?.user?.role || "");
@@ -3776,9 +3741,8 @@ app.post("/api/visit", async (req, res) => {
   } catch (e) {
     return res.json({ ok: true }); // fail-open; never break UI
   }
-});
-
-app.get("/api/admin/visits/stats", requireAdmin, async (req, res) => {
+}));
+app.get("/api/admin/visits/stats", requireAdmin, safeRoute(async (req, res) => {
   const stats30 = await getVisitStats(30);
 
   const sumDays = (n) => {
@@ -3801,8 +3765,7 @@ app.get("/api/admin/visits/stats", requireAdmin, async (req, res) => {
   const last30 = sumDays(30);
 
   return res.json({ ok: true, today, last7, last30 });
-});
-
+}));
 
 // events (filters) + backfill coords + backfill duration
 app.get('/api/events', async (req,res) => {
@@ -3812,7 +3775,7 @@ app.get('/api/events', async (req,res) => {
     const limit=Math.min(Number(raw),2000),filters=parseFilters(req);
     const [rows,totalMatching,dataStatus]=await Promise.all([getEventsFiltered(filters,limit),countEventsFiltered(filters),getPublicDataStatus()]);
     res.json({ok:true,filters,limit,total_matching:totalMatching,backfilled_coords:0,backfilled_durations:0,data_status:dataStatus,items:rows});
-  }catch(e){console.error('[events]',e.code||'database_error');res.status(500).json({ok:false,error:'events_failed'});}
+  }catch(e){if(e.status!==400)console.error('[events]',e.code||'database_error');res.status(e.status===400?400:500).json({ok:false,error:e.status===400?'bad_filters':'events_failed'});}
 });
 // Statistics retain the existing 30-day scope, independent of the day selector.
 app.get('/api/stats',async(req,res)=>{
@@ -3820,11 +3783,11 @@ app.get('/api/stats',async(req,res)=>{
     const filters=parseFilters(req),statsFilters={...filters,day:'all'};
     const stats=await getStatsFiltered(statsFilters);
     res.json({ok:true,filters:statsFilters,...stats,openCount:stats?.openVsClosed?.open??0,closedCount:stats?.openVsClosed?.closed??0});
-  }catch(e){console.error('[stats]',e.code||'database_error');res.status(500).json({ok:false,error:'stats_failed'});}
+  }catch(e){if(e.status!==400)console.error('[stats]',e.code||'database_error');res.status(e.status===400?400:500).json({ok:false,error:e.status===400?'bad_filters':'stats_failed'});}
 });
 
 // export CSV
-app.get("/api/export.csv", async (req, res) => {
+app.get("/api/export.csv", safeRoute(async (req, res) => {
   const filters = parseFilters(req);
   const limit = Math.min(Number(req.query.limit || 2000), 5000);
 
@@ -3855,8 +3818,7 @@ app.get("/api/export.csv", async (req, res) => {
   }
 
   res.send(out.join("\n"));
-});
-
+}));
 
 // export PDF
 function tryApplyPdfFont(doc) {
@@ -3879,7 +3841,7 @@ function tryApplyPdfFont(doc) {
   }
 }
 
-app.get("/api/export.pdf", async (req, res) => {
+app.get("/api/export.pdf", safeRoute(async (req, res) => {
   const filters = parseFilters(req);
   const limit = Math.min(Number(req.query.limit || 800), 2000);
 
@@ -3971,10 +3933,9 @@ app.get("/api/export.pdf", async (req, res) => {
   }
 
   doc.end();
-});
-
+}));
 // admin: geocode cache purge + re-geocode (ponecháno na API key)
-app.post("/api/admin/fix-geocode", requireKey, async (req, res) => {
+app.post("/api/admin/fix-geocode", requireAdmin, safeRoute(async (req, res) => {
   try {
     const mode = String(req.body?.mode || "preview");
     const bad = await getEventsOutsideCz(300);
@@ -4014,27 +3975,25 @@ app.post("/api/admin/fix-geocode", requireKey, async (req, res) => {
       failed
     });
   } catch (e) {
-    console.error(e);
+    console.error(e.code || "operation_failed");
     res.status(500).json({ ok: false, error: "server error" });
   }
-});
-
+}));
 
 // Archived reports API
 
 
-app.get("/api/weather/regions/anomalies", async (req, res) => {
+app.get("/api/weather/regions/anomalies", safeRoute(async (req, res) => {
   try {
     const days = Math.max(7, Math.min(Number(req.query.days || 30), 31));
     const data = await buildRegionalWeatherPayload(days);
     res.json({ ok: true, weather: data });
   } catch (e) {
-    console.error("[regional-weather]", e);
-    res.status(500).json({ ok: false, error: "regional_weather_failed", detail: String(e?.message || e) });
+    console.error("[regional-weather]", e.code || "operation_failed");
+    res.status(500).json({ ok: false, error: "regional_weather_failed" });
   }
-});
-
-app.get("/api/weather/regions/:zoneId", async (req, res) => {
+}));
+app.get("/api/weather/regions/:zoneId", safeRoute(async (req, res) => {
   try {
     const days = Math.max(7, Math.min(Number(req.query.days || 30), 31));
     const data = await buildRegionalWeatherPayload(days);
@@ -4042,13 +4001,12 @@ app.get("/api/weather/regions/:zoneId", async (req, res) => {
     if (!zone) return res.status(404).json({ ok: false, error: "zone_not_found" });
     res.json({ ok: true, zone, summary: data.summary, period: data.period, source: data.source });
   } catch (e) {
-    console.error("[regional-weather-detail]", e);
-    res.status(500).json({ ok: false, error: "regional_weather_detail_failed", detail: String(e?.message || e) });
+    console.error("[regional-weather-detail]", e.code || "operation_failed");
+    res.status(500).json({ ok: false, error: "regional_weather_detail_failed" });
   }
-});
+}));
 
-
-app.get("/api/stats/pro", async (req, res) => {
+app.get("/api/stats/pro", safeRoute(async (req, res) => {
   try {
     const preset = String(req.query.preset || "month").trim();
     const allowed = new Set(["month", "lastMonth", "week"]);
@@ -4063,13 +4021,12 @@ app.get("/api/stats/pro", async (req, res) => {
     const payload = buildStatsProPayload({ preset: chosen, currentRows, previousRows, range });
     res.json({ ok: true, stats: payload });
   } catch (e) {
-    console.error("[stats-pro]", e);
-    res.status(500).json({ ok: false, error: "stats_pro_failed", detail: String(e?.message || e) });
+    console.error("[stats-pro]", e.code || "operation_failed");
+    res.status(500).json({ ok: false, error: "stats_pro_failed" });
   }
-});
+}));
 
-
-app.get("/api/reports", async (req, res) => {
+app.get("/api/reports", safeRoute(async (req, res) => {
   try {
     const page = await listArchivedReportsPage(req.query);
     res.json({ ok: true, ...page });
@@ -4077,9 +4034,8 @@ app.get("/api/reports", async (req, res) => {
     if(e.statusCode!==400)console.error('[reports]',e.code||'database_error');
     res.status(e.statusCode || 500).json({ ok: false, error: e.statusCode === 400 ? "bad_report_filters" : "reports_list_failed" });
   }
-});
-
-app.post("/api/reports/generate", requireReportAuthor, async (req, res) => {
+}));
+app.post("/api/reports/generate", requireReportAuthor, safeRoute(async (req, res) => {
   try {
     const type = String(req.body?.type || req.query.type || "").trim();
     const key = String(req.body?.key || req.query.key || "").trim();
@@ -4090,21 +4046,19 @@ app.post("/api/reports/generate", requireReportAuthor, async (req, res) => {
   } catch (e) {
     res.status(400).json({ ok: false, error: ['bad_period','bad_period_type','future_period'].includes(e.message) ? e.message : 'report_generate_failed' });
   }
-});
-
-app.post("/api/reports/automation/run", requireReportAuthor, async (req, res) => {
+}));
+app.post("/api/reports/automation/run", requireReportAuthor, safeRoute(async (req, res) => {
   try {
     await runArchivedReportsAutomation("manual");
     const reports = await listArchivedReports({ limit: 20 });
     res.json({ ok: true, reports });
   } catch (e) {
-    console.error(e);
+    console.error(e.code || "operation_failed");
     res.status(500).json({ ok: false, error: "report_automation_failed" });
   }
-});
+}));
 
-
-app.get(/^\/api\/reports\/([^/]+)\/(.+)\.pdf$/, async (req, res) => {
+app.get(/^\/api\/reports\/([^/]+)\/(.+)\.pdf$/, safeRoute(async (req, res) => {
   try {
     const type = decodeURIComponent(req.params[0] || "");
     const key = decodeURIComponent(req.params[1] || "");
@@ -4120,12 +4074,11 @@ app.get(/^\/api\/reports\/([^/]+)\/(.+)\.pdf$/, async (req, res) => {
     drawReportPdf(doc, row);
     doc.end();
   } catch (e) {
-    console.error(e);
-    res.status(500).send("PDF report failed: " + (e?.message || e));
+    console.error(e.code || "operation_failed");
+    res.status(500).send("PDF report failed");
   }
-});
-
-app.get("/api/reports/:type/:key", async (req, res) => {
+}));
+app.get("/api/reports/:type/:key", safeRoute(async (req, res) => {
   try {
     if (String(req.params.key || "").endsWith(".pdf")) {
       return res.redirect(302, `/api/reports/${encodeURIComponent(req.params.type)}/${encodeURIComponent(String(req.params.key).replace(/\.pdf$/, ""))}.pdf`);
@@ -4135,11 +4088,10 @@ app.get("/api/reports/:type/:key", async (req, res) => {
     if (!row) return res.status(404).json({ ok: false, error: "report_not_found" });
     res.json({ ok: true, report: reportJson(row) });
   } catch (e) {
-    console.error(e);
+    console.error(e.code || "operation_failed");
     res.status(404).json({ ok: false, error: e?.message || "report_not_found" });
   }
-});
-
+}));
 
 
 app.get("/health", (req, res) => res.send("OK"));
@@ -4182,6 +4134,13 @@ async function runStaleAutoClose() {
 }
 
 const port = process.env.PORT || 3000;
+
+app.use((error,req,res,next)=>{
+  if(res.headersSent)return next(error);
+  const status=error.status===413?413:error.status===400?400:500;
+  if(status===500)console.error('[api]',error.code||'request_failed');
+  res.status(status).json({ok:false,error:status===413?'payload_too_large':status===400?'bad_request':'request_failed'});
+});
 
 async function initDbWithRetry() {
   let attempt = 0;

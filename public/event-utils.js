@@ -39,5 +39,17 @@
     if (attempt >= 6 || [1008,4001,4003].includes(closeCode)) return null;
     return Math.min(30000,1800 * 2 ** attempt);
   }
-  scope.FireWatchData = Object.freeze({coordinate,hasCoords,normalizeEvents,sortEvents,duration,safeLink,reconnectDelay});
+  function pragueInput(value) {
+    if(!value)return '';const date=new Date(value);if(!Number.isFinite(date.getTime()))return '';
+    const parts=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Prague',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).formatToParts(date).map(p=>[p.type,p.value]));
+    return parts.year+'-'+parts.month+'-'+parts.day+'T'+parts.hour+':'+parts.minute+':'+parts.second;
+  }
+  function pragueIso(value) {
+    if(!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/.test(value||''))return null;
+    const normalized=value.length===16?value+':00':value;
+    const wall=Date.parse(normalized+'Z');if(!Number.isFinite(wall))return null;
+    for(const offset of [120,60]){const date=new Date(wall-offset*60000);if(pragueInput(date.toISOString())===normalized)return date.toISOString();}
+    return null;
+  }
+  scope.FireWatchData = Object.freeze({coordinate,hasCoords,normalizeEvents,sortEvents,duration,safeLink,reconnectDelay,pragueInput,pragueIso});
 })(globalThis);

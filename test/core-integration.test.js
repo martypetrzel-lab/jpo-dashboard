@@ -133,3 +133,16 @@ test("repeatable additive migration preserves rows and report unique constraint"
   assert.equal((await pool.query("SELECT COUNT(*)::int AS count FROM events")).rows[0].count, before);
   assert.ok((await pool.query("SELECT skipped_count, skipped_older_count FROM ingest_log LIMIT 1")).rows.length);
 });
+// Failure paths use the isolated database and never production credentials.
+test('API validates limits/filters, handles malformed cookies and rejects foreign origins',async()=>{
+ for(const route of ['/api/events?limit=-1','/api/events?limit=not-a-number','/api/events?status=bad','/api/stats?month=2026-13'])assert.equal((await fetch(base+route)).status,400);
+ assert.equal((await fetch(base+'/api/auth/me',{headers:{Cookie:'FWSESS=%ZZ'}})).status,200);
+ assert.equal((await fetch(base+'/api/auth/logout',{method:'POST',headers:{Origin:'https://foreign.test'}})).status,403);
+ assert.equal((await fetch(base+'/api/admin/fix-geocode',{method:'POST',headers:{'X-API-Key':process.env.API_KEY}})).status,401);
+ const data=await(await fetch(base+'/api/events')).json();assert.deepEqual(Object.keys(data.data_status).sort(),['last_attempt','last_success']);
+});
+test('public failures return safe categories and cannot crash async Express routes',async()=>{
+ const query=pool.query;pool.query=async()=>{const error=new Error('sensitive-database-example');error.code='TEST_DB_FAILURE';throw error;};
+ try{for(const route of ['/api/events','/api/stats','/api/export.csv','/api/events/audit-stable/detail']){const response=await fetch(base+route);assert.equal(response.status,500);assert.ok(!(await response.text()).includes('sensitive-database-example'));}}
+ finally{pool.query=query;}
+});

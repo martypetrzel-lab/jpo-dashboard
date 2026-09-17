@@ -14,3 +14,6 @@ test('display durations require trusted timestamps or explicit/manual measuremen
 });
 test('RSS source links allow only HTTP(S), including in map popups',()=>{assert.equal(data.safeLink('javascript:alert(1)'), '');assert.equal(data.safeLink('data:text/html,hello'),'');assert.equal(data.safeLink('https://example.test/'), 'https://example.test/');});
 test('reconnect backoff is bounded and permission failures never loop',()=>{assert.deepEqual([0,1,2,3,4,5,6].map(x=>data.reconnectDelay(x,1006)),[1800,3600,7200,14400,28800,30000,null]);assert.equal(data.reconnectDelay(0,1008),null);assert.equal(data.reconnectDelay(0,4001),null);});
+test('manual date inputs use Prague independently of device zone and preserve seconds/DST',()=>{
+ assert.equal(data.pragueInput('2026-09-17T10:15:47Z'),'2026-09-17T12:15:47');assert.equal(data.pragueIso('2026-09-17T12:15:47'),'2026-09-17T10:15:47.000Z');assert.equal(data.pragueIso('2026-01-17T12:15'),'2026-01-17T11:15:00.000Z');assert.equal(data.pragueIso('2026-03-29T02:30'),null);assert.equal(data.pragueIso('2026-02-30T10:00'),null);
+});
