@@ -506,9 +506,13 @@ export async function upsertEvent(ev) {
     ON CONFLICT (id) DO UPDATE SET
       title = EXCLUDED.title,
       link = EXCLUDED.link,
-      -- RSS může při změně stavu poslat v pubDate čas aktualizace. Původní
-      -- čas zahájení proto po prvním vložení nikdy nepřepisujeme.
-      pub_date = COALESCE(events.pub_date, EXCLUDED.pub_date),
+      -- Starší importy ukládaly lokální český čas bez zóny. Při nejbližší
+      -- aktualizaci jej nahradíme normalizovaným ISO časem z ingestu.
+      pub_date = CASE
+        WHEN events.pub_date IS NULL OR events.pub_date ~ '^\\d{4}-\\d{2}-\\d{2}[ T]\\d{2}:\\d{2}(:\\d{2})?$'
+          THEN COALESCE(EXCLUDED.pub_date, events.pub_date)
+        ELSE events.pub_date
+      END,
 
       place_text = COALESCE(EXCLUDED.place_text, events.place_text),
       city_text  = COALESCE(EXCLUDED.city_text,  events.city_text),
@@ -517,7 +521,11 @@ export async function upsertEvent(ev) {
       event_type  = COALESCE(EXCLUDED.event_type, events.event_type),
       description_raw = COALESCE(EXCLUDED.description_raw, events.description_raw),
 
-      start_time_iso = COALESCE(events.start_time_iso, EXCLUDED.start_time_iso),
+      start_time_iso = CASE
+        WHEN events.start_time_iso IS NULL OR events.start_time_iso ~ '^\\d{4}-\\d{2}-\\d{2}[ T]\\d{2}:\\d{2}(:\\d{2})?$'
+          THEN COALESCE(EXCLUDED.start_time_iso, events.start_time_iso)
+        ELSE events.start_time_iso
+      END,
       end_time_iso   = CASE
         WHEN EXCLUDED.status_source = 'explicit_open' THEN NULL
         WHEN NULLIF(EXCLUDED.end_time_iso,'' ) IS NOT NULL THEN EXCLUDED.end_time_iso
