@@ -1183,15 +1183,16 @@ let mapEventPoints=[];
 function fitEventMap() {if(mapEventPoints.length)map.fitBounds(mapEventPoints,{padding:[32,32],maxZoom:12});else map.setView([50.0,14.5],8);}
 function renderMap(items) {
   if(!markersLayer)return;markersLayer.clearLayers();mapEventPoints=[];
-  const rows=FireWatchData.normalizeEvents(items);
-  for(const it of rows){
-    if(!hasValidCoords(it))continue;
-    const marker=L.marker([it.lat,it.lon],{icon:makeEventIcon(it.event_type,it),opacity:it.is_closed?0.58:1});
-    const link=FireWatchData.safeLink(it.link);
-    marker.bindPopup('<b>'+escapeHtml(it.title)+'</b><br>'+escapeHtml(it.city_text||it.place_text||'')+'<br>'+escapeHtml(statusLabelForEvent(it))+'<br>'+escapeHtml(formatDate(it.start_time_iso||it.pub_date))+(link?'<br><a href="'+escapeHtml(link)+'" target="_blank" rel="noopener noreferrer">Zdroj události</a>':''));
+  const rows=FireWatchData.normalizeEvents(items);let mapped=0;
+  for(const group of FireWatchData.groupMapEvents(rows)){
+    const it=group.find(row=>!row.is_closed)||group[0];mapped+=group.length;
+    const icon=group.length>1?L.divIcon({className:'fw-shared-marker',html:'<span class="'+(group.some(row=>!row.is_closed)?'active':'closed')+'">'+group.length+'</span>',iconSize:[36,36]}):makeEventIcon(it.event_type,it);
+    const marker=L.marker([it.lat,it.lon],{icon,zIndexOffset:1000,opacity:group.every(row=>row.is_closed)?0.8:1});
+    const popup=group.map(ev=>'<article class="fw-map-event"><b>'+escapeHtml(ev.title)+'</b><br>'+escapeHtml(ev.geo_municipality||ev.city_text||ev.place_text||'')+(ev.district_text?' · okres '+escapeHtml(ev.district_text):'')+'<br><span class="fw-map-status '+(ev.is_closed?'closed':'active')+'">'+escapeHtml(statusLabelForEvent(ev))+'</span><br>Začátek: '+escapeHtml(formatDate(ev.start_time_iso||ev.pub_date))+'<br>Délka: '+escapeHtml(formatDuration(liveDurationForEvent(ev)))+(ev.is_closed && ['rss_end_time','esp_duration','explicit','manual'].includes(ev.duration_source)?'<br>Konec: '+escapeHtml(formatDate(ev.end_time_iso)):'')+'<br><strong class="fw-map-precision">'+escapeHtml(ev.geo_label||'Přibližná poloha')+'</strong><br><button type="button" class="eventDetailBtn" data-event-id="'+escapeHtml(ev.id)+'">Detail události</button></article>').join('');
+    marker.bindPopup('<div class="fw-map-popup">'+(group.length>1?'<p>'+group.length+' událostí na stejném místě</p>':'')+popup+'</div>',{maxWidth:340});
     marker.addTo(markersLayer);mapEventPoints.push([it.lat,it.lon]);
   }
-  const summary=document.getElementById('mapDataSummary');if(summary)summary.textContent=mapEventPoints.length+' na mapě · '+(rows.length-mapEventPoints.length)+' bez souřadnic';
+  const summary=document.getElementById('mapDataSummary');if(summary)summary.textContent=mapped+' na mapě · '+(rows.length-mapped)+' bez spolehlivé polohy';
   if(!mapHasFitted && mapEventPoints.length){fitEventMap();mapHasFitted=true;}
 }
 
@@ -3357,7 +3358,7 @@ async function openEventDetailModal(id) {
       header.innerHTML = `
         <div>
           <h3>${meta.emoji} ${escapeHtml(ev.title || "")}</h3>
-          <p>${escapeHtml(ev.city_text || ev.place_text || "")} • ${statusEmoji(ev.is_closed)} ${escapeHtml(statusLabelForEvent(ev))}</p>
+          <p>${escapeHtml(ev.geo_municipality || ev.city_text || ev.place_text || "")} • ${statusEmoji(ev.is_closed)} ${escapeHtml(statusLabelForEvent(ev))}</p>
         </div>
         <div>${alarmLevelBadge(ev)}</div>
       `;
@@ -3368,7 +3369,10 @@ async function openEventDetailModal(id) {
         ${eventDetailLine("Čas", detailDateText(ev.pub_date || ev.start_time_iso || ev.created_at))}
         ${eventDetailLine("Začátek", detailDateText(ev.start_time_iso || ev.pub_date))}
         ${eventDetailLine("Konec", ev.is_closed && ["rss_end_time","esp_duration","explicit","manual"].includes(ev.duration_source) ? detailDateText(ev.end_time_iso) : "—")}
-        ${eventDetailLine("Město / místo", ev.city_text || ev.place_text || "")}
+        ${eventDetailLine("Obec", ev.geo_municipality || ev.city_text || "")}
+        ${eventDetailLine("Místo / upřesnění", ev.geo_detail || ev.place_text || "—")}
+        ${eventDetailLine("Okres", ev.district_text || "—")}
+        ${eventDetailLine("Poloha", ev.geo_label || "Poloha na mapě nebyla spolehlivě určena.")}
         ${eventDetailLine("Typ", `${meta.emoji} ${meta.label || ev.event_type || ""}`)}
         ${eventDetailLine("Stav", statusLabelForEvent(ev))}
         ${eventDetailLine("Délka", formatDuration(liveDurationForEvent(ev)))}
@@ -4936,12 +4940,13 @@ function showCoordsEditorForEvent(ev) {
   if (meta) {
     const city = ev?.city_text || ev?.place_text || "bez města";
     const status = ev?.status_text || (ev?.is_closed ? "ukončená" : "aktivní");
-    meta.textContent = `${ev?.id || ""} • ${city} • ${status}`;
+    meta.textContent = `${ev?.id || ""} • ${city} • ${status} • ${ev?.geo_label || ""} • ${ev?.geo_failure_reason || ""} • dotaz: ${ev?.geo_query || "—"}`;
   }
 
   document.getElementById("coordsEventId").value = String(ev?.id || "");
   document.getElementById("coordsLat").value = "";
   document.getElementById("coordsLon").value = "";
+  if(document.getElementById("coordsVerified"))document.getElementById("coordsVerified").checked=false;
 
   setPickMode(false);
   msg("coordsMsg", `Vybrána událost: ${ev?.id || ""}. Můžeš zadat GPS, načíst návrhy nebo vybrat bod v mapě.`, true);
@@ -5092,7 +5097,7 @@ async function loadGeoSuggestionsForSelected() {
 
     const suggestions = j.suggestions || [];
     if (!suggestions.length) {
-      if (box) box.innerHTML = `<div class="hint">Žádný návrh GPS se nepodařilo najít. Zkus vybrat bod ručně v mapě.</div>`;
+      if (box) box.innerHTML = `<div class="hint">Žádný spolehlivý návrh: ${escapeHtml(j.failure_reason || "nenalezeno")}. Dotaz: ${escapeHtml((j.queries || []).join(" → "))}. Zkus vybrat bod ručně v mapě.</div>`;
       return;
     }
 
@@ -5102,7 +5107,7 @@ async function loadGeoSuggestionsForSelected() {
           <span>
             <b>Návrh ${idx + 1}</b>
             <small>${escapeHtml(s.label || s.query || "")}</small>
-            <small>${escapeHtml(s.source || "suggestion")} • jistota ${Number(s.confidence || 0)} %</small>
+            <small>${escapeHtml(s.precision || "")} • ${escapeHtml(s.query || "")} • jistota ${Number(s.confidence || 0)} %</small>
           </span>
           <span>${Number(s.lat).toFixed(5)}, ${Number(s.lon).toFixed(5)}</span>
         </button>
@@ -5128,8 +5133,8 @@ async function loadGeoSuggestionsForSelected() {
 
 async function saveCoordsForSelected() {
   const id = document.getElementById("coordsEventId")?.value?.trim();
-  const lat = Number(document.getElementById("coordsLat")?.value);
-  const lon = Number(document.getElementById("coordsLon")?.value);
+  const lat = FireWatchData.coordinate(document.getElementById("coordsLat")?.value);
+  const lon = FireWatchData.coordinate(document.getElementById("coordsLon")?.value);
   if (!id) return msg("coordsMsg", "Nejdřív vyber událost.", false);
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) return msg("coordsMsg", "Zadej platné lat/lon.", false);
 
@@ -5137,7 +5142,7 @@ async function saveCoordsForSelected() {
     const r = await apiFetch(`/api/admin/events/${encodeURIComponent(id)}/coords`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ lat, lon })
+      body: JSON.stringify({ lat, lon, verified:document.getElementById("coordsVerified")?.checked===true })
     });
     const j = await r.json();
     if (!r.ok || !j.ok) throw new Error(j.error || "save failed");
@@ -5362,4 +5367,24 @@ document.addEventListener("keydown",event=>{
   if(!modal)return;
   if(event.key==="Escape"){closeModals();document.getElementById("eventDetailCloseBtn")?.click();document.getElementById("manualEventCloseBtn")?.click();}
   if(event.key==="Tab"){const controls=[...modal.querySelectorAll("button,a[href],input,select,textarea,[tabindex=\"0\"]")].filter(el=>!el.disabled&&el.getClientRects().length);if(!controls.length)return;const first=controls[0],last=controls.at(-1);if(event.shiftKey&&(document.activeElement===first||!modal.contains(document.activeElement))){event.preventDefault();last.focus();}else if(!event.shiftKey&&(document.activeElement===last||!modal.contains(document.activeElement))){event.preventDefault();first.focus();}}
+});
+
+let geoRepairPreview=null;
+document.getElementById('loadGeoDiagnosticsBtn')?.addEventListener('click',async()=>{
+  try{const response=await apiFetch('/api/admin/geocode-diagnostics');const data=await response.json();if(!response.ok)throw new Error(data.error);
+    document.getElementById('geoDiagnosticsInfo').textContent=data.suspicious+' podezřelých z '+data.scanned+' kontrolovaných · '+data.without_reliable_coordinates+' bez spolehlivé polohy'+(data.complete?'':' (omezený vzorek)');
+    document.getElementById('geoDiagnosticsList').innerHTML=data.items.map(ev=>'<button type="button" class="geoAuditSelect" data-id="'+escapeHtml(ev.id)+'">'+escapeHtml(ev.city_text||ev.place_text||ev.id)+' · '+escapeHtml(ev.geo_diagnostic_reasons.join(', '))+(ev.geo_protected?' · chráněná ruční/ověřená poloha':'')+'</button>').join('');
+  }catch(error){document.getElementById('geoDiagnosticsInfo').textContent=error.message;}
+});
+document.getElementById('geoDiagnosticsList')?.addEventListener('click',event=>{const button=event.target.closest('.geoAuditSelect');if(!button)return;document.getElementById('coordsEventId').value=button.dataset.id;geoRepairPreview=null;document.getElementById('applyGeoRepairBtn').disabled=true;});
+document.getElementById('previewGeoRepairBtn')?.addEventListener('click',async()=>{
+  const id=document.getElementById('coordsEventId').value.trim();if(!id)return msg('coordsMsg','Vyber událost.',false);
+  try{const response=await apiFetch('/api/admin/geocode-repair/'+encodeURIComponent(id),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dry_run:true,refresh:true})});const data=await response.json();if(!response.ok)throw new Error(data.error);
+    geoRepairPreview={id,...data};document.getElementById('applyGeoRepairBtn').disabled=!data.can_apply;
+    msg('coordsMsg','Náhled: '+(data.proposal.display_name||data.proposal.failure_reason)+' · '+data.proposal.precision+' · dotaz: '+(data.proposal.query||'—')+(data.can_apply?' · lze bezpečně opravit':' · změna chráněna nebo bez lepšího výsledku'),data.can_apply);
+  }catch(error){msg('coordsMsg',error.message,false);}
+});
+document.getElementById('applyGeoRepairBtn')?.addEventListener('click',async()=>{
+  if(!geoRepairPreview?.can_apply)return;const preview=geoRepairPreview;
+  try{const response=await apiFetch('/api/admin/geocode-repair/'+encodeURIComponent(preview.id),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dry_run:false,expected:preview.expected,proposal_fingerprint:preview.proposal_fingerprint})});const data=await response.json();if(!response.ok)throw new Error(data.error);msg('coordsMsg',data.applied?'Oprava uložena s auditním záznamem.':'Oprava nebyla provedena.',data.applied);geoRepairPreview=null;document.getElementById('applyGeoRepairBtn').disabled=true;await loadAll();await loadMissingCoords();}catch(error){msg('coordsMsg',error.message,false);}
 });

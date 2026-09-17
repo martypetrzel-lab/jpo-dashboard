@@ -135,3 +135,14 @@ Architektura, výchozí stav a priority jsou v `docs/audit-2026-09-17.md`. Stack
 ### Ověření
 
 `npm test` spouští původní RSS unit testy, testy mapových pravidel a reconnectu a integrační testy proti izolovanému PostgreSQL (PGlite). Nepoužívají produkční `DATABASE_URL`, API klíč ani relace. PGlite je pouze vývojová závislost. Před nasazením spusťte `npm ci`, `npm test` a `npm audit --omit=dev`. Vizuální a produkční výsledky jsou v dokončeném auditním reportu.
+
+
+## Spolehlivé umístění zásahů na mapě
+
+Podrobná příčina chybných okresních bodů a pravidla oprav jsou v [auditu geokódování](docs/geocoding-audit-2026-09-17.md). RSS zachovává obec odděleně od detailu místa. Geokodér kontroluje stát, kraj, známý okres, obec a typ kandidáta; okresní a krajské fallbacky odmítá. Střed správné obce se vždy zobrazuje jako **Přibližná poloha – střed obce**. Události bez spolehlivé polohy zůstávají v tabulce a veřejný přehled ukazuje jejich počet. Společný legitimní bod má marker s počtem a seznam všech událostí bez náhodného posouvání.
+
+Admin panel → Události bez souřadnic → **Diagnostika podezřelých poloh**. Vyberte jedno ID, použijte **Náhled nového geokódování**, zkontrolujte obec/okres, přesnost, dotaz a důvod odmítnutí. **Potvrdit opravu jedné události** je dostupné pouze pro bezpečné zlepšení. Náhled je dry-run; při potvrzení se ověří nezměněné původní souřadnice i návrh a změna se audituje v jedné transakci. Ruční a ověřené body se automaticky nepřepisují. Checkbox **Poloha ověřena administrátorem** je součást ručního formuláře. Historické souřadnice ani stará cache se hromadně nemažou.
+
+Migrace přidává sedm geo metadat a dvě tabulky pro kontextovou cache a rate limit. Je opakovatelná a zachovává existující data. Nová cache odděluje stejnojmenné obce podle okresu; negativní výsledek expiruje za 24 hodin, dočasná chyba za 5 minut. RSS ingest nečeká na síťové geokódování: NULL polohy zpracovává omezená fronta na pozadí.
+
+**Veřejný Nominatim není určen k pravidelnému hromadnému geokódování.** Dodržujte [Nominatim Usage Policy](https://operations.osmfoundation.org/policies/nominatim/): jedna instance služby, sériové dotazy, cache, identifikující User-Agent, při pravidelném provozu nejvýše čtyři požadavky za minutu. Aplikace rezervuje interval alespoň 15 sekund v databázi; více variant může trvat přes minutu. Nespouštějte plošné dohledávání archivu. Pro větší objem nebo více replik použijte vlastní / smluvní Nominatim kompatibilní endpoint přes volitelnou proměnnou `GEOCODE_URL` (výchozí `https://nominatim.openstreetmap.org/search`). Produkční proměnné není potřeba měnit. Testy používají pouze mock provider a izolovanou databázi.

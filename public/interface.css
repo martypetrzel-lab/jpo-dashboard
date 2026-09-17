@@ -87,3 +87,16 @@ tr.eventOpen {background:#122824;}tr.eventOpen td:first-child {border-left:3px s
 .ops-radio-card .ops-radio-ptt {min-height:80px;background:#245b48;color:#effff7;border:1px solid #4ca881;}
 .ops-radio-card .ops-radio-ptt.is-transmitting {background:#ae343c;border-color:var(--fw-danger);color:white;}
 .reportYear {margin:14px 0 4px;color:var(--fw-muted);font-size:15px;font-weight:600;}
+
+.fw-shared-marker span {display:grid;place-items:center;width:36px;height:36px;border:3px solid white;border-radius:50%;background:#334155;color:white;font-weight:800;box-shadow:0 2px 8px #0008;}
+.fw-shared-marker .active {background:#b91c1c;}
+.fw-map-popup {max-height:340px;overflow:auto;overflow-wrap:anywhere;}
+.fw-map-event {padding:10px 0;border-bottom:1px solid #cbd5e1;}
+.fw-map-precision {display:inline-block;margin:6px 0;color:#92400e;}
+#geoDiagnosticsList {max-height:320px;overflow:auto;display:grid;gap:6px;}
+.geoAuditPanel {margin:12px 0;}
+
+.fw-map-event .eventDetailBtn {min-height:40px;padding:8px 12px;border-radius:6px;cursor:pointer;}
+.fw-map-event .fw-map-status {font-weight:700;}
+.fw-map-event .fw-map-status.active {color:#b91c1c;}
+.fw-map-event .fw-map-status.closed {color:#334155;}

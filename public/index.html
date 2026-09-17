@@ -341,10 +341,10 @@
           <small>událostí se souřadnicemi</small>
         </button>
 
-        <button type="button" class="v28KpiTile adminOnly" data-scroll-target="manualEventQuickCard">
-          <span>📍 Bez GPS</span>
+        <button type="button" class="v28KpiTile" data-scroll-target="mapCard">
+          <span>📍 Bez spolehlivé polohy</span>
           <b id="overviewMissingCount">—</b>
-          <small>k ručnímu doplnění</small>
+          <small>události zůstávají v přehledu</small>
         </button>
       </div>
 
@@ -1078,6 +1078,7 @@ Události bez souřadnic</div>
         <div class="adminRow" style="flex-wrap:wrap; gap:10px; margin-top:10px;">
           <input id="coordsEventId" class="miniInput" placeholder="event id" style="min-width:220px;" readonly />
           <input id="coordsLat" class="miniInput" placeholder="lat" style="min-width:120px;" />
+          <label><input id="coordsVerified" type="checkbox" /> Poloha ověřena administrátorem</label>
           <input id="coordsLon" class="miniInput" placeholder="lon" style="min-width:120px;" />
           <button id="pickOnMapBtn" class="btn">Vybrat na mapě</button>
           <button id="saveCoordsBtn" class="btn primary">Uložit</button>
@@ -1085,6 +1086,7 @@ Události bez souřadnic</div>
           <button id="clearCoordsBtn" class="btn">Smazat</button>
         </div>
         <div id="geoSuggestionsBox" class="geoSuggestionsBox"></div>
+        <div class="geoAuditPanel"><button id="loadGeoDiagnosticsBtn" type="button" class="btn">Diagnostika podezřelých poloh</button><button id="previewGeoRepairBtn" type="button" class="btn">Náhled nového geokódování</button><button id="applyGeoRepairBtn" type="button" class="btn" disabled>Potvrdit opravu jedné události</button><p id="geoDiagnosticsInfo"></p><div id="geoDiagnosticsList"></div></div>
         <div class="hint" id="coordsMsg" style="min-height:18px; margin-top:6px;"></div>
       </div>
 
