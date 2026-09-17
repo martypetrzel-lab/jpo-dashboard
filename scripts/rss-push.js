@@ -1,10 +1,36 @@
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { fetch as undiciFetch } from "undici";
-import { DEFAULT_RSS_URL, fetchRssDetailed, parseRssXml, sanitizeRssError } from "../rss-worker.js";
+import { DEFAULT_RSS_URL, fetchRssDetailed, parseRssXml, rssItemToEvent, sanitizeRssError } from "../rss-worker.js";
+
+export const RSS2JSON_URL = "https://api.rss2json.com/v1/api.json";
 
 export function buildRssPayload(xml) {
   return { source: "github_actions_rss", items: parseRssXml(xml, { maxItems: 100 }) };
+}
+
+export function buildGatewayPayload(json) {
+  const data = typeof json === "string" ? JSON.parse(json) : json;
+  if (data?.status !== "ok" || !Array.isArray(data?.items)) throw safeFailure("invalid_gateway_response");
+  return {
+    source: "github_actions_rss2json",
+    // The unauthenticated rss2json endpoint returns the newest 10 entries.
+    items: data.items.slice(0, 100).map((item) => rssItemToEvent({
+      title: item?.title,
+      link: item?.link,
+      guid: item?.guid,
+      pubDate: item?.pubDate,
+      description: item?.description || item?.content || ""
+    }))
+  };
+}
+
+function gatewayUrl(nowMs = Date.now()) {
+  // A five-minute bucket keeps the fallback fresh without creating a unique
+  // upstream URL on every retry.
+  const bucket = Math.floor(nowMs / 300_000);
+  const source = `${DEFAULT_RSS_URL}?fw_bucket=${bucket}`;
+  return `${RSS2JSON_URL}?rss_url=${encodeURIComponent(source)}`;
 }
 
 function safeFailure(type, httpStatus = null) {
@@ -48,17 +74,30 @@ export async function pushRssItems(payload, config, {
 
 export async function runRssPush({
   env = process.env, logger = console, rssFetchImpl = undiciFetch,
-  ingestFetchImpl = undiciFetch, sleepImpl, agentFactory, ingestTimeoutMs = 60_000
+  gatewayFetchImpl = undiciFetch, ingestFetchImpl = undiciFetch, sleepImpl,
+  agentFactory, ingestTimeoutMs = 60_000, nowMs = Date.now()
 } = {}) {
   let stage = "configuration";
   try {
     const config = readPushConfig(env);
     stage = "rss";
-    const rss = await fetchRssDetailed(DEFAULT_RSS_URL, {
-      fetchImpl: rssFetchImpl, timeoutMs: 30_000, connectTimeoutMs: 30_000,
-      sleepImpl, agentFactory
-    });
-    const payload = buildRssPayload(rss.xml);
+    let payload;
+    try {
+      const rss = await fetchRssDetailed(DEFAULT_RSS_URL, {
+        fetchImpl: rssFetchImpl, timeoutMs: 30_000, connectTimeoutMs: 30_000,
+        sleepImpl, agentFactory
+      });
+      payload = buildRssPayload(rss.xml);
+    } catch (directError) {
+      const safe = sanitizeRssError(directError);
+      logger.info(`[rss-push] direct RSS unavailable; fallback=rss2json; category=${safe.type}`);
+      stage = "rss_gateway";
+      const gateway = await fetchRssDetailed(gatewayUrl(nowMs), {
+        fetchImpl: gatewayFetchImpl, timeoutMs: 30_000, connectTimeoutMs: 30_000,
+        sleepImpl, agentFactory
+      });
+      payload = buildGatewayPayload(gateway.xml);
+    }
     logger.info(`[rss-push] RSS items=${payload.items.length}`);
     if (payload.items.length === 0) {
       logger.info("[rss-push] ingest skipped: empty feed; accepted=0; inserted=0; updated=0");
