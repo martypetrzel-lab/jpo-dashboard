@@ -20,6 +20,7 @@
 
   <link rel="stylesheet" href="styles.css" />
   <link rel="stylesheet" href="radio.css" />
+  <link rel="stylesheet" href="interface.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
 </head>
 <body>
@@ -323,7 +324,7 @@
         </button>
 
         <button type="button" class="v28KpiTile" data-scroll-target="eventsTableCard">
-          <span>📋 Dnes celkem</span>
+          <span>📋 Události ve filtru</span>
           <b id="overviewTotalCount">—</b>
           <small>záznamů ve filtru</small>
         </button>
@@ -348,7 +349,7 @@
       </div>
 
       <div class="v29SignalBar" aria-label="Rychlý stav systému">
-        <span class="v29Signal ok">● Živá data</span>
+        <span id="dataSourceSignal" class="v29Signal">● Načítám stav zdroje</span>
         <span class="v29Signal">Středočeský kraj</span>
         <span class="v29Signal">Veřejný analytický režim</span>
       </div>
@@ -378,6 +379,7 @@
       <div class="cardHeader">
         <h2>Poslední výjezdy</h2><div id="tableEditHelp" class="tableEditHelp adminOnly">Admin režim: události upravíš tlačítkem <b>Upravit</b> v posledním sloupci.</div>
         <div class="tableHeaderControls">
+          <label class="miniInlineControl"><span>Řazení</span><select id="eventsSortSelect"><option value="active">Aktivní nejdříve</option><option value="newest">Nejnovější</option><option value="oldest">Nejstarší</option></select></label>
           <label class="miniInlineControl">
             <span>Počet řádků</span>
             <select id="eventsLimitSelect" class="miniSelect">
@@ -492,6 +494,7 @@
           <span class="legendItem">❓ jiné</span>
         </div>
       </div>
+      <div class="mapToolbar"><p id="mapDataSummary" aria-live="polite">Načítám polohy…</p><span class="mapLegendStates">● aktivní · zeslabené ukončené</span><button id="mapFitBtn" class="btn">Zobrazit všechny zásahy</button><button id="mapResetBtn" class="btn">Středočeský kraj</button></div>
       <div id="map"></div>
       <div class="mapDisclaimer">
         Stanice, trasy i pohyb vozidel jsou pouze orientační a simulované. Nejde o reálné sledování jednotek ani o neveřejná data.
@@ -730,8 +733,8 @@
   <div id="loginModal" class="modal" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
     <div class="modalHeader">
       <div>
-        <div id="loginTitle" class="modalTitle">Přihlášení (OPS)</div>
-        <div class="modalHint">Přístup je určen jen pro interní použití.</div>
+        <div id="loginTitle" class="modalTitle">Přihlášení</div>
+        <div class="modalHint">Přihlaste se ke svému účtu FireWatch CZ.</div>
       </div>
       <button class="btn" id="loginCloseBtn" title="Zavřít">✕</button>
     </div>
@@ -1156,6 +1159,7 @@ Události bez souřadnic</div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="event-utils.js"></script>
   <script src="app.js"></script>
   <script src="radio.js"></script>
   
@@ -1258,13 +1262,13 @@ Události bez souřadnic</div>
 
 
   <div id="eventDetailModalBackdrop" class="modalBackdrop" style="display:none;">
-    <div class="modal eventDetailModal">
+    <div class="modal eventDetailModal" role="dialog" aria-modal="true" aria-label="Detail události">
       <div class="modalHead">
         <div>
           <h2>Detail události</h2>
           <p id="eventDetailSubtitle">Vlastní FireWatch detail bez závislosti na původní stránce.</p>
         </div>
-        <button id="eventDetailCloseBtn" class="iconBtn" type="button">×</button>
+        <button id="eventDetailCloseBtn" aria-label="Zavřít detail" class="iconBtn" type="button">×</button>
       </div>
 
       <div class="eventDetailBody">

@@ -31,6 +31,7 @@ import {
   initDb,
   upsertEvent,
   getEventsFiltered,
+  getPublicDataStatus,
   countEventsFiltered,
   getStatsFiltered,
   getCachedGeocode,
@@ -3804,29 +3805,22 @@ app.get("/api/admin/visits/stats", requireAdmin, async (req, res) => {
 
 
 // events (filters) + backfill coords + backfill duration
-app.get("/api/events", async (req, res) => {
-  const limit = Math.min(Number(req.query.limit || 2000), 2000);
-  const filters = parseFilters(req);
-
-  const [rows, totalMatching] = await Promise.all([
-    getEventsFiltered(filters, limit),
-    countEventsFiltered(filters)
-  ]);
-
-  res.json({ ok: true, filters, limit, total_matching: totalMatching, backfilled_coords: 0, backfilled_durations: 0, items: rows });
+app.get('/api/events', async (req,res) => {
+  try {
+    const raw=String(req.query.limit||'2000');
+    if(!/^\d+$/.test(raw)||Number(raw)<1)return res.status(400).json({ok:false,error:'bad_limit'});
+    const limit=Math.min(Number(raw),2000),filters=parseFilters(req);
+    const [rows,totalMatching,dataStatus]=await Promise.all([getEventsFiltered(filters,limit),countEventsFiltered(filters),getPublicDataStatus()]);
+    res.json({ok:true,filters,limit,total_matching:totalMatching,backfilled_coords:0,backfilled_durations:0,data_status:dataStatus,items:rows});
+  }catch(e){console.error('[events]',e.code||'database_error');res.status(500).json({ok:false,error:'events_failed'});}
 });
-
-// ✅ stats (30 dní) – vždy ze všech dnů (ignoruje filtr "Den")
-app.get("/api/stats", async (req, res) => {
-  const filters = parseFilters(req);
-  const statsFilters = { ...filters, day: "all" };
-
-  const stats = await getStatsFiltered(statsFilters);
-
-  const openCount = stats?.openVsClosed?.open ?? 0;
-  const closedCount = stats?.openVsClosed?.closed ?? 0;
-
-  res.json({ ok: true, filters: statsFilters, ...stats, openCount, closedCount });
+// Statistics retain the existing 30-day scope, independent of the day selector.
+app.get('/api/stats',async(req,res)=>{
+  try {
+    const filters=parseFilters(req),statsFilters={...filters,day:'all'};
+    const stats=await getStatsFiltered(statsFilters);
+    res.json({ok:true,filters:statsFilters,...stats,openCount:stats?.openVsClosed?.open??0,closedCount:stats?.openVsClosed?.closed??0});
+  }catch(e){console.error('[stats]',e.code||'database_error');res.status(500).json({ok:false,error:'stats_failed'});}
 });
 
 // export CSV
@@ -4080,7 +4074,7 @@ app.get("/api/reports", async (req, res) => {
     const page = await listArchivedReportsPage(req.query);
     res.json({ ok: true, ...page });
   } catch (e) {
-    console.error(e);
+    if(e.statusCode!==400)console.error('[reports]',e.code||'database_error');
     res.status(e.statusCode || 500).json({ ok: false, error: e.statusCode === 400 ? "bad_report_filters" : "reports_list_failed" });
   }
 });
@@ -4094,8 +4088,7 @@ app.post("/api/reports/generate", requireReportAuthor, async (req, res) => {
     const report = await generateArchivedReport(type, key, { force });
     res.json({ ok: true, report: reportJson(report) });
   } catch (e) {
-    console.error(e);
-    res.status(400).json({ ok: false, error: e?.message || "report_generate_failed" });
+    res.status(400).json({ ok: false, error: ['bad_period','bad_period_type','future_period'].includes(e.message) ? e.message : 'report_generate_failed' });
   }
 });
 

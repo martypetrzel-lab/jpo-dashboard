@@ -1,0 +1,78 @@
+/* FireWatch's common component layer. Legacy feature layouts remain below it. */
+:root {
+  --fw-bg:#0b111b; --fw-panel:#121c2a; --fw-panel-raised:#192638;
+  --fw-text:#edf3fc; --fw-muted:#aab9cc; --fw-line:#2b3c52;
+  --fw-accent:#ff934d; --fw-active:#65e2ad; --fw-warning:#ffd082; --fw-danger:#ff9297;
+  --fw-radius:12px; --fw-radius-lg:18px; --fw-space:16px;
+  --fw-shadow:0 10px 28px rgb(0 0 0 / 15%);
+}
+body {background:var(--fw-bg);color:var(--fw-text);line-height:1.5;font-size:14px;}
+button,input,select,textarea {font:inherit;}
+button,a,input,select,textarea {touch-action:manipulation;}
+:focus-visible {outline:3px solid var(--fw-accent);outline-offset:3px;}
+[hidden] {display:none !important;}
+h1,h2,h3,h4 {line-height:1.25;letter-spacing:-.02em;}
+h2 {font-size:21px;} h3 {font-size:18px;}
+.card,.reportPanel,.statsProPanel,.supportersSimplePanel {background:var(--fw-panel);border:1px solid var(--fw-line);border-radius:var(--fw-radius-lg);box-shadow:var(--fw-shadow);min-width:0;}
+.card {padding:20px;}
+.cardHeader {gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:16px;}
+.cardHeader h2 {margin:0;}
+.hint,.muted,.sub,.mapDisclaimer,.eventsTableCountInfo {color:var(--fw-muted);opacity:1;line-height:1.5;}
+.btn,.linkBtn {min-height:40px;border:1px solid var(--fw-line);border-radius:9px;background:var(--fw-panel-raised);color:var(--fw-text);padding:8px 13px;font-weight:600;box-shadow:none;cursor:pointer;}
+.btn:hover,.linkBtn:hover {background:#25354a;border-color:#60758e;transform:none;}
+.btn.primary {background:var(--fw-accent);border-color:var(--fw-accent);color:#19120d;}
+.btn:disabled,button:disabled {opacity:.55;cursor:not-allowed;}
+input:not([type=checkbox]):not([type=radio]),select,textarea {min-height:42px;max-width:100%;min-width:0;background:#0d1622;color:var(--fw-text);border:1px solid var(--fw-line);border-radius:8px;padding:8px 11px;}
+label {color:var(--fw-muted);}
+.ok {color:var(--fw-active);} .warn {color:var(--fw-warning);} .err {color:var(--fw-danger);}
+.btnRow,.actions,.mapToolbar,.tableHeaderControls,.reportControls {gap:8px;flex-wrap:wrap;}
+.topbar {background:var(--fw-bg);border-bottom:1px solid var(--fw-line);padding:16px 24px;align-items:center;}
+.title {min-width:0;flex-shrink:0;}.actions {min-width:0;}.miniPanel {background:var(--fw-panel);border-color:var(--fw-line);min-width:0;}
+#statusPill {max-width:100%;white-space:normal;}
+.fwSidebar {background:#0d1521;border-right:1px solid var(--fw-line);}
+.fwSidebarNav button {min-height:42px;font-weight:600;color:var(--fw-muted);border-radius:8px;}
+.fwSidebarNav button:hover,.fwSidebarNav button.active {color:var(--fw-text);background:var(--fw-panel-raised);}
+.fwSidebarFooter {color:var(--fw-muted);}
+.filters {background:var(--fw-panel);border:1px solid var(--fw-line);border-radius:var(--fw-radius);padding:16px;gap:12px;}
+.v28KpiGrid {grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;}
+.v28KpiTile {background:var(--fw-panel);border:1px solid var(--fw-line);border-radius:var(--fw-radius);min-width:0;padding:18px;text-align:left;min-height:128px;box-shadow:none;}
+.v28KpiTile span {font-size:13px;color:var(--fw-muted);}.v28KpiTile b {font-size:38px;line-height:1.2;margin:8px 0;}.v28KpiTile small {font-size:12px;line-height:1.4;color:var(--fw-muted);}
+.v28KpiTile.active {border-color:#357963;background:#122a27;}.v28KpiTile.active b {color:var(--fw-active);}
+.v28KpiTile.warning {border-color:#775137;}.v28KpiTile.warning b {color:var(--fw-accent);}
+.v28OpsStrip {background:#0f1825;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:16px;border-color:var(--fw-line);}
+.v28QuickActions {grid-column:1/-1;display:flex;flex-wrap:wrap;}.v28OpsMain,.v28OpsMeta {min-width:0;overflow-wrap:anywhere;}
+.v29SignalBar {gap:8px;flex-wrap:wrap;}.v29Signal {border-color:var(--fw-line);background:#152131;font-size:12px;}
+.tableWrap {border:1px solid var(--fw-line);border-radius:var(--fw-radius);max-width:100%;overflow:auto;}
+table {border-collapse:collapse;width:100%;font-size:13px;}
+th {background:#182437;color:var(--fw-muted);font-size:12px;text-transform:none;letter-spacing:.02em;text-align:left;}
+th,td {padding:11px 12px;border-bottom:1px solid var(--fw-line);vertical-align:middle;}
+td:first-child {font-variant-numeric:tabular-nums;white-space:nowrap;}
+tr.eventOpen {background:#122824;}tr.eventOpen td:first-child {border-left:3px solid var(--fw-active);}tr.eventClosed {color:#b7c5d7;}
+.eventMobileCard {background:var(--fw-panel);border-color:var(--fw-line);border-radius:var(--fw-radius);padding:14px;min-width:0;}.eventMobileCard.isOpen {border-left:3px solid var(--fw-active);background:#122824;}
+.eventMobileTitleBlock {min-width:0;}.eventMobileTitleBlock h3 {font-size:15px;overflow-wrap:anywhere;}.eventMobileTop {flex-wrap:wrap;}.eventMobileState {font-size:12px;white-space:normal;}
+.mapToolbar {display:flex;align-items:center;margin-bottom:12px;}.mapToolbar p {margin:0;flex:1 1 220px;color:var(--fw-muted);}.mapLegendStates {font-size:12px;color:var(--fw-active);}
+#map {height:460px;border:1px solid var(--fw-line);border-radius:var(--fw-radius);isolation:isolate;}.leaflet-popup-content {line-height:1.6;}
+.archiveTabs {display:flex;gap:8px;margin:8px 0 20px;}.archiveTabs [aria-pressed=true] {background:var(--fw-accent);color:#19120d;border-color:var(--fw-accent);}
+.archiveFilters {display:flex;flex-wrap:wrap;gap:12px;align-items:end;}.archiveFilters label:not(.checkLabel),.reportControls label {display:flex;flex-direction:column;gap:6px;font-size:12px;}.archiveSearch {flex:1 1 220px;}.checkLabel {display:flex;align-items:center;gap:8px;min-height:42px;}.checkLabel input {width:18px;height:18px;accent-color:var(--fw-accent);}
+.reportsList {display:grid;gap:10px;}.reportMonth {border:1px solid var(--fw-line);border-radius:var(--fw-radius);overflow:hidden;background:#101a27;}.reportMonth summary {cursor:pointer;min-height:54px;padding:14px 16px;}.reportMonth summary b {text-transform:capitalize;}.reportMonth summary span {font-size:12px;color:var(--fw-muted);float:right;}.reportMonth>div {padding:0 12px 12px;}
+.reportItem {display:flex;align-items:center;gap:16px;justify-content:space-between;width:100%;min-height:68px;padding:12px 14px;background:var(--fw-panel);border:0;border-bottom:1px solid var(--fw-line);border-radius:0;text-align:left;color:var(--fw-text);box-shadow:none;cursor:pointer;}.reportItem>span:first-child {flex:1;min-width:0;}.reportItem b,.reportItem small {display:block;}.reportItem b {font-size:14px;}.reportItem small {color:var(--fw-muted);font-size:12px;}.reportItemNums {font-size:14px;font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;}.reportItem:hover {background:var(--fw-panel-raised);}.reportEmpty {color:var(--fw-muted);background:#0f1721;}
+.reportAuthorControls {margin-top:16px;}.reportAuthorControls summary {cursor:pointer;color:var(--fw-muted);padding:8px 0;}.reportControls {display:flex;align-items:end;padding:12px 0;}.reportControls small {width:100%;order:2;color:var(--fw-muted);}.reportDetailHead {flex-wrap:wrap;gap:16px;}.reportDetailHead p {color:var(--fw-muted);}.reportKpis {gap:10px;}.reportColumns {gap:14px;}.reportPanel {padding:16px;}.reportLong span {overflow-wrap:anywhere;}
+.loadingState,.emptyState,.errorState {padding:24px;border:1px dashed var(--fw-line);border-radius:var(--fw-radius);color:var(--fw-muted);}.errorState {color:var(--fw-danger);}.loadingState {animation:fwLoading 1.6s ease-in-out infinite;}@keyframes fwLoading {50% {opacity:.55;}}
+.modalBackdrop {padding:20px;background:rgb(3 8 16 / 82%);backdrop-filter:blur(4px);}.modalBackdrop .modal {background:var(--fw-panel);border:1px solid var(--fw-line);border-radius:var(--fw-radius-lg);width:min(760px,100%);max-height:calc(100dvh - 40px);overflow:auto;box-shadow:0 24px 80px #0008;min-width:0;}.modalHeader {border-color:var(--fw-line);}.modalBody {overflow-wrap:anywhere;}
+.opsRadioPtt {min-height:70px;touch-action:none;}.opsRadioPtt.is-transmitting {background:#a83239;color:#fff;border-color:var(--fw-danger);}.opsRadioWrap,.opsRadioPanel {min-width:0;}
+@media(min-width:1101px){.grid {gap:20px;padding:20px 24px;}.fwAppShell {min-width:0;}.commandOverviewCard {padding:24px;}.landingHero h1 {font-size:clamp(30px,3.3vw,48px);}.topbar .fwBrandLogoTop {max-width:150px;}}
+@media(max-width:1100px){.v28KpiGrid {grid-template-columns:repeat(3,minmax(0,1fr));}.topbar {padding:14px 16px;}.grid {gap:16px;padding:16px;}.v28OpsStrip {grid-template-columns:1fr;}.v28QuickActions {grid-column:auto;}}
+@media(max-width:760px){body {font-size:14px;}.card {padding:16px;border-radius:14px;}.grid {padding:12px;gap:12px;}.cardHeader h2 {font-size:19px;}.topbar {gap:12px;padding:12px;}.actions {justify-content:flex-start;width:100%;}.miniPanel {width:100%;}.v28KpiGrid {grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;}.v28KpiTile {padding:14px;min-height:116px;}.v28KpiTile b {font-size:32px;}.tableHeaderControls {display:flex;width:100%;justify-content:flex-start;}.miniInlineControl {min-width:0;flex:1;}.miniInlineControl select {width:100%;}.archiveFilters>label:not(.checkLabel) {flex:1 1 130px;}.archiveFilters>.archiveSearch {flex-basis:100%;}.archiveFilters .btn {flex:1;}.reportMonth summary span {float:none;display:block;margin-top:4px;}.reportMonth>div {padding:0 8px 8px;}.reportItem {gap:8px;padding:12px 8px;}.reportItemNums {font-size:13px;}.reportDetailHead .btn {width:100%;}.reportKpis {grid-template-columns:repeat(2,minmax(0,1fr));}.mapToolbar .btn {flex:1 1 140px;}#map {height:380px;}.mapLegendStates {width:100%;}.modalBackdrop {padding:10px;}.modalBackdrop .modal {max-height:calc(100dvh - 20px);}.modalBody,.modalHeader {padding:16px;}.eventDetailGrid {grid-template-columns:1fr;}.landingHero {padding:20px;}.landingHero h1 {font-size:30px;}.landingActions .btn {width:100%;}.fwSidebar {max-width:calc(100vw - 56px);}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after {scroll-behavior:auto !important;animation:none !important;transition:none !important;}}
+/* Mobile rows and dialog shells previously inherited conflicting old layouts. */
+.reportsList .reportItem {flex-direction:row;align-items:center;text-align:left;}
+.reportItemNums {display:block;}
+#commandOverviewCard {background:var(--fw-panel);border-color:var(--fw-line);}
+.v28KpiTile.active {background:#122a27;}
+.modal {background:var(--fw-panel);border-color:var(--fw-line);border-radius:var(--fw-radius-lg);max-height:calc(100dvh - 32px);}
+.modalHead {display:flex;align-items:start;justify-content:space-between;padding:18px;gap:12px;border-bottom:1px solid var(--fw-line);}
+.modalHead h2 {margin:0;}.modalHead p {margin:6px 0 0;color:var(--fw-muted);font-size:12px;}
+.iconBtn {min-height:40px;min-width:40px;background:var(--fw-panel-raised);border:1px solid var(--fw-line);border-radius:8px;color:var(--fw-text);cursor:pointer;}
+.eventDetailBody {padding:16px;}.eventDetailPanel {background:#101a27;border-color:var(--fw-line);}.eventDetailFooter {display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;}
+.field {display:grid;gap:6px;}.adminGrid {min-width:0;}.adminRow {flex-wrap:wrap;}.adminCard {min-width:0;border-color:var(--fw-line);background:#101a27;}.adminCard input {width:100%;}.adminCardHeader {flex-wrap:wrap;}.adminTableWrap {overflow:auto;max-width:100%;}
+@media(max-width:760px){.modal:not(.modalWide) {width:calc(100vw - 32px);}.modalHead {padding:16px;}.eventDetailBody {padding:12px;}.reportItem>span:first-child {text-align:left;}.reportItemNums {text-align:right;}.miniRow {flex-wrap:wrap;}.miniToggle {max-width:100%;}.adminGrid {grid-template-columns:1fr;}}

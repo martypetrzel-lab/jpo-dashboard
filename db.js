@@ -2015,3 +2015,10 @@ export async function updateEventManualDetail(id, patch = {}) {
   );
   return r.rows?.[0] || null;
 }
+
+// Public freshness only; diagnostic payloads and identities stay admin-only.
+export async function getPublicDataStatus() {
+  const r=await pool.query(`SELECT MAX(created_at) FILTER (WHERE error_text IS NULL OR error_text='') AS last_success, MAX(created_at) AS last_attempt FROM ingest_log`);
+  const row=r.rows[0]||{};
+  return {last_success:row.last_success||null,last_attempt:row.last_attempt||null};
+}

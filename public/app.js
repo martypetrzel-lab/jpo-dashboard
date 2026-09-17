@@ -596,32 +596,9 @@ function setStatus(text, ok = true) {
 }
 
 
-function normalizeEventCoords(ev) {
-  if (!ev || typeof ev !== "object") return ev;
-
-  const latRaw = ev.lat ?? ev.latitude;
-  const lonRaw = ev.lon ?? ev.lng ?? ev.longitude;
-
-  const lat = typeof latRaw === "number" ? latRaw : Number(String(latRaw ?? "").replace(",", "."));
-  const lon = typeof lonRaw === "number" ? lonRaw : Number(String(lonRaw ?? "").replace(",", "."));
-
-  return {
-    ...ev,
-    lat: Number.isFinite(lat) ? lat : null,
-    lon: Number.isFinite(lon) ? lon : null
-  };
-}
-
-function normalizeEventsCoords(items) {
-  return Array.isArray(items) ? items.map(normalizeEventCoords) : [];
-}
-
-function hasValidCoords(ev) {
-  const lat = Number(ev?.lat);
-  const lon = Number(ev?.lon);
-  return Number.isFinite(lat) && Number.isFinite(lon) && lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180;
-}
-
+function normalizeEventCoords(ev) {return FireWatchData.normalizeEvents([ev])[0] || ev;}
+function normalizeEventsCoords(items) {return FireWatchData.normalizeEvents(items);}
+function hasValidCoords(ev) {return FireWatchData.hasCoords(ev);}
 
 function initMap() {
   map = L.map("map").setView([49.8, 15.3], 7);
@@ -805,15 +782,8 @@ async function loadStations() {
   }
 }
 
-function formatDate(d) {
-  if (!d) return "";
-  try {
-    const dt = new Date(d);
-    if (isNaN(dt.getTime())) return d;
-    return dt.toLocaleString("cs-CZ");
-  } catch {
-    return d;
-  }
+function formatDate(value) {
+  const d=new Date(value);return value && Number.isFinite(d.getTime()) ? d.toLocaleString('cs-CZ',{timeZone:'Europe/Prague'}) : '—';
 }
 
 function formatDuration(min) {
@@ -959,21 +929,7 @@ function carryoverBadgeHtml(it) {
   return `<span class="carryoverBadge">⏳ ${escapeHtml(text)}</span>`;
 }
 
-function liveDurationForEvent(it) {
-  if (!it || it.is_closed) return it?.duration_min;
-
-  // Aktivní zásah: směrodatný začátek je pub_date z ESP/RSS.
-  // Fallbacky jsou jen pro případ, že RSS čas chybí.
-  const start = it.pub_date || it.start_time_iso || it.first_seen_at || it.created_at;
-  if (!start) return it.duration_min;
-
-  const d = new Date(start);
-  if (Number.isNaN(d.getTime())) return it.duration_min;
-
-  const minutes = Math.max(0, Math.round((Date.now() - d.getTime()) / 60000));
-  if (!Number.isFinite(minutes) || minutes > 60 * 24 * 7) return it.duration_min;
-  return minutes;
-}
+function liveDurationForEvent(it) {return FireWatchData.duration(it);}
 
 function alarmLevelBadge(it) {
   const level = Number(it?.alarm_level || it?.alarmLevel || 0);
@@ -1161,12 +1117,13 @@ function renderTable(items) {
 
   tbody.innerHTML = "";
 
-  const safeItems = Array.isArray(items) ? items : [];
+  const safeItems = FireWatchData.sortEvents(FireWatchData.normalizeEvents(items),document.getElementById('eventsSortSelect')?.value).slice(0,getEventsTableLimit());
   renderMobileEventCards(safeItems);
 
   for (const it of safeItems) {
     const meta = typeMeta(it.event_type);
     const tr = document.createElement("tr");
+    tr.classList.add(it.is_closed ? "eventClosed" : "eventOpen");
 
     if (typeof isMajorEventItem === "function" && isMajorEventItem(it)) {
       tr.classList.add("majorEventRow");
@@ -1220,27 +1177,22 @@ function makeEventIcon(eventType, it = null) {
   });
 }
 
+let latestSourceStatus=null;
+let mapHasFitted=false;
+let mapEventPoints=[];
+function fitEventMap() {if(mapEventPoints.length)map.fitBounds(mapEventPoints,{padding:[32,32],maxZoom:12});else map.setView([50.0,14.5],8);}
 function renderMap(items) {
-  markersLayer.clearLayers();
-
-  const pts = [];
-  for (const it of items) {
-    if (!hasValidCoords(it)) continue;
-    const marker = L.marker([Number(it.lat), Number(it.lon)], { icon: makeEventIcon(it.event_type, it) });
-    marker.bindPopup(`
-      <b>${escapeHtml(it.title)}</b><br>
-      <span style="opacity:.85">${escapeHtml(it.city_text || it.place_text || "")}</span><br>
-      <span style="opacity:.75">${statusEmoji(it.is_closed)} ${it.is_closed ? "ukončená" : "aktivní"}</span><br>
-      <a href="${escapeHtml(it.link)}" target="_blank" rel="noopener">detail</a>
-    `);
-    marker.addTo(markersLayer);
-    pts.push([Number(it.lat), Number(it.lon)]);
+  if(!markersLayer)return;markersLayer.clearLayers();mapEventPoints=[];
+  const rows=FireWatchData.normalizeEvents(items);
+  for(const it of rows){
+    if(!hasValidCoords(it))continue;
+    const marker=L.marker([it.lat,it.lon],{icon:makeEventIcon(it.event_type,it),opacity:it.is_closed?0.58:1});
+    const link=FireWatchData.safeLink(it.link);
+    marker.bindPopup('<b>'+escapeHtml(it.title)+'</b><br>'+escapeHtml(it.city_text||it.place_text||'')+'<br>'+escapeHtml(statusLabelForEvent(it))+'<br>'+escapeHtml(formatDate(it.start_time_iso||it.pub_date))+(link?'<br><a href="'+escapeHtml(link)+'" target="_blank" rel="noopener noreferrer">Zdroj události</a>':''));
+    marker.addTo(markersLayer);mapEventPoints.push([it.lat,it.lon]);
   }
-
-  if (pts.length > 0) {
-    // nezoomuj úplně agresivně (ať to neskáče)
-    // map.fitBounds(pts, { padding: [24, 24] });
-  }
+  const summary=document.getElementById('mapDataSummary');if(summary)summary.textContent=mapEventPoints.length+' na mapě · '+(rows.length-mapEventPoints.length)+' bez souřadnic';
+  if(!mapHasFitted && mapEventPoints.length){fitEventMap();mapHasFitted=true;}
 }
 
 function safeInvalidateMap() {
@@ -1644,8 +1596,8 @@ async function loadAll(options = {}) {
     const qStats = buildStatsQuery(filters);
 
     const [eventsRes, statsRes] = await Promise.all([
-      fetch(`/api/events${qEvents ? `?${qEvents}&_=${Date.now()}` : `?_=${Date.now()}`}`, { cache: "no-store" }),
-      fetch(`/api/stats${qStats ? `?${qStats}&_=${Date.now()}` : `?_=${Date.now()}`}`, { cache: "no-store" })
+      fetch(`/api/events${qEvents ? `?${qEvents}&_=${Date.now()}` : `?_=${Date.now()}`}`, { cache: "no-store", signal:AbortSignal.timeout(15000) }),
+      fetch(`/api/stats${qStats ? `?${qStats}&_=${Date.now()}` : `?_=${Date.now()}`}`, { cache: "no-store", signal:AbortSignal.timeout(15000) })
     ]);
 
     if (!eventsRes.ok || !statsRes.ok) throw new Error("bad http");
@@ -1653,31 +1605,8 @@ async function loadAll(options = {}) {
     let eventsJson = await eventsRes.json();
     const statsJson = await statsRes.json();
 
-    let usedCityDayFallback = false;
-    if ((!eventsJson.items || eventsJson.items.length === 0) && filters.city && (filters.day === "today" || filters.day === "yesterday")) {
-      const fallbackFilters = { ...filters, day: "all" };
-      const qFallback = buildEventsQuery(fallbackFilters);
-      const fallbackRes = await fetch(`/api/events${qFallback ? `?${qFallback}&_=${Date.now()}` : `?_=${Date.now()}`}`, { cache: "no-store" });
-      if (fallbackRes.ok) {
-        const fallbackJson = await fallbackRes.json();
-        if (fallbackJson.items && fallbackJson.items.length > 0) {
-          eventsJson = fallbackJson;
-          usedCityDayFallback = true;
-        }
-      }
-    }
-
-    const items = Array.isArray(eventsJson.items) ? eventsJson.items : [];
-    latestEventsTotalMatching = Number(eventsJson.total_matching || items.length || 0);
-
-    // Ochrana proti „vynulování“ obrazovky:
-    // pokud auto-refresh vrátí prázdno, ale předtím jsme měli funkční data,
-    // nepřepíšeme mapu/tabulku/grafy prázdným stavem.
-    if (isAutoRefresh && items.length === 0 && lastGoodItemsSnapshot.length > 0) {
-      const ageMin = Math.round((Date.now() - lastGoodLoadAt) / 60000);
-      setStatus(`OK • ponechána poslední data (${lastGoodItemsSnapshot.length} záznamů, ${ageMin} min)`, true);
-      return;
-    }
+    const items=FireWatchData.normalizeEvents(eventsJson.items);
+    latestEventsTotalMatching=Number(eventsJson.total_matching ?? items.length);
 
     // snapshot pro audio souhrn
     latestItemsSnapshot = items;
@@ -1685,11 +1614,10 @@ async function loadAll(options = {}) {
     window.latestItemsSnapshot = items;
     window.latestStatsSnapshot = statsJson;
 
-    if (items.length > 0) {
-      lastGoodItemsSnapshot = items;
-      lastGoodStatsSnapshot = statsJson;
-      lastGoodLoadAt = Date.now();
-    }
+    lastGoodItemsSnapshot=items;
+    lastGoodStatsSnapshot=statsJson;
+    lastGoodLoadAt=Date.now();
+    latestSourceStatus=eventsJson.data_status || null;
 
     renderTable(items);
     renderMajorEvents(items);
@@ -1708,14 +1636,16 @@ async function loadAll(options = {}) {
     renderLongest(statsJson.longest || []);
 
     const missing = items.filter(x => !hasValidCoords(x)).length;
-    setStatus(`OK • ${items.length} záznamů • bez souřadnic ${missing}${usedCityDayFallback ? " • město zobrazeno ze všech dnů" : ""}`, true);
+    setStatus(`OK • ${items.length} záznamů • bez souřadnic ${missing}`, true);
   } catch (e) {
     console.warn("[loadAll] refresh failed:", e);
 
     // Při chybě refreshu zachovej poslední dobrá data, ať web nespadne do prázdna.
     if (lastGoodItemsSnapshot.length > 0) {
       const ageMin = Math.round((Date.now() - lastGoodLoadAt) / 60000);
-      setStatus(`OK • ponechána poslední data (${lastGoodItemsSnapshot.length} záznamů, ${ageMin} min)`, true);
+      setStatus(`Chyba obnovení • poslední data před ${ageMin} min`, false);
+      const health=document.getElementById("overviewDataHealth");if(health){health.textContent="Data se nepodařilo obnovit. Zobrazuji poslední úspěšné načtení.";health.className="warn";}
+      const signal=document.getElementById("dataSourceSignal");if(signal){signal.textContent="● Chyba obnovení";signal.className="v29Signal warn";}
     } else {
       setStatus("chyba načítání", false);
     }
@@ -2866,7 +2796,7 @@ function updateCommandOverview(items = [], stats = null) {
 
   if (lastUpdate) {
     try {
-      lastUpdate.textContent = `aktualizováno ${new Intl.DateTimeFormat("cs-CZ", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date())}`;
+      lastUpdate.textContent = `aktualizováno ${new Intl.DateTimeFormat("cs-CZ", { timeZone:"Europe/Prague", hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(lastGoodLoadAt || Date.now()))}`;
     } catch {
       lastUpdate.textContent = "aktualizováno nyní";
     }
@@ -2879,17 +2809,11 @@ function updateCommandOverview(items = [], stats = null) {
     filterLabel.textContent = `Filtr: ${dayMap[f.day] || f.day || "—"} • ${f.type || "vše"} • ${statusMap[f.status] || f.status || "vše"}${f.city ? ` • ${f.city}` : ""}`;
   }
 
-  if (dataHealth) {
-    if (safeItems.length === 0) {
-      dataHealth.textContent = "Stav dat: bez záznamů pro filtr";
-      dataHealth.className = "warn";
-    } else if (missing > 0) {
-      dataHealth.textContent = `Stav dat: ${missing} bez GPS`;
-      dataHealth.className = "warn";
-    } else {
-      dataHealth.textContent = "Stav dat: GPS kompletní";
-      dataHealth.className = "ok";
-    }
+  if(dataHealth){
+    const time=latestSourceStatus?.last_success;
+    const stale=!time || Date.now()-new Date(time).getTime()>20*60000;
+    dataHealth.textContent=time ? 'Poslední import: '+formatDate(time)+(stale?' · zdroj může být zastaralý':'') : 'Poslední úspěšný import zatím není známý';dataHealth.className=stale?'warn':'ok';
+    const signal=document.getElementById('dataSourceSignal');if(signal){signal.textContent=stale?'● Ověřte čerstvost zdroje':'● Zdroj aktualizován';signal.className='v29Signal '+(stale?'warn':'ok');}
   }
 
   if (primary) {
@@ -3486,8 +3410,8 @@ async function openEventDetailModal(id) {
     if (sourceInput) sourceInput.value = savedSource;
 
     const sourceLink = document.getElementById("eventDetailSourceLink");
-    if (sourceLink && ev.link) {
-      sourceLink.href = ev.link;
+    if (sourceLink && FireWatchData.safeLink(ev.link)) {
+      sourceLink.href = FireWatchData.safeLink(ev.link);
       sourceLink.style.display = "";
     } else if (sourceLink) {
       sourceLink.removeAttribute("href");
@@ -3866,7 +3790,7 @@ async function submitManualCreateEvent() {
 
 function formatDiagTime(value) {
   if (!value) return "—";
-  try { return new Intl.DateTimeFormat("cs-CZ", { dateStyle: "short", timeStyle: "medium" }).format(new Date(value)); }
+  try { return new Intl.DateTimeFormat("cs-CZ", { timeZone:"Europe/Prague",dateStyle: "short", timeStyle: "medium" }).format(new Date(value)); }
   catch { return String(value); }
 }
 
@@ -3914,7 +3838,7 @@ async function loadIngestDiagnostics() {
         ? rows.map((x) => `
           <div class="ingestLogItem">
             <b>${escapeHtml(formatDiagTime(x.created_at))}</b>
-            <span>${escapeHtml(x.source || "unknown")} • přijato ${Number(x.received_count || 0)} • přijato do DB ${Number(x.accepted_count || 0)} • nové ${Number(x.new_count || 0)} • aktualizace ${Number(x.updated_count || 0)}${x.error_text ? ` • chyba: ${escapeHtml(x.error_text)}` : ""}</span>
+            <span>${escapeHtml(x.source || "unknown")} • přijato ${Number(x.received_count || 0)} • přijato do DB ${Number(x.accepted_count || 0)} • nové ${Number(x.new_count || 0)} • aktualizace ${Number(x.updated_count || 0)} • přeskočeno ${Number(x.skipped_count || 0)} (starší ${Number(x.skipped_older_count || 0)})${x.error_text ? ` • chyba: ${escapeHtml(x.error_text)}` : ""}</span>
           </div>
         `).join("")
         : `<div class="muted">Zatím není žádný ingest log. Začne se plnit po nasazení této verze.</div>`;
@@ -4025,7 +3949,7 @@ function wireManualCreateAndDiagnostics() {
 }
 
 // UI events
-document.getElementById("refreshBtn").addEventListener("click", () => { resetFilters(); loadAll(); });
+document.getElementById("refreshBtn").addEventListener("click", () => loadAll());
 document.getElementById("applyBtn").addEventListener("click", loadAll);
 document.getElementById("resetBtn").addEventListener("click", () => { resetFilters(); loadAll(); });
 document.getElementById("exportCsvBtn").addEventListener("click", () => exportWithFilters("csv"));
@@ -5313,8 +5237,8 @@ function toggleTvMode() {
   syncAudioUi();
 
   // buttons
-  document.getElementById("loginBtn")?.addEventListener("click", () => clickElementById("loginBtn"));
-  document.getElementById("registerBtn")?.addEventListener("click", () => clickElementById("registerBtn"));
+  document.getElementById("loginBtn")?.addEventListener("click", () => openModal("login"));
+  document.getElementById("registerBtn")?.addEventListener("click", () => openModal("register"));
   document.getElementById("requestOpsBtn")?.addEventListener("click", requestOpsAccess);
   document.getElementById("logoutBtn")?.addEventListener("click", doLogout);
   document.getElementById("adminBtn")?.addEventListener("click", async () => {
@@ -5415,197 +5339,6 @@ function toggleTalkPanel() {
 // FireWatchCZ login/register fallback
 // Keeps login and registration working in public/guest mode.
 // -----------------------------------------------------------------------------
-function fwPrompt(title, fields, onSubmit) {
-  const old = document.getElementById("fwPromptOverlay");
-  if (old) old.remove();
-
-  const overlay = document.createElement("div");
-  overlay.id = "fwPromptOverlay";
-  overlay.className = "fwPromptOverlay";
-
-  const box = document.createElement("div");
-  box.className = "fwPromptBox";
-
-  const h = document.createElement("h2");
-  h.textContent = title;
-  box.appendChild(h);
-
-  const inputs = {};
-
-  fields.forEach((f) => {
-    const label = document.createElement("label");
-    label.className = "fwPromptLabel";
-    label.textContent = f.label;
-
-    const input = document.createElement("input");
-    input.className = "fwPromptInput";
-    input.type = f.type || "text";
-    input.placeholder = f.placeholder || "";
-    input.value = f.value || "";
-    input.autocomplete = f.autocomplete || "off";
-
-    label.appendChild(input);
-    box.appendChild(label);
-    inputs[f.name] = input;
-  });
-
-  const msg = document.createElement("div");
-  msg.className = "fwPromptMsg";
-  box.appendChild(msg);
-
-  const actions = document.createElement("div");
-  actions.className = "fwPromptActions";
-
-  const cancel = document.createElement("button");
-  cancel.className = "btn";
-  cancel.textContent = "Zrušit";
-  cancel.addEventListener("click", () => overlay.remove());
-
-  const submit = document.createElement("button");
-  submit.className = "btn primary";
-  submit.textContent = title.includes("Registr") ? "Registrovat" : "Přihlásit";
-  submit.addEventListener("click", async () => {
-    msg.textContent = "";
-    submit.disabled = true;
-    try {
-      const values = {};
-      Object.entries(inputs).forEach(([key, input]) => values[key] = input.value.trim());
-
-      await onSubmit(values, msg);
-      overlay.remove();
-
-      if (typeof refreshMe === "function") await refreshMe();
-      if (typeof syncPublicGuestUi === "function") syncPublicGuestUi();
-      if (typeof loadAll === "function") loadAll();
-    } catch (e) {
-      msg.textContent = e?.message || "Akce se nepodařila.";
-    } finally {
-      submit.disabled = false;
-    }
-  });
-
-  actions.appendChild(cancel);
-  actions.appendChild(submit);
-  box.appendChild(actions);
-  overlay.appendChild(box);
-  document.body.appendChild(overlay);
-
-  const first = Object.values(inputs)[0];
-  if (first) setTimeout(() => first.focus(), 50);
-}
-
-async function fwPostJson(url, body) {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify(body)
-  });
-
-  let data = null;
-  try { data = await res.json(); } catch (_) {}
-
-  if (!res.ok) {
-    const msg = data?.error || data?.message || `HTTP ${res.status}`;
-    throw new Error(msg);
-  }
-
-  return data || {};
-}
-
-function fwOpenLoginDialog() {
-  fwPrompt("Přihlášení", [
-    { name: "username", label: "Uživatelské jméno", autocomplete: "username" },
-    { name: "password", label: "Heslo", type: "password", autocomplete: "current-password" }
-  ], async (v, msg) => {
-    if (!v.username || !v.password) throw new Error("Vyplň uživatelské jméno a heslo.");
-    msg.textContent = "Přihlašuji…";
-
-    const endpoints = ["/api/auth/login", "/api/login", "/auth/login"];
-    let lastError = null;
-
-    for (const ep of endpoints) {
-      try {
-        await fwPostJson(ep, { username: v.username, password: v.password });
-        return;
-      } catch (e) {
-        lastError = e;
-      }
-    }
-
-    throw lastError || new Error("Přihlášení se nepodařilo.");
-  });
-}
-
-function fwOpenRegisterDialog() {
-  fwPrompt("Registrace", [
-    { name: "username", label: "Uživatelské jméno", autocomplete: "username" },
-    { name: "name", label: "Zobrazované jméno" },
-    { name: "password", label: "Heslo", type: "password", autocomplete: "new-password" },
-    { name: "password2", label: "Heslo znovu", type: "password", autocomplete: "new-password" }
-  ], async (v, msg) => {
-    if (!v.username || v.username.length < 3) throw new Error("Uživatelské jméno musí mít aspoň 3 znaky.");
-    if (!v.password || v.password.length < 6) throw new Error("Heslo musí mít aspoň 6 znaků.");
-    if (v.password !== v.password2) throw new Error("Hesla se neshodují.");
-
-    msg.textContent = "Registruji…";
-
-    const payload = {
-      username: v.username,
-      name: v.name || v.username,
-      displayName: v.name || v.username,
-      password: v.password
-    };
-
-    const endpoints = ["/api/auth/register", "/api/register", "/auth/register"];
-    let lastError = null;
-
-    for (const ep of endpoints) {
-      try {
-        await fwPostJson(ep, payload);
-
-        // Try auto-login after registration.
-        try {
-          await fwPostJson("/api/auth/login", { username: v.username, password: v.password });
-        } catch (_) {
-          try { await fwPostJson("/api/login", { username: v.username, password: v.password }); } catch (_) {}
-        }
-
-        return;
-      } catch (e) {
-        lastError = e;
-      }
-    }
-
-    throw lastError || new Error("Registrace se nepodařila.");
-  });
-}
-
-(function fwWireLoginRegisterFallback() {
-  function wire(id, fn) {
-    const el = document.getElementById(id);
-    if (!el) return;
-
-    // Capture phase prevents broken previous handlers from swallowing the click.
-    el.addEventListener("click", (ev) => {
-      ev.preventDefault();
-      ev.stopImmediatePropagation();
-      fn();
-    }, true);
-  }
-
-  wire("loginBtn", fwOpenLoginDialog);
-  wire("registerBtn", fwOpenRegisterDialog);
-  wire("guestLoginBtn", fwOpenLoginDialog);
-  wire("guestRegisterBtn", fwOpenRegisterDialog);
-  wire("talkLockedLoginBtn", fwOpenLoginDialog);
-  wire("talkLockedRegisterBtn", fwOpenRegisterDialog);
-})();
-
-
-
-
-// -----------------------------------------------------------------------------
 // FireWatchCZ Reports Archive - safe wiring fallback
 // -----------------------------------------------------------------------------
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',wireReportsArchive,{once:true});else wireReportsArchive();
@@ -5651,3 +5384,15 @@ function setupSupportersTab() {
 }
 
 document.addEventListener("DOMContentLoaded", setupSupportersTab);
+
+document.getElementById("eventsSortSelect")?.addEventListener("change",()=>renderTable(latestItemsSnapshot));
+document.getElementById("mapFitBtn")?.addEventListener("click",fitEventMap);
+document.getElementById("mapResetBtn")?.addEventListener("click",()=>map?.setView([50.0,14.5],8));
+
+// Keyboard dismissal and a focus trap shared by existing dialogs.
+document.addEventListener("keydown",event=>{
+  const modal=[...document.querySelectorAll(".modal")].find(el=>el.getClientRects().length>0);
+  if(!modal)return;
+  if(event.key==="Escape"){closeModals();document.getElementById("eventDetailCloseBtn")?.click();document.getElementById("manualEventCloseBtn")?.click();}
+  if(event.key==="Tab"){const controls=[...modal.querySelectorAll("button,a[href],input,select,textarea,[tabindex=\"0\"]")].filter(el=>!el.disabled&&el.getClientRects().length);if(!controls.length)return;const first=controls[0],last=controls.at(-1);if(event.shiftKey&&(document.activeElement===first||!modal.contains(document.activeElement))){event.preventDefault();last.focus();}else if(!event.shiftKey&&(document.activeElement===last||!modal.contains(document.activeElement))){event.preventDefault();first.focus();}}
+});

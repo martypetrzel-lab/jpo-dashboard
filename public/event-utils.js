@@ -1,0 +1,43 @@
+/* Shared, DOM-free rules used by the dashboard and tested in Node. */
+(function (scope) {
+  function coordinate(value) {
+    if (value == null || String(value).trim() === '') return null;
+    const number = Number(String(value).replace(',', '.'));
+    return Number.isFinite(number) ? number : null;
+  }
+  function hasCoords(event) {
+    const lat = coordinate(event?.lat), lon = coordinate(event?.lon);
+    return lat !== null && lon !== null && Math.abs(lat) <= 90 && Math.abs(lon) <= 180 && !(lat === 0 && lon === 0);
+  }
+  function normalizeEvents(items) {
+    const rows = new Map();
+    for (const item of Array.isArray(items) ? items : []) {
+      if (!item || item.id == null || !String(item.id).trim()) continue;
+      rows.set(String(item.id), {...item, lat:coordinate(item.lat ?? item.latitude), lon:coordinate(item.lon ?? item.lng ?? item.longitude)});
+    }
+    return [...rows.values()];
+  }
+  function sortEvents(items, order = 'active') {
+    const time = row => {const t = Date.parse(row.start_time_iso || row.pub_date || '');return Number.isFinite(t) ? t : 0;};
+    return [...items].sort((a,b) => (order === 'active' ? Number(!!a.is_closed)-Number(!!b.is_closed) : 0) || (order === 'oldest' ? time(a)-time(b) : time(b)-time(a)) || String(a.id).localeCompare(String(b.id)));
+  }
+  function duration(event, now = Date.now()) {
+    if (!event) return null;
+    if (event.is_closed) {
+      if (!['rss_end_time','esp_duration','explicit','manual'].includes(event.duration_source)) return null;
+      const n = Number(event.duration_min);
+      return event.duration_min != null && Number.isFinite(n) && n > 0 ? n : null;
+    }
+    const start = Date.parse(event.start_time_iso || event.pub_date || '');
+    if (!Number.isFinite(start) || start > now) return null;
+    return Math.floor((now-start)/60000);
+  }
+  function safeLink(value) {
+    try {const url = new URL(value);return ['http:','https:'].includes(url.protocol) ? url.href : '';} catch {return '';}
+  }
+  function reconnectDelay(attempt, closeCode) {
+    if (attempt >= 6 || [1008,4001,4003].includes(closeCode)) return null;
+    return Math.min(30000,1800 * 2 ** attempt);
+  }
+  scope.FireWatchData = Object.freeze({coordinate,hasCoords,normalizeEvents,sortEvents,duration,safeLink,reconnectDelay});
+})(globalThis);
