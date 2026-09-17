@@ -31,3 +31,4 @@ jobs:
         env:
           FIREWATCH_INGEST_URL: ${{ secrets.FIREWATCH_INGEST_URL }}
           FIREWATCH_API_KEY: ${{ secrets.FIREWATCH_API_KEY }}
+          RSS2JSON_API_KEY: ${{ secrets.RSS2JSON_API_KEY }}
