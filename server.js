@@ -3791,9 +3791,33 @@ app.get('/api/stats',async(req,res)=>{
 });
 
 // export CSV
+function csvEscape(value) {
+  let text=String(value??"");
+  // RSS titles are untrusted text, never spreadsheet formulas.
+  if (/^[=+@-]/.test(text)) text="'"+text;
+  return /[;"\r\n]/.test(text)?'"'+text.replace(/"/g,'""')+'"':text;
+}
+function exportEventDuration(event) {
+  if(event.is_closed)return ["rss_end_time","esp_duration","explicit","manual"].includes(event.duration_source)?event.duration_min:null;
+  const start=Date.parse(event.start_time_iso||event.pub_date||"");
+  return Number.isFinite(start)&&start<=Date.now()?Math.floor((Date.now()-start)/60000):null;
+}
+function fmtDuration(minutes) {
+  return Number.isFinite(minutes)&&minutes>=0?formatMinutesLong(minutes):"—";
+}
+function fmtDate(value) {
+  if(!value)return "—";
+  const date=new Date(value);
+  return Number.isNaN(date.getTime())?"—":date.toLocaleString("cs-CZ",{timeZone:"Europe/Prague"});
+}
+function exportLimit(raw,fallback,max) {
+  const value=String(raw??fallback);
+  if(!/^\d+$/.test(value)||Number(value)<1)throw Object.assign(new Error('bad_limit'),{status:400});
+  return Math.min(Number(value),max);
+}
 app.get("/api/export.csv", safeRoute(async (req, res) => {
   const filters = parseFilters(req);
-  const limit = Math.min(Number(req.query.limit || 2000), 5000);
+  const limit = exportLimit(req.query.limit,2000,5000);
 
   // Export musí respektovat přesně aktuální filtry z UI.
   // Žádný fallback bez filtrů – jinak uživatel dostane jiná data než vidí v tabulce.
@@ -3815,7 +3839,7 @@ app.get("/api/export.csv", safeRoute(async (req, res) => {
     const stav = csvEscape(r.is_closed ? "ukoncena" : "aktivni");
     const typ = csvEscape(typeLabel(r.event_type || "other"));
     const mesto = csvEscape(r.city_text || r.place_text || "");
-    const delka = csvEscape(fmtDuration(r.duration_min));
+    const delka = csvEscape(fmtDuration(exportEventDuration(r)));
     const nazev = csvEscape(r.title || "");
     const link = csvEscape(r.link || "");
     out.push([cas, stav, typ, mesto, delka, nazev, link].join(";"));
@@ -3847,7 +3871,7 @@ function tryApplyPdfFont(doc) {
 
 app.get("/api/export.pdf", safeRoute(async (req, res) => {
   const filters = parseFilters(req);
-  const limit = Math.min(Number(req.query.limit || 800), 2000);
+  const limit = exportLimit(req.query.limit,800,2000);
 
   // Export PDF musí respektovat přesně aktuální filtry z UI.
   // Žádný fallback bez filtrů – jinak PDF neodpovídá tabulce na webu.
@@ -3864,7 +3888,7 @@ app.get("/api/export.pdf", safeRoute(async (req, res) => {
   const now = new Date();
   doc.fontSize(18).fillColor("#000").text("JPO výjezdy – export");
   doc.moveDown(0.2);
-    doc.fontSize(10).fillColor("#333").text(`Vygenerováno: ${now.toLocaleString("cs-CZ")}`);
+    doc.fontSize(10).fillColor("#333").text(`Vygenerováno: ${fmtDate(now)}`);
   doc.moveDown(0.2);
   doc.fontSize(10).fillColor("#333").text(`Filtry: ${exportFiltersLabel(filters)}`);
   doc.moveDown(0.2);
@@ -3897,29 +3921,14 @@ app.get("/api/export.pdf", safeRoute(async (req, res) => {
   doc.moveTo(24, doc.y).lineTo(820, doc.y).strokeColor("#ddd").stroke();
   doc.moveDown(0.3);
 
-  const fmt = (v) => {
-    if (!v) return "";
-    const d = new Date(v);
-    if (Number.isNaN(d.getTime())) return String(v);
-    return d.toLocaleString("cs-CZ");
-  };
-
-  const fmtDur = (m) => {
-    if (!Number.isFinite(m) || m <= 0) return "—";
-    const h = Math.floor(m / 60);
-    const mm = m % 60;
-    if (h <= 0) return `${mm} min`;
-    return `${h} h ${mm} min`;
-  };
-
   for (const r of rows) {
     const y = doc.y;
 
-    const time = fmt(r.pub_date || r.created_at);
+    const time = fmtDate(r.pub_date || r.created_at);
     const state = r.is_closed ? "UKONČENO" : "AKTIVNÍ";
     const typ = typeLabel(r.event_type || "other");
     const city = r.city_text || r.place_text || "";
-    const dur = fmtDur(r.duration_min);
+    const dur = fmtDuration(exportEventDuration(r));
     const title = r.title || "";
 
     doc.fillColor("#000").text(time, col.time, y, { width: 120 });

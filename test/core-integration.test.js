@@ -38,6 +38,13 @@ test("longest statistics include trusted closed durations and exclude inferred m
   const stats=await getStatsFiltered(filters);assert.deepEqual(stats.longest.map(r=>r.id),['stats-trusted']);assert.equal(stats.longest[0].duration_min,42);
  }
 });
+test("CSV and PDF exports preserve filters, Prague time and safe trusted duration",async()=>{
+ await pool.query("UPDATE events SET title='=2+2',pub_date='2026-09-17T10:23:47Z' WHERE id='stats-trusted'");
+ const csv=await fetch(base+'/api/export.csv?day=all&city=Stats%20fixture&status=closed&limit=10');assert.equal(csv.status,200);
+ const text=await csv.text();assert.ok(text.includes("'"+'=2+2'));assert.ok(text.includes('17. 9. 2026 12:23:47'));assert.ok(text.includes('42 min'));assert.ok(!text.includes('999 min'));assert.ok(text.includes('pocet;2'));
+ const pdf=await fetch(base+'/api/export.pdf?day=all&city=Stats%20fixture&limit=10');assert.equal(pdf.status,200);assert.ok((await pdf.text()).startsWith('%PDF'));
+ assert.equal((await fetch(base+'/api/export.csv?limit=invalid')).status,400);assert.equal((await fetch(base+'/api/export.pdf?limit=-1')).status,400);
+});
 
 test("registration creates a working session and logout invalidates it", async () => {
   const result = await jsonRequest("/api/auth/register", { username: "audit.public", password: crypto.randomUUID() });
