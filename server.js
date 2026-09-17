@@ -2950,7 +2950,7 @@ async function handleIngest(req, res) {
 
       const prev = await getEventMeta(it.id);
       const restrictRssToCurrentDay = ["github_actions_rss", "github_actions_rss2json", "server_rss_worker"].includes(source);
-      if (restrictRssToCurrentDay && !shouldIngestRssItemForToday(it, { previouslyKnown: !!prev })) continue;
+      if (restrictRssToCurrentDay && !shouldIngestRssItemForToday(it, { previouslyKnownOpen: prev?.is_closed === false })) continue;
 
       const eventType = it.eventType || classifyType(it.title);
       const desc = it.descriptionRaw || it.descRaw || it.description || "";
