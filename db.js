@@ -1058,7 +1058,6 @@ function buildTimeWindowSql(day, params, iStart) {
         OR
         (
           is_closed = FALSE
-          AND (COALESCE(alarm_level, 0) >= 2 OR COALESCE(is_major_event, FALSE) = TRUE)
           AND (${t} AT TIME ZONE 'Europe/Prague')::date
               < ((NOW() AT TIME ZONE 'Europe/Prague')::date - $${i}::int)
         )
@@ -1134,14 +1133,12 @@ export async function getEventsFiltered(filters, limit = 400) {
       manual_detail_text, manual_detail_source, manual_detail_updated_at,
       (
         is_closed = FALSE
-        AND (COALESCE(alarm_level, 0) >= 2 OR COALESCE(is_major_event, FALSE) = TRUE)
         AND (COALESCE(NULLIF(pub_date,'' )::timestamptz, NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date
             < (NOW() AT TIME ZONE 'Europe/Prague')::date
       ) AS is_carryover_active,
       (
         CASE
           WHEN is_closed = FALSE
-               AND (COALESCE(alarm_level, 0) >= 2 OR COALESCE(is_major_event, FALSE) = TRUE)
                AND (COALESCE(NULLIF(pub_date,'' )::timestamptz, NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date
                < (NOW() AT TIME ZONE 'Europe/Prague')::date
           THEN ((NOW() AT TIME ZONE 'Europe/Prague')::date - (COALESCE(NULLIF(pub_date,'' )::timestamptz, NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date)::int
@@ -1725,14 +1722,12 @@ export async function getEventsForPeriod(startIso, endExclusiveIso) {
       manual_detail_text, manual_detail_source, manual_detail_updated_at,
       (
         is_closed = FALSE
-        AND (COALESCE(alarm_level, 0) >= 2 OR COALESCE(is_major_event, FALSE) = TRUE)
         AND (COALESCE(NULLIF(pub_date,'' )::timestamptz, NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date
             < (NOW() AT TIME ZONE 'Europe/Prague')::date
       ) AS is_carryover_active,
       (
         CASE
           WHEN is_closed = FALSE
-               AND (COALESCE(alarm_level, 0) >= 2 OR COALESCE(is_major_event, FALSE) = TRUE)
                AND (COALESCE(NULLIF(pub_date,'' )::timestamptz, NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date
                < (NOW() AT TIME ZONE 'Europe/Prague')::date
           THEN ((NOW() AT TIME ZONE 'Europe/Prague')::date - (COALESCE(NULLIF(pub_date,'' )::timestamptz, NULLIF(start_time_iso,'' )::timestamptz, created_at) AT TIME ZONE 'Europe/Prague')::date)::int
