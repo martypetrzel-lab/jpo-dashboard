@@ -1,3 +1,5 @@
+import {createGeocoder, createGeocodeJobs, buildQueries, eventLocation, annotateEventGeo, diagnoseCoordinates, canImprove, insideCz} from './geocoding.js';
+import {getGeoCache,setGeoCache,reserveGeocodeRequest,getGeoAuditRows,applyGeoProposal,geoFingerprint,recordGeoFailure} from './db.js';
 import express from "express";
 import {createRateLimiter} from "./security.js";
 import http from "http";
@@ -14,7 +16,7 @@ import { createRssWorker, readRssConfig, shouldIngestRssItemForToday, testRssCon
 // ======================
 // Geocoding: timeout + circuit breaker (prevents spam when provider is down)
 // ======================
-let geocodeDisabledUntil = 0;
+
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = 8000) {
   const controller = new AbortController();
@@ -35,12 +37,8 @@ import {
   getPublicDataStatus,
   countEventsFiltered,
   getStatsFiltered,
-  getCachedGeocode,
-  setCachedGeocode,
   updateEventCoords,
   clearEventCoords,
-  deleteCachedGeocode,
-  getEventsOutsideCz,
   getEventFirstSeen,
   getEventMeta,
   updateEventDuration,
@@ -116,13 +114,6 @@ let rssWorker = null;
 
 // ---------------- CONFIG ----------------
 const API_KEY = process.env.API_KEY || "";
-const GEOCODE_UA = process.env.GEOCODE_UA || "firewatchcz/1.0 (contact: admin@firewatchcz.local)";
-
-// omez geo na Středočeský kraj (bounding box)
-const STC_VIEWBOX = process.env.STC_VIEWBOX || "13.25,50.71,15.65,49.30"; // left,top,right,bottom
-const STC_STATE_ALLOW = /stredocesky|central bohemia/i;
-
-
 // ---------------- ESP-only auto-close (stale open events) ----------------
 // Pokud ESP přestane posílat aktivní událost, po určité době ji uzavřeme:
 // end_time = last_seen_at, duration se dopočítá z startu.
@@ -397,13 +388,7 @@ function extractCityFromTitle(title) {
   return null;
 }
 
-function extractCityFromDescription(descRaw) {
-  const desc = String(descRaw || "").replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&amp;", "&");
-  const lines = desc.split(/<br\s*\/?>|\n/g).map(s => s.trim()).filter(Boolean);
-  // typicky: ["stav: ...", "ukončení: ...", "Město", "okres ..."]
-  const city = lines.find(l => !/^stav\s*:/i.test(l) && !/^ukončen/i.test(l) && !/^okres\s+/i.test(l));
-  return city || null;
-}
+function extractCityFromDescription(descRaw) {return eventLocation({descriptionRaw:descRaw}).municipality || null;}
 
 function extractDistrictFromDescription(descRaw) {
   const desc = String(descRaw || "");
@@ -488,350 +473,10 @@ async function computeDurationMin(id, startIso, endIso, firstSeen, cutoffIso) {
 
 
 
-// ---------------- GEOCODE (CZ ONLY) ----------------
+export const geocoder=createGeocoder({getCache:getGeoCache,setCache:setGeoCache,reserve:reserveGeocodeRequest,endpoint:process.env.GEOCODE_URL || 'https://nominatim.openstreetmap.org/search',userAgent:process.env.GEOCODE_UA || 'FireWatchCZ/1.1 (https://firewatchcz.cz/)'});
+let geocodeJobsActive=false;
+const geocodeJobs=createGeocodeJobs({lookup:(...args)=>geocoder.lookup(...args),getEvent:getEventById,apply:applyGeoProposal,recordFailure:recordGeoFailure,onError:()=>console.warn('[geocode] background_lookup_failed')});
 
-function deaccent(input) {
-  return String(input || "")
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "");
-}
-
-function normalizePlaceKey(input) {
-  return deaccent(input)
-    .toLowerCase()
-    .replace(/\([^)]*\)/g, " ")
-    .replace(/\bokres\b/g, " ")
-    .replace(/\bok\.\b/g, " ")
-    .replace(/\bčást obce\b/g, " ")
-    .replace(/\bobec\b/g, " ")
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim()
-    .replace(/\s+/g, " ");
-}
-
-function normalizePlaceQuery(placeText) {
-  const raw = String(placeText || "").trim();
-  if (!raw) return "";
-
-  return raw
-    .replace(/\([^)]*\)/g, " ")
-    .replace(/^okres\s+/i, "")
-    .replace(/^ok\.\s*/i, "")
-    .replace(/\s*-\s*okres\s+.*$/i, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function isAllowedGeocodeState(state) {
-  const strict = process.env.STRICT_STC_GEOCODE === "1";
-  if (!strict) return true;
-
-  const s = normalizePlaceKey(state);
-  return (
-    s.includes("stredocesky") ||
-    s.includes("central bohemia") ||
-    s.includes("hlavni mesto praha") ||
-    s.includes("praha")
-  );
-}
-
-// Lokální fallback pro časté obce a města.
-// Slouží hlavně jako rychlá záloha, když Nominatim nedá výsledek nebo ho dočasně blokuje.
-// Souřadnice jsou orientační středy obcí.
-const LOCAL_PLACE_COORDS = new Map(Object.entries({
-  "kladno": [50.1431, 14.1052],
-  "mlada boleslav": [50.4114, 14.9032],
-  "nymburk": [50.1856, 15.0433],
-  "neratovice": [50.2593, 14.5176],
-  "pribram": [49.6899, 14.0104],
-  "kolin": [50.0281, 15.2016],
-  "brandys nad labem stara boleslav": [50.1871, 14.6633],
-  "brandys nad labem": [50.1867, 14.6692],
-  "stara boleslav": [50.1938, 14.6724],
-  "beroun": [49.9638, 14.0720],
-  "rakovnik": [50.1037, 13.7334],
-  "caslav": [49.9105, 15.3897],
-  "celakovice": [50.1605, 14.7501],
-  "kosmonosy": [50.4385, 14.9308],
-  "uhlicke janovice": [49.8802, 15.0648],
-  "uhlirske janovice": [49.8802, 15.0648],
-  "zbizuby": [49.8184, 15.0730],
-  "petrovice": [49.5542, 14.3374],
-  "nove dvory": [49.9700, 15.3318],
-  "stara hut": [49.7840, 14.1984],
-  "cestin": [49.8552, 15.1700],
-  "kopidlno": [50.3291, 15.2703],
-  "bile podoli": [49.9560, 15.4891],
-  "kresetice": [49.9088, 15.2638],
-  "zapy": [50.1656, 14.6811],
-  "zbisuby": [49.8184, 15.0730],
-  "zbiroh": [49.8602, 13.7726],
-  "kutna hora": [49.9484, 15.2682],
-  "benesov": [49.7823, 14.6869],
-  "melnik": [50.3513, 14.4741],
-  "slany": [50.2305, 14.0869],
-  "horovice": [49.8359, 13.9027],
-  "dobris": [49.7811, 14.1672],
-  "sedlcany": [49.6606, 14.4266],
-  "vlasim": [49.7063, 14.8988],
-  "ricany": [49.9917, 14.6543],
-  "mnichovo hradiste": [50.5272, 14.9713],
-  "poděbrady": [50.1424, 15.1188],
-  "podebrady": [50.1424, 15.1188],
-  "milovice": [50.2259, 14.8886],
-  "cesky brod": [50.0742, 14.8608],
-  "kralupy nad vltavou": [50.2411, 14.3115],
-  "kourim": [50.0031, 14.9770],
-  "tynec nad sazavou": [49.8335, 14.5896],
-  "sazava": [49.8717, 14.8967],
-  "roztoky": [50.1584, 14.3976],
-  "libusin": [50.1682, 14.0544],
-  "hostivice": [50.0816, 14.2586],
-  "rudna": [50.0350, 14.2344],
-  "jesenice": [49.9681, 14.5135],
-  "unhost": [50.0854, 14.1301],
-  "kamenice": [49.9017, 14.5824],
-  "zruč nad sazavou": [49.7401, 15.1061],
-  "zruc nad sazavou": [49.7401, 15.1061]
-}));
-
-function localGeocode(placeText) {
-  const key = normalizePlaceKey(placeText);
-  if (!key) return null;
-
-  if (LOCAL_PLACE_COORDS.has(key)) {
-    const [lat, lon] = LOCAL_PLACE_COORDS.get(key);
-    return { lat, lon, cached: true, source: "local" };
-  }
-
-  // Když přijde delší text, zkus najít známou obec uvnitř.
-  for (const [name, coords] of LOCAL_PLACE_COORDS.entries()) {
-    if (key.includes(name)) {
-      const [lat, lon] = coords;
-      return { lat, lon, cached: true, source: "local-substring" };
-    }
-  }
-
-  return null;
-}
-
-function uniqueNonEmpty(items) {
-  const out = [];
-  const seen = new Set();
-  for (const item of items) {
-    const v = String(item || "").trim();
-    if (!v) continue;
-    const k = normalizePlaceKey(v);
-    if (!k || seen.has(k)) continue;
-    seen.add(k);
-    out.push(v);
-  }
-  return out;
-}
-
-function buildGeocodeQueriesForEvent(ev, districtFromDesc = "") {
-  const titleCity = extractCityFromTitle(ev?.title || "");
-  const place = ev?.placeText || ev?.place_text || "";
-  const city = ev?.cityText || ev?.city_text || "";
-  const district = districtFromDesc || extractDistrictFromDescription(ev?.descriptionRaw || ev?.description_raw || "");
-
-  const base = uniqueNonEmpty([
-    city,
-    titleCity,
-    place
-  ]);
-
-  const queries = [];
-
-  for (const item of base) {
-    const cleaned = normalizePlaceQuery(item);
-    if (!cleaned) continue;
-
-    if (district) queries.push(`${cleaned}, okres ${district}`);
-    queries.push(cleaned);
-    queries.push(`${cleaned}, Středočeský kraj`);
-    queries.push(`${cleaned}, Stredocesky kraj`);
-    queries.push(`${cleaned}, Central Bohemia`);
-    queries.push(`${cleaned}, Czechia`);
-    queries.push(`${cleaned}, Středočeský kraj, Czechia`);
-  }
-
-  return uniqueNonEmpty(queries);
-}
-
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-
-// FireWatchCZ v1.4 – extra local aliases for problematic / frequent locations.
-// Coordinates are approximate village/town centers. They are used only as fallback.
-const FIREWATCH_EXTRA_LOCAL_COORDS = {
-  "nehvizdy": [50.1306, 14.7296],
-  "jirny": [50.1159, 14.6971],
-  "horni pocernice": [50.1127, 14.6103],
-  "praha vychod": [50.1073, 14.7250],
-  "praha zapad": [49.9833, 14.3333],
-  "lysa nad labem": [50.2014, 14.8328],
-  "sadská": [50.1354, 14.9863],
-  "sadska": [50.1354, 14.9863],
-  "kostelec nad cernymi lesy": [49.9940, 14.8592],
-  "kostelec nad černými lesy": [49.9940, 14.8592],
-  "mukoruby": [49.9510, 15.1741],
-  "velvary": [50.2817, 14.2362],
-  "buštěhrad": [50.1560, 14.1884],
-  "bustehrad": [50.1560, 14.1884],
-  "velke prilepy": [50.1605, 14.3155],
-  "velké přílepy": [50.1605, 14.3155],
-  "klecany": [50.1760, 14.4115],
-  "odolená voda": [50.2334, 14.4108],
-  "odolena voda": [50.2334, 14.4108],
-  "veltrusy": [50.2703, 14.3286],
-  "tisice": [50.2695, 14.5546],
-  "tišice": [50.2695, 14.5546],
-  "lazne tousen": [50.1697, 14.7149],
-  "lázně toušeň": [50.1697, 14.7149],
-  "zelenec": [50.1324, 14.6607],
-  "svémyslice": [50.1512, 14.6493],
-  "svemyslice": [50.1512, 14.6493],
-  "poděbrady": [50.1424, 15.1188],
-  "podebrady": [50.1424, 15.1188],
-  "kutna hora": [49.9484, 15.2682],
-  "kutná hora": [49.9484, 15.2682],
-  "milovice": [50.2259, 14.8886],
-  "nove dvory": [49.9700, 15.3318],
-  "nové dvory": [49.9700, 15.3318],
-  "kralupy nad vltavou": [50.2411, 14.3115]
-};
-
-if (typeof LOCAL_PLACE_COORDS !== "undefined") {
-  for (const [k, v] of Object.entries(FIREWATCH_EXTRA_LOCAL_COORDS)) {
-    LOCAL_PLACE_COORDS.set(normalizePlaceKey(k), v);
-  }
-}
-
-function buildGeocodeSuggestionsForEvent(ev, max = 8) {
-  const district = extractDistrictFromDescription(ev?.descriptionRaw || ev?.description_raw || "");
-  const queries = buildGeocodeQueriesForEvent(ev, district);
-  const local = [];
-
-  for (const q of queries) {
-    const g = localGeocode(q);
-    if (g) {
-      local.push({
-        lat: g.lat,
-        lon: g.lon,
-        source: g.source || "local",
-        query: q,
-        confidence: g.source === "local" ? 95 : 86,
-        label: normalizePlaceQuery(q)
-      });
-    }
-  }
-
-  const dedup = [];
-  const seen = new Set();
-  for (const s of local) {
-    const key = `${Number(s.lat).toFixed(5)},${Number(s.lon).toFixed(5)}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    dedup.push(s);
-  }
-
-  return dedup.slice(0, max);
-}
-
-async function geocodePlace(placeText) {
-  if (!placeText || placeText.trim().length < 2) return null;
-
-  const local = localGeocode(placeText);
-  if (local) {
-    await setCachedGeocode(placeText, local.lat, local.lon);
-    return local;
-  }
-
-  const cached = await getCachedGeocode(placeText);
-  if (cached && typeof cached.lat === "number" && typeof cached.lon === "number") {
-    return { lat: cached.lat, lon: cached.lon, cached: true, source: "cache" };
-  }
-
-  if (Date.now() < geocodeDisabledUntil) return null;
-
-  const cleaned = normalizePlaceQuery(placeText);
-
-  const candidates = uniqueNonEmpty([
-    String(placeText).trim(),
-    cleaned,
-    cleaned ? `${cleaned}, Středočeský kraj` : "",
-    cleaned ? `${cleaned}, Stredocesky kraj` : "",
-    cleaned ? `${cleaned}, Central Bohemia` : "",
-    cleaned ? `${cleaned}, Czechia` : "",
-    cleaned ? `${cleaned}, Středočeský kraj, Czechia` : "",
-    cleaned ? `${cleaned}, Central Bohemia, Czechia` : ""
-  ]);
-
-  for (const q of candidates) {
-    const url = new URL("https://nominatim.openstreetmap.org/search");
-    url.searchParams.set("format", "jsonv2");
-    url.searchParams.set("limit", "5");
-    url.searchParams.set("q", q);
-    url.searchParams.set("countrycodes", "cz");
-    url.searchParams.set("addressdetails", "1");
-    url.searchParams.set("bounded", "1");
-    url.searchParams.set("viewbox", STC_VIEWBOX);
-
-    let r;
-    try {
-      r = await fetchWithTimeout(url.toString(), {
-        headers: { "User-Agent": GEOCODE_UA, "Accept-Language": "cs,en;q=0.8" }
-      }, 9000);
-    } catch (e) {
-      geocodeDisabledUntil = Date.now() + 5 * 60 * 1000;
-      console.warn("[geocode] provider unreachable, disabling for 5 min:", e?.message || e);
-      return null;
-    }
-
-    if (r.status === 429) {
-      geocodeDisabledUntil = Date.now() + 10 * 60 * 1000;
-      console.warn("[geocode] rate limited, disabling for 10 min");
-      return null;
-    }
-
-    if (!r.ok) continue;
-
-    let data;
-    try {
-      data = await r.json();
-    } catch {
-      continue;
-    }
-
-    if (!Array.isArray(data) || data.length === 0) continue;
-
-    for (const cand of data) {
-      const lat = Number(cand.lat);
-      const lon = Number(cand.lon);
-      if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
-
-      const cc = String(cand?.address?.country_code || "").toLowerCase();
-      if (cc && cc !== "cz") continue;
-
-      const state = String(cand?.address?.state || cand?.address?.region || "");
-      if (state && !isAllowedGeocodeState(state)) continue;
-
-      const vb = String(STC_VIEWBOX).split(",").map(x => Number(x));
-      if (vb.length === 4 && vb.every(n => Number.isFinite(n))) {
-        const [left, top, right, bottom] = vb;
-        if (lon < left || lon > right || lat < bottom || lat > top) continue;
-      }
-
-      await setCachedGeocode(placeText, lat, lon);
-      return { lat, lon, cached: false, source: "nominatim", qUsed: q };
-    }
-  }
-
-  return null;
-}
 
 function parseFilters(req) {
   const typeQ = String(req.query.type || "").trim();
@@ -1002,7 +647,7 @@ function buildAnalyticalReport(type, key, rows) {
   const total = rows.length;
   const open = rows.filter(r => !r.is_closed).length;
   const closed = rows.filter(r => !!r.is_closed).length;
-  const missingCoords = rows.filter(r => r.lat == null || r.lon == null).length;
+  const missingCoords = rows.filter(r => !annotateEventGeo(r).geo_reliable).length;
 
   const byType = new Map();
   const byCity = new Map();
@@ -1562,7 +1207,7 @@ function buildStatsProPayload({ preset, currentRows, previousRows, range }) {
 
   const open = currentRows.filter(r => !r.is_closed).length;
   const closed = currentRows.filter(r => !!r.is_closed).length;
-  const missingCoords = currentRows.filter(r => r.lat == null || r.lon == null).length;
+  const missingCoords = currentRows.filter(r => !annotateEventGeo(r).geo_reliable).length;
 
   const hourStats = buildHourStats(currentRows);
   const busiestHour = [...hourStats].sort((a, b) => b.count - a.count)[0] || { hour: 0, count: 0 };
@@ -2421,67 +2066,39 @@ app.post("/api/admin/ops-requests/:id/reject", requireAdmin, safeRoute(async (re
 }));
 
 
-app.get("/api/admin/geocode-suggestions/:id", requireAdmin, safeRoute(async (req, res) => {
-  try {
-    const ev = await getEventById(req.params.id);
-    if (!ev) return res.status(404).json({ ok: false, error: "not_found" });
-
-    const wrapped = {
-      id: ev.id,
-      title: ev.title,
-      placeText: ev.place_text,
-      cityText: ev.city_text,
-      descriptionRaw: ev.description_raw
-    };
-
-    const localSuggestions = buildGeocodeSuggestionsForEvent(wrapped, 10);
-    const remoteSuggestions = [];
-    const queries = buildGeocodeQueriesForEvent(wrapped).slice(0, 4);
-
-    for (const q of queries) {
-      const g = await geocodePlace(q);
-      if (g) {
-        remoteSuggestions.push({
-          lat: g.lat,
-          lon: g.lon,
-          source: g.source || (g.cached ? "cache" : "nominatim"),
-          query: q,
-          confidence: g.source === "cache" ? 88 : 78,
-          label: q
-        });
-      }
-    }
-
-    const out = [];
-    const seen = new Set();
-    for (const s of [...localSuggestions, ...remoteSuggestions]) {
-      const key = `${Number(s.lat).toFixed(5)},${Number(s.lon).toFixed(5)}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push(s);
-    }
-
-    return res.json({ ok: true, event: ev, suggestions: out.slice(0, 10) });
-  } catch (e) {
-    console.error(e.code || "operation_failed");
-    return res.status(500).json({ ok: false, error: "suggestions_failed" });
-  }
+app.get('/api/admin/geocode-suggestions/:id',requireAdmin,safeRoute(async(req,res)=>{
+  const event=await getEventById(req.params.id);if(!event)return res.status(404).json({ok:false,error:'not_found'});
+  const proposal=await geocoder.lookup(event,{remote:true,refresh:req.query.refresh==='1'});
+  res.json({ok:true,event:annotateEventGeo(event),queries:buildQueries(eventLocation(event)),failure_reason:proposal.failure_reason || '',suggestions:proposal.precision==='failed'?[]:[{...proposal,label:proposal.display_name}]});
+}));
+app.get('/api/admin/geocode-diagnostics',requireAdmin,safeRoute(async(req,res)=>{
+  const rows=await getGeoAuditRows(),items=diagnoseCoordinates(rows);
+  res.json({ok:true,scanned:rows.length,complete:rows.length<5000,suspicious:items.length,without_reliable_coordinates:rows.filter(row=>!annotateEventGeo(row).geo_reliable).length,items:items.slice(0,200)});
+}));
+app.post('/api/admin/geocode-repair/:id',requireAdmin,safeRoute(async(req,res)=>{
+  const event=await getEventById(req.params.id);if(!event)return res.status(404).json({ok:false,error:'not_found'});
+  const proposal=await geocoder.lookup(event,{remote:true,refresh:req.body?.refresh===true});
+  const can_apply=canImprove(event,proposal,true),expected=geoFingerprint(event),dry_run=req.body?.dry_run!==false;
+  const proposal_fingerprint=crypto.createHash('sha256').update(JSON.stringify([proposal.lat,proposal.lon,proposal.precision,proposal.confidence,proposal.source,proposal.query,proposal.display_name,proposal.context_key])).digest('hex');
+  if(!dry_run && (!req.body?.expected || req.body.expected!==expected || req.body.proposal_fingerprint!==proposal_fingerprint))return res.status(409).json({ok:false,error:'preview_required_or_changed'});
+  const applied=!dry_run && can_apply ? await applyGeoProposal(event.id,proposal,{repair:true,expected,userId:req.auth.user.id}) : false;
+  res.json({ok:true,dry_run,can_apply,applied,expected,proposal_fingerprint,event:annotateEventGeo(event),proposal});
 }));
 app.post("/api/admin/events/:id/coords", requireAdmin, safeRoute(async (req, res) => {
   try {
-    const lat = Number(req.body?.lat);
-    const lon = Number(req.body?.lon);
-    const source = String(req.body?.source || "manual").slice(0, 80);
+    const lat = req.body?.lat == null || String(req.body.lat).trim() === "" ? NaN : Number(req.body.lat);
+    const lon = req.body?.lon == null || String(req.body.lon).trim() === "" ? NaN : Number(req.body.lon);
+    const source = "manual";
     const note = String(req.body?.note || "").slice(0, 500);
 
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
       return res.status(400).json({ ok: false, error: "bad_coords" });
     }
-    if (lat < 48 || lat > 52 || lon < 12 || lon > 19) {
+    if (!insideCz(lat,lon)) {
       return res.status(400).json({ ok: false, error: "coords_outside_cz" });
     }
 
-    await updateEventCoords(req.params.id, lat, lon, source, note);
+    await updateEventCoords(req.params.id, lat, lon, source, note,{precision:"manual",verified:req.body?.verified===true});
     await insertAudit({
       userId: req.auth.user.id,
       action: "event_coords_updated",
@@ -2496,7 +2113,7 @@ app.post("/api/admin/events/:id/coords", requireAdmin, safeRoute(async (req, res
 }));
 app.get("/api/admin/events-with-coords", requireAdmin, safeRoute(async (req, res) => {
   try {
-    const rows = await listEventsWithCoords(Number(req.query.limit || 100));
+    const rows = (await listEventsWithCoords(Number(req.query.limit || 100))).map(annotateEventGeo);
     return res.json({ ok: true, items: rows });
   } catch (e) {
     console.error(e.code || "operation_failed");
@@ -2504,78 +2121,17 @@ app.get("/api/admin/events-with-coords", requireAdmin, safeRoute(async (req, res
   }
 }));
 
-app.post("/api/admin/geocode-missing", requireAdmin, safeRoute(async (req, res) => {
-  try {
-    const limit = Math.max(1, Math.min(30, Number(req.body?.limit || req.query?.limit || 10)));
-    const rows = await getEventsMissingCoords(limit, req.query?.day || req.body?.day || "today");
-
-    let checked = 0;
-    let fixed = 0;
-    const results = [];
-
-    for (const row of rows) {
-      checked++;
-
-      const ev = {
-        id: row.id,
-        title: row.title,
-        placeText: row.place_text,
-        cityText: row.city_text,
-        descriptionRaw: row.description_raw
-      };
-
-      const district = extractDistrictFromDescription(row.description_raw || "");
-      const queries = buildGeocodeQueriesForEvent(ev, district);
-
-      let hit = null;
-      let usedQuery = "";
-
-      for (const q of queries) {
-        const g = await geocodePlace(q);
-        if (g) {
-          hit = g;
-          usedQuery = q;
-          break;
-        }
-      }
-
-      if (hit) {
-        await updateEventCoords(row.id, hit.lat, hit.lon, hit.source || "auto", usedQuery);
-        fixed++;
-        results.push({
-          id: row.id,
-          title: row.title,
-          lat: hit.lat,
-          lon: hit.lon,
-          source: hit.source || (hit.cached ? "cache" : "geocode"),
-          query: usedQuery
-        });
-      }
-
-      // Šetrnější k Nominatimu. Lokální/cache výsledky jsou okamžité, ale při neúspěchu
-      // mohl proběhnout dotaz ven, takže mezi událostmi krátce počkáme.
-      await sleep(650);
-    }
-
-    await insertAudit({
-      userId: req.auth.user.id,
-      action: "admin_geocode_missing",
-      details: JSON.stringify({ checked, fixed })
-    }).catch(() => {});
-
-    return res.json({ ok: true, checked, fixed, results });
-  } catch (e) {
-    console.error(e.code || "operation_failed");
-    return res.status(500).json({ ok: false, error: "geocode_missing_failed" });
-  }
+app.post('/api/admin/geocode-missing',requireAdmin,safeRoute(async(req,res)=>{
+  const rows=await getEventsMissingCoords(Math.max(1,Math.min(10,Number(req.body?.limit)||1)),req.body?.day || 'today');
+  const results=[];for(const row of rows){const proposal=await geocoder.lookup(row,{remote:true});const fixed=await applyGeoProposal(row.id,proposal,{userId:req.auth.user.id});results.push({id:row.id,fixed,...proposal});}
+  res.json({ok:true,checked:rows.length,fixed:results.filter(row=>row.fixed).length,results});
 }));
-
 // ---------------- ADMIN: Missing coordinates management ----------------
 app.get("/api/admin/events-missing-coords", requireAdmin, safeRoute(async (req, res) => {
   try {
     const limit = Math.max(1, Math.min(200, Number(req.query?.limit || 50)));
     const day = String(req.query?.day || "today");
-    const rows = await getEventsMissingCoords(limit, day);
+    const rows = (await getEventsFiltered({day},2000)).map(annotateEventGeo).filter(row=>!row.geo_reliable).slice(0,limit);
     return res.json({ ok: true, rows, day });
   } catch (e) {
     console.error(e.code || "operation_failed");
@@ -2585,13 +2141,13 @@ app.get("/api/admin/events-missing-coords", requireAdmin, safeRoute(async (req, 
 app.put("/api/admin/events/:id/coords", requireAdmin, safeRoute(async (req, res) => {
   try {
     const id = String(req.params.id || "").trim();
-    const lat = Number(req.body?.lat);
-    const lon = Number(req.body?.lon);
+    const lat = req.body?.lat == null || String(req.body.lat).trim() === "" ? NaN : Number(req.body.lat);
+    const lon = req.body?.lon == null || String(req.body.lon).trim() === "" ? NaN : Number(req.body.lon);
     if (!id) return res.status(400).json({ ok: false, error: "bad_id" });
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) return res.status(400).json({ ok: false, error: "bad_coords" });
-    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return res.status(400).json({ ok: false, error: "bad_coords" });
+    if (!insideCz(lat,lon)) return res.status(400).json({ ok: false, error: "bad_coords" });
 
-    await updateEventCoords(id, lat, lon);
+    await updateEventCoords(id, lat, lon,"manual","",{precision:"manual",verified:req.body?.verified===true});
     await insertAudit({ userId: req.auth.user.id, action: "event_coords_set", details: JSON.stringify({ event_id: id, lat, lon }) });
     return res.json({ ok: true });
   } catch (e) {
@@ -2919,7 +2475,7 @@ function parseManualEventCoords(rawLat, rawLon) {
     throw e;
   }
 
-  if (lat < 48 || lat > 52 || lon < 12 || lon > 19) {
+  if (!insideCz(lat,lon)) {
     const e = new Error("coords_outside_cz");
     e.statusCode = 400;
     throw e;
@@ -3057,6 +2613,7 @@ if (!isClosed) {
       const major = analyzeMajorEvent(it, desc);
 
       const cityText =
+        (rssSource ? cityFromDesc : it.cityText) ||
         it.cityText ||
         cityFromDesc ||
         (!placeText ? cityFromTitle : (isDistrictPlace(placeText) ? cityFromTitle : placeText)) ||
@@ -3093,21 +2650,10 @@ if (!isClosed) {
 
       // Retain existing coordinates, especially manual corrections.
       if (prev?.lat != null && prev?.lon != null) continue;
-      const geoQueries = buildGeocodeQueriesForEvent(ev, districtFromDesc);
+      const proposal=await geocoder.lookup(ev);
+      if(await applyGeoProposal(ev.id,proposal))geocoded++;
+      else if(proposal.precision==='failed'){await recordGeoFailure(ev.id,proposal);if(geocodeJobsActive)geocodeJobs.enqueue(ev.id);}
 
-      let fixed = false;
-      for (const q of geoQueries) {
-        const g = await geocodePlace(q);
-        if (g) {
-          await updateEventCoords(ev.id, g.lat, g.lon);
-          geocoded++;
-          fixed = true;
-          break;
-        }
-      }
-      if (!fixed && (ev.cityText || ev.placeText)) {
-        // nic
-      }
     }
 
     await insertIngestLog({
@@ -3442,7 +2988,7 @@ app.get("/api/events/:id/detail", safeRoute(async (req, res) => {
   try {
     const row = await getEventDetailById(req.params.id);
     if (!row) return res.status(404).json({ ok: false, error: "event_not_found" });
-    return res.json({ ok: true, event: row });
+    return res.json({ ok: true, event: annotateEventGeo(row) });
   } catch (e) {
     console.error("[event-detail-get]", e.code || "operation_failed");
     return res.status(500).json({ ok: false, error: "event_detail_get_failed" });
@@ -3614,7 +3160,7 @@ app.get("/api/admin/events/:id/manual", requireAdmin, safeRoute(async (req, res)
   try {
     const row = await getEventForManualEdit(req.params.id);
     if (!row) return res.status(404).json({ ok: false, error: "event_not_found" });
-    return res.json({ ok: true, event: row });
+    return res.json({ ok: true, event: annotateEventGeo(row) });
   } catch (e) {
     console.error("[manual-event-get]", e.code || "operation_failed");
     return res.status(500).json({ ok: false, error: "manual_event_get_failed" });
@@ -3778,7 +3324,7 @@ app.get('/api/events', async (req,res) => {
     if(!/^\d+$/.test(raw)||Number(raw)<1)return res.status(400).json({ok:false,error:'bad_limit'});
     const limit=Math.min(Number(raw),2000),filters=parseFilters(req);
     const [rows,totalMatching,dataStatus]=await Promise.all([getEventsFiltered(filters,limit),countEventsFiltered(filters),getPublicDataStatus()]);
-    res.json({ok:true,filters,limit,total_matching:totalMatching,backfilled_coords:0,backfilled_durations:0,data_status:dataStatus,items:rows});
+    res.json({ok:true,filters,limit,total_matching:totalMatching,backfilled_coords:0,backfilled_durations:0,data_status:dataStatus,items:rows.map(annotateEventGeo)});
   }catch(e){if(e.status!==400)console.error('[events]',e.code||'database_error');res.status(e.status===400?400:500).json({ok:false,error:e.status===400?'bad_filters':'events_failed'});}
 });
 // Statistics retain the existing 30-day scope, independent of the day selector.
@@ -3947,50 +3493,10 @@ app.get("/api/export.pdf", safeRoute(async (req, res) => {
 
   doc.end();
 }));
-// admin: geocode cache purge + re-geocode (ponecháno na API key)
-app.post("/api/admin/fix-geocode", requireAdmin, safeRoute(async (req, res) => {
-  try {
-    const mode = String(req.body?.mode || "preview");
-    const bad = await getEventsOutsideCz(300);
-
-    let cacheDeleted = 0;
-    let coordsCleared = 0;
-    let reGeocoded = 0;
-    let failed = 0;
-
-    for (const r of bad) {
-      const q = r.city_text || r.place_text;
-      if (!q) continue;
-
-      if (mode !== "preview") {
-        await deleteCachedGeocode(q);
-        cacheDeleted++;
-        await clearEventCoords(r.id);
-        coordsCleared++;
-      }
-
-      const g = await geocodePlace(q);
-      if (g && mode !== "preview") {
-        await updateEventCoords(r.id, g.lat, g.lon);
-        reGeocoded++;
-      } else if (!g) {
-        failed++;
-      }
-    }
-
-    res.json({
-      ok: true,
-      mode,
-      processed: bad.length,
-      cache_deleted: cacheDeleted,
-      coords_cleared: coordsCleared,
-      re_geocoded: reGeocoded,
-      failed
-    });
-  } catch (e) {
-    console.error(e.code || "operation_failed");
-    res.status(500).json({ ok: false, error: "server error" });
-  }
+// Legacy endpoint is read-only; individual repairs require a matching preview.
+app.post('/api/admin/fix-geocode',requireAdmin,safeRoute(async(req,res)=>{
+  if(req.body?.mode && req.body.mode!=='preview')return res.status(400).json({ok:false,error:'per_event_preview_required'});
+  const rows=await getGeoAuditRows();res.json({ok:true,mode:'preview',processed:rows.length,cache_deleted:0,coords_cleared:0,re_geocoded:0,items:diagnoseCoordinates(rows).slice(0,200)});
 }));
 
 // Archived reports API
@@ -4172,6 +3678,7 @@ async function initDbWithRetry() {
 
 
 export async function startServer() {
+  geocodeJobsActive=true;
 await initDbWithRetry();
 await ensureInitialAdmin();
 
@@ -4235,6 +3742,7 @@ async function shutdown(signal) {
   shuttingDown = true;
   console.log(`[shutdown] ${signal}; stopping scheduled work`);
   rssWorker?.stop();
+  geocodeJobs.stop();
   clearInterval(staleCloseTimer);
   clearInterval(reportsTimer);
   const forceExit = setTimeout(() => process.exit(1), 10_000);
