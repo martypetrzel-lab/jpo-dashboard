@@ -191,3 +191,7 @@ test('legacy manual editing preserves raw possible manual start without presenti
  const detail=await fetch(base+'/api/events/'+first.id+'/detail').then(r=>r.json());assert.equal(detail.event.start_time_iso,null);assert.equal(detail.event.duration_min,null);
  await pool.query('UPDATE events SET start_time_iso=NULL,start_time_source=NULL WHERE id=$1',[first.id]);await ingest([first]);row=await getEventMeta(first.id);assert.equal(row.start_time_iso,'2026-09-17T07:25:00Z');assert.equal(row.start_time_source,'legacy_manual_unverified');
 });
+
+test('legacy explicit manual status/start is preserved as manual rather than demoted by coordinate history',async()=>{
+ const first=event('time-old-proven-manual');await ingest([first]);await pool.query("UPDATE events SET start_time_iso='2026-09-17T14:30:00Z',start_time_source=NULL,status_source='manual',geo_source='manual_event_edit' WHERE id=$1",[first.id]);await ingest([first]);const row=await getEventMeta(first.id);assert.equal(row.start_time_iso,'2026-09-17T14:30:00Z');assert.equal(row.start_time_source,'manual');
+});

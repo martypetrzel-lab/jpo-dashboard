@@ -37,3 +37,7 @@ test('time dry run skips ambiguous and already shifted ISO without source eviden
  for(const pub_date of ['2026-09-17 14:30:00','2026-09-17T12:30:00Z']){const result=diagnoseTimes({id:'x',pub_date});assert.equal(result.proposed,null);assert.equal(result.dry_run,true);}
  assert.equal(diagnoseTimes({id:'x',pub_date:'2026-09-17T12:30:00Z'},{pubDate:'2026-09-17 14:30:00'}).proposed,iso);
 });
+
+test('uncertain legacy manual start remains unknown even if a manual status is present',()=>{
+ const e=annotateEventTime({source_kind:'rss',status_source:'manual',start_time_iso:iso,start_time_source:'legacy_manual_unverified',is_closed:false});assert.equal(e.start_time_iso,null);assert.equal(e.start_time_trusted,false);assert.equal(FireWatchData.duration(e),null);
+});

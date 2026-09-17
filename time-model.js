@@ -8,7 +8,7 @@ export function normalizeFeedTimestamp(value) {
   return date.toISOString();
 }
 export function hasTrustedStart(event={}) {
-  if(!event.start_time_iso)return false;
+  if(!event.start_time_iso || event.start_time_source==='legacy_manual_unverified')return false;
   return ['rss_description','explicit','manual','esp'].includes(event.start_time_source) || event.source_kind==='manual' || event.status_source==='manual' || event.duration_source==='manual' || event.source_kind!=='rss';
 }
 export function annotateEventTime(event={}) {
