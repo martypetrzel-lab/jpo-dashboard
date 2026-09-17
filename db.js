@@ -1,3 +1,4 @@
+import {canImprove} from './geocoding.js';
 import { normalizeReportFilters, buildReportWhere } from "./report-query.js";
 import pg from "pg";
 
@@ -221,6 +222,10 @@ export async function initDb() {
     );
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_log_ts ON audit_log(ts DESC);`);
+  for (const [name,type] of Object.entries({geo_precision:'TEXT',geo_confidence:'DOUBLE PRECISION',geo_query:'TEXT',geo_display_name:'TEXT',geo_verified:'BOOLEAN NOT NULL DEFAULT FALSE',geo_failure_reason:'TEXT',geo_context_key:'TEXT'})) await pool.query(`ALTER TABLE events ADD COLUMN IF NOT EXISTS ${name} ${type}`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS geocode_cache_v2 (context_key TEXT PRIMARY KEY, result JSONB NOT NULL, expires_at TIMESTAMPTZ NOT NULL)`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS geocode_provider_limits (provider TEXT PRIMARY KEY, next_request_at TIMESTAMPTZ NOT NULL)`);
+
 
   
   if (!(await colExists("events", "geo_source"))) {
@@ -607,18 +612,18 @@ export async function upsertEvent(ev) {
   );
 }
 
-export async function updateEventCoords(id, lat, lon, source = "manual", note = "") {
+export async function updateEventCoords(id, lat, lon, source = "manual", note = "", metadata = {}) {
   await pool.query(
     `UPDATE events
-     SET lat=$2, lon=$3, geo_source=$4, geo_note=$5, geo_updated_at=NOW()
+     SET lat=$2, lon=$3, geo_source=$4, geo_note=$5, geo_updated_at=NOW(), geo_precision=$6, geo_confidence=$7, geo_query=$8, geo_display_name=$9, geo_verified=$10, geo_failure_reason=$11, geo_context_key=$12
      WHERE id=$1`,
-    [id, lat, lon, source, note]
+    [id, lat, lon, source, note, metadata.precision || (source === "manual" ? "manual" : null),metadata.confidence ?? null,metadata.query || null,metadata.display_name || null,metadata.verified === true,metadata.failure_reason || null,metadata.context_key || null]
   );
 }
 
 export async function clearEventCoords(id) {
   await pool.query(
-    `UPDATE events SET lat=NULL, lon=NULL, geo_source=NULL, geo_note=NULL, geo_updated_at=NOW() WHERE id=$1`,
+    `UPDATE events SET lat=NULL, lon=NULL, geo_source=NULL, geo_note=NULL, geo_precision=NULL, geo_confidence=NULL, geo_query=NULL, geo_display_name=NULL, geo_verified=FALSE, geo_failure_reason=NULL, geo_context_key=NULL, geo_updated_at=NOW() WHERE id=$1`,
     [id]
   );
 }
@@ -764,20 +769,21 @@ export async function insertManualEvent(ev) {
       start_time_iso, end_time_iso, duration_min, duration_source, is_closed,
       alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
       source_kind, source_note,
-      lat, lon, geo_source, geo_note, geo_updated_at,
+      lat, lon, geo_source, geo_note, geo_updated_at, geo_precision,
       first_seen_at, last_seen_at
     )
     VALUES (
       $1,$2,$3,$4,
       $5,$6,$7,$8,
       $9,
-      $10,$11,$12,$13,
+      $10,$11,$12,CASE WHEN $12::integer IS NULL THEN NULL ELSE 'manual' END,$13,
       $14,$15,$16,$17,$18,
       'manual',$19,
       $20::double precision,$21::double precision,
       CASE WHEN $20::double precision IS NULL OR $21::double precision IS NULL THEN NULL ELSE 'manual_event_create' END,
       CASE WHEN $20::double precision IS NULL OR $21::double precision IS NULL THEN NULL ELSE 'Ručně zadáno při vytvoření výjezdu' END,
       CASE WHEN $20::double precision IS NULL OR $21::double precision IS NULL THEN NULL ELSE NOW() END,
+      CASE WHEN $20::double precision IS NULL OR $21::double precision IS NULL THEN NULL ELSE 'manual' END,
       NOW(), NOW()
     )
     RETURNING *
@@ -802,8 +808,8 @@ export async function insertManualEvent(ev) {
       ev.majorReason || null,
       ev.statusSource || "manual",
       ev.sourceNote || "Ručně doplněno přes admin",
-      Number.isFinite(Number(ev.lat)) ? Number(ev.lat) : null,
-      Number.isFinite(Number(ev.lon)) ? Number(ev.lon) : null
+      ev.lat != null && String(ev.lat).trim() !== "" && Number.isFinite(Number(ev.lat)) ? Number(ev.lat) : null,
+      ev.lon != null && String(ev.lon).trim() !== "" && Number.isFinite(Number(ev.lon)) ? Number(ev.lon) : null
     ]
   );
 
@@ -1164,7 +1170,7 @@ export async function getEventsFiltered(filters, limit = 400) {
           ELSE 0
         END
       ) AS carryover_days,
-      lat, lon,
+      lat, lon, geo_source, geo_precision, geo_confidence, geo_query, geo_display_name, geo_verified, geo_failure_reason, geo_context_key,
       first_seen_at, last_seen_at, created_at
     FROM events
     ${where.length ? "WHERE " + where.join(" AND ") : ""}
@@ -1634,7 +1640,7 @@ export async function getEventsMissingCoords(limit = 50, day = "today") {
   const r = await pool.query(
     `SELECT id, title, city_text, place_text, status_text, description_raw,
             pub_date, is_closed, start_time_iso, end_time_iso,
-            first_seen_at, last_seen_at, geo_source, geo_note, geo_updated_at
+            first_seen_at, last_seen_at, geo_source, geo_note, geo_updated_at, geo_precision, geo_confidence, geo_query, geo_display_name, geo_verified, geo_failure_reason, geo_context_key
      FROM events
      WHERE ${where.join(" AND ")}
      ORDER BY COALESCE(NULLIF(start_time_iso,'' )::timestamptz, NULLIF(pub_date,'' )::timestamptz, created_at) DESC,
@@ -1754,7 +1760,7 @@ export async function getEventsForPeriod(startIso, endExclusiveIso) {
           ELSE 0
         END
       ) AS carryover_days,
-      lat, lon,
+      lat, lon, geo_source, geo_precision, geo_confidence, geo_query, geo_display_name, geo_verified, geo_failure_reason, geo_context_key,
       first_seen_at, last_seen_at, created_at
     FROM events
     WHERE (${eventTimeSql()} AT TIME ZONE 'Europe/Prague')::date >= $1::date
@@ -1774,7 +1780,7 @@ export async function getEventById(id) {
             description_raw, start_time_iso, end_time_iso, duration_min, duration_source, is_closed,
             alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
             manual_detail_text, manual_detail_source, manual_detail_updated_at,
-            lat, lon, first_seen_at, last_seen_at, created_at, geo_source, geo_note, geo_updated_at
+            lat, lon, first_seen_at, last_seen_at, created_at, geo_source, geo_note, geo_updated_at, geo_precision, geo_confidence, geo_query, geo_display_name, geo_verified, geo_failure_reason, geo_context_key
      FROM events
      WHERE id=$1
      LIMIT 1`,
@@ -1785,10 +1791,10 @@ export async function getEventById(id) {
 
 export async function listEventsWithCoords(limit = 100) {
   const r = await pool.query(
-    `SELECT id, title, city_text, place_text, status_text, event_type, pub_date,
+    `SELECT id, title, city_text, place_text, description_raw, status_text, event_type, pub_date,
             alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
             manual_detail_text, manual_detail_source, manual_detail_updated_at,
-            lat, lon, geo_source, geo_note, geo_updated_at, last_seen_at
+            lat, lon, geo_source, geo_note, geo_updated_at, geo_precision, geo_confidence, geo_query, geo_display_name, geo_verified, geo_failure_reason, geo_context_key, last_seen_at
      FROM events
      WHERE lat IS NOT NULL AND lon IS NOT NULL
      ORDER BY COALESCE(geo_updated_at, last_seen_at) DESC
@@ -1890,7 +1896,7 @@ export async function getEventForManualEdit(id) {
       start_time_iso, end_time_iso, duration_min, duration_source, is_closed,
       alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
       manual_detail_text, manual_detail_source, manual_detail_updated_at,
-      lat, lon,
+      lat, lon, geo_source, geo_precision, geo_confidence, geo_query, geo_display_name, geo_verified, geo_failure_reason, geo_context_key,
       first_seen_at, last_seen_at, created_at
     FROM events
     WHERE id = $1
@@ -1941,6 +1947,14 @@ export async function updateEventManualMeta(id, patch = {}) {
         WHEN $12::boolean = TRUE THEN 'Ručně nastaveno v editaci výjezdu'
         ELSE geo_note
       END,
+
+      geo_precision = CASE WHEN $11::boolean = TRUE THEN NULL WHEN $12::boolean = TRUE THEN 'manual' ELSE geo_precision END,
+      geo_confidence = CASE WHEN $11::boolean = TRUE OR $12::boolean = TRUE THEN NULL ELSE geo_confidence END,
+      geo_query = CASE WHEN $11::boolean = TRUE OR $12::boolean = TRUE THEN NULL ELSE geo_query END,
+      geo_display_name = CASE WHEN $11::boolean = TRUE OR $12::boolean = TRUE THEN NULL ELSE geo_display_name END,
+      geo_context_key = CASE WHEN $11::boolean = TRUE OR $12::boolean = TRUE THEN NULL ELSE geo_context_key END,
+      geo_failure_reason = CASE WHEN $11::boolean = TRUE OR $12::boolean = TRUE THEN NULL ELSE geo_failure_reason END,
+      geo_verified = CASE WHEN $11::boolean = TRUE OR $12::boolean = TRUE THEN FALSE ELSE geo_verified END,
       geo_updated_at = CASE
         WHEN $11::boolean = TRUE OR $12::boolean = TRUE THEN NOW()
         ELSE geo_updated_at
@@ -1978,7 +1992,7 @@ export async function getEventDetailById(id) {
       start_time_iso, end_time_iso, duration_min, duration_source, is_closed,
       alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
       manual_detail_text, manual_detail_source, manual_detail_updated_at,
-      lat, lon,
+      lat, lon, geo_source, geo_precision, geo_confidence, geo_query, geo_display_name, geo_verified, geo_failure_reason, geo_context_key,
       first_seen_at, last_seen_at, created_at
     FROM events
     WHERE id = $1
@@ -2005,7 +2019,7 @@ export async function updateEventManualDetail(id, patch = {}) {
       start_time_iso, end_time_iso, duration_min, duration_source, is_closed,
       alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
       manual_detail_text, manual_detail_source, manual_detail_updated_at,
-      lat, lon,
+      lat, lon, geo_source, geo_precision, geo_confidence, geo_query, geo_display_name, geo_verified, geo_failure_reason, geo_context_key,
       first_seen_at, last_seen_at, created_at
     `,
     [
@@ -2026,3 +2040,29 @@ export async function getPublicDataStatus() {
 
 export async function deleteUserSessions(userId){await pool.query('DELETE FROM user_sessions WHERE user_id=$1',[userId]);}
 
+
+export async function getGeoCache(key) {const result=await pool.query('SELECT result FROM geocode_cache_v2 WHERE context_key=$1 AND expires_at>NOW()',[key]);return result.rows[0]?.result || null;}
+export async function setGeoCache(key,result,ttl) {await pool.query(`INSERT INTO geocode_cache_v2(context_key,result,expires_at) VALUES($1,$2,NOW()+$3 * INTERVAL '1 second') ON CONFLICT(context_key) DO UPDATE SET result=EXCLUDED.result,expires_at=EXCLUDED.expires_at`,[key,JSON.stringify(result),ttl]);}
+export async function reserveGeocodeRequest() {
+  const client=await pool.connect();let delay=0;
+  try {await client.query('BEGIN');await client.query(`INSERT INTO geocode_provider_limits(provider,next_request_at) VALUES('nominatim',NOW()) ON CONFLICT DO NOTHING`);
+    const result=await client.query(`SELECT next_request_at FROM geocode_provider_limits WHERE provider='nominatim' FOR UPDATE`);
+    const now=Date.now(),slot=Math.max(now,new Date(result.rows[0].next_request_at).getTime());delay=slot-now;
+    await client.query(`UPDATE geocode_provider_limits SET next_request_at=$1 WHERE provider='nominatim'`,[new Date(slot+15000).toISOString()]);await client.query('COMMIT');
+  }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}if(delay)await new Promise(resolve=>setTimeout(resolve,delay));
+}
+export async function getGeoAuditRows(limit=5000) {return (await pool.query('SELECT * FROM events ORDER BY last_seen_at DESC LIMIT $1',[Math.min(5000,limit)])).rows;}
+export function geoFingerprint(event) {return JSON.stringify([event.lat,event.lon,event.geo_source,event.geo_precision,event.geo_verified,event.geo_updated_at]);}
+export async function applyGeoProposal(id,proposal,{repair=false,expected=null,userId=null}={}) {
+  const client=await pool.connect();try {
+    await client.query('BEGIN');const current=(await client.query('SELECT * FROM events WHERE id=$1 FOR UPDATE',[id])).rows[0];
+    if(!current || (expected!==null && geoFingerprint(current)!==expected) || !canImprove(current,proposal,repair)){await client.query('ROLLBACK');return false;}
+    await client.query(`UPDATE events SET lat=$2,lon=$3,geo_source=$4,geo_precision=$5,geo_confidence=$6,geo_query=$7,geo_display_name=$8,geo_context_key=$9,geo_failure_reason=NULL,geo_verified=FALSE,geo_updated_at=NOW() WHERE id=$1`,[id,proposal.lat,proposal.lon,proposal.source,proposal.precision,proposal.confidence,proposal.query,proposal.display_name,proposal.context_key]);
+    await client.query(`INSERT INTO audit_log(user_id,action,details) VALUES($1,'geocode_improved',$2)`,[userId,JSON.stringify({id,previous:{lat:current.lat,lon:current.lon,precision:current.geo_precision},proposal})]);
+    await client.query('COMMIT');return true;
+  }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
+}
+
+export async function recordGeoFailure(id,proposal) {
+  await pool.query(`UPDATE events SET geo_precision='failed',geo_failure_reason=$2,geo_query=$3,geo_context_key=$4,geo_updated_at=NOW() WHERE id=$1 AND lat IS NULL AND lon IS NULL AND geo_verified=FALSE AND COALESCE(geo_source,'') NOT ILIKE '%manual%' AND COALESCE(geo_source,'') NOT ILIKE '%admin%'`,[id,proposal.failure_reason,proposal.query || null,proposal.context_key || null]);
+}

@@ -1,3 +1,4 @@
+import {eventLocation} from './location.js';
 import crypto from "crypto";
 import { XMLParser, XMLValidator } from "fast-xml-parser";
 import { fetch as undiciFetch, Agent, ProxyAgent } from "undici";
@@ -86,11 +87,7 @@ export function extractStatus(description) {
 }
 
 export function extractCity(description) {
-  return descriptionLines(description).find((line) =>
-    !/^stav\s*:/i.test(line) &&
-    !/^ukon(?:čení|ceni)\s*:/i.test(line) &&
-    !/^okres\s+/i.test(line)
-  ) || "";
+  return eventLocation({descriptionRaw:description}).municipality;
 }
 
 export function classifyEventType(title) {
@@ -127,7 +124,7 @@ export function rssItemToEvent(item = {}) {
     descriptionRaw,
     descriptionText: stripHtml(descriptionRaw),
     statusText: extractStatus(descriptionRaw),
-    placeText: cityText,
+    placeText: eventLocation({descriptionRaw}).detail || cityText,
     cityText,
     eventType: classifyEventType(title)
   };

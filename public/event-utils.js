@@ -7,7 +7,12 @@
   }
   function hasCoords(event) {
     const lat = coordinate(event?.lat), lon = coordinate(event?.lon);
-    return lat !== null && lon !== null && Math.abs(lat) <= 90 && Math.abs(lon) <= 180 && !(lat === 0 && lon === 0);
+    return event?.geo_reliable !== false && lat !== null && lon !== null && lat >= 48.5 && lat <= 51.1 && lon >= 12 && lon <= 18.9;
+  }
+  function groupMapEvents(items) {
+    const groups=new Map();
+    for(const event of normalizeEvents(items)) {if(!hasCoords(event))continue;const key=event.lat+'|'+event.lon;const group=groups.get(key)||[];group.push(event);groups.set(key,group);}
+    return [...groups.values()];
   }
   function normalizeEvents(items) {
     const rows = new Map();
@@ -51,5 +56,5 @@
     for(const offset of [120,60]){const date=new Date(wall-offset*60000);if(pragueInput(date.toISOString())===normalized)return date.toISOString();}
     return null;
   }
-  scope.FireWatchData = Object.freeze({coordinate,hasCoords,normalizeEvents,sortEvents,duration,safeLink,reconnectDelay,pragueInput,pragueIso});
+  scope.FireWatchData = Object.freeze({coordinate,hasCoords,groupMapEvents,normalizeEvents,sortEvents,duration,safeLink,reconnectDelay,pragueInput,pragueIso});
 })(globalThis);
