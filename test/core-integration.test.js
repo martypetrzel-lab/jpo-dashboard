@@ -184,3 +184,10 @@ test('manual verified start and coordinates survive RSS update; exact RSS end us
  const first=event('time-manual');await ingest([first]);await pool.query("UPDATE events SET start_time_iso='2026-09-17T14:30:00Z',start_time_source='manual',lat=50.1,lon=14.1,geo_source='manual' WHERE id=$1",[first.id]);
  await ingest([{...first,statusText:'ukončená',pubDate:new Date().toISOString(),descriptionRaw:'stav: ukončená<br>ukončení: 17. září 2026, 16:40<br>Kladno'}]);const row=await getEventMeta(first.id);assert.equal(row.start_time_iso,'2026-09-17T14:30:00Z');assert.equal(row.duration_min,10);assert.equal(row.lat,50.1);assert.equal(row.lon,14.1);
 });
+
+test('legacy manual editing preserves raw possible manual start without presenting it as verified',async()=>{
+ const first=event('time-legacy-manual');await ingest([first]);await pool.query("UPDATE events SET start_time_iso='2026-09-17T07:25:00Z',start_time_source=NULL,time_model_version=0,geo_source='manual_event_edit',lat=50.1,lon=14.1 WHERE id=$1",[first.id]);
+ await ingest([first]);let row=await getEventMeta(first.id);assert.equal(row.start_time_iso,'2026-09-17T07:25:00Z');assert.equal(row.start_time_source,'legacy_manual_unverified');
+ const detail=await fetch(base+'/api/events/'+first.id+'/detail').then(r=>r.json());assert.equal(detail.event.start_time_iso,null);assert.equal(detail.event.duration_min,null);
+ await pool.query('UPDATE events SET start_time_iso=NULL,start_time_source=NULL WHERE id=$1',[first.id]);await ingest([first]);row=await getEventMeta(first.id);assert.equal(row.start_time_iso,'2026-09-17T07:25:00Z');assert.equal(row.start_time_source,'legacy_manual_unverified');
+});
