@@ -2022,3 +2022,6 @@ export async function getPublicDataStatus() {
   const row=r.rows[0]||{};
   return {last_success:row.last_success||null,last_attempt:row.last_attempt||null};
 }
+
+export async function deleteUserSessions(userId){await pool.query('DELETE FROM user_sessions WHERE user_id=$1',[userId]);}
+

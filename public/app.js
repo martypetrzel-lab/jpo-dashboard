@@ -4478,14 +4478,17 @@ function renderUsersTable(users) {
 
     const roleSelect = `
       <select data-role-user="${u.id}" class="miniSelect" style="min-width:110px;">
+        <option value="public" ${u.role === "public" ? "selected" : ""}>public</option>
         <option value="ops" ${u.role === "ops" ? "selected" : ""}>ops</option>
+        <option value="editor" ${u.role === "editor" ? "selected" : ""}>editor</option>
+        <option value="custom" ${u.role === "custom" ? "selected" : ""}>custom</option>
         <option value="admin" ${u.role === "admin" ? "selected" : ""}>admin</option>
       </select>
     `;
 
-    const enabledBox = `<input type="checkbox" data-enabled-user="${u.id}" ${u.enabled ? "checked" : ""} />`;
+    const enabledBox = `<input type="checkbox" data-enabled-user="${u.id}" ${u.is_enabled ? "checked" : ""} />`;
 
-    const lastLogin = u.last_login_at ? new Date(u.last_login_at).toLocaleString("cs-CZ") : "—";
+    const lastLogin = u.last_login_at ? formatDate(u.last_login_at) : "—";
 
     tr.innerHTML = `
       <td>${escapeHtml(u.id)}</td>
@@ -4512,7 +4515,7 @@ function renderUsersTable(users) {
     ch.addEventListener("change", async (e) => {
       const id = e.target.getAttribute("data-enabled-user");
       const enabled = !!e.target.checked;
-      await adminPatchUser(id, { enabled });
+      await adminPatchUser(id, { is_enabled:enabled });
     });
   });
   tbody.querySelectorAll("[data-reset-user]").forEach(btn => {
@@ -4589,7 +4592,7 @@ async function adminLoadVisitsStats() {
 async function adminCreateUser() {
   msg("adminCreateMsg", "", true);
   const username = (document.getElementById("newUser")?.value || "").trim();
-  const password = (document.getElementById("newPass")?.value || "").trim();
+  const password = document.getElementById("newPass")?.value || "";
   const role = document.getElementById("newRole")?.value || "ops";
   const enabled = !!document.getElementById("newEnabled")?.checked;
 
@@ -4601,7 +4604,7 @@ async function adminCreateUser() {
   try {
     const r = await apiFetch("/api/admin/users", {
       method: "POST",
-      body: JSON.stringify({ username, password, role, enabled })
+      body: JSON.stringify({ username, password, role, is_enabled:enabled })
     });
     const j = await r.json();
     if (!r.ok || !j.ok) throw new Error(j.error || "create failed");

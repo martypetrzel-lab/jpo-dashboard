@@ -880,7 +880,7 @@
         <div class="adminCard adminDiagnosticsCard">
           <div class="adminCardHeader">
             <div class="adminCardTitle">Diagnostika příjmu dat</div>
-            <div class="hint">Kontrola, jestli ESP/Railway opravdu něco přijímalo. Pouze admin.</div>
+            <div class="hint">RSS worker, GitHub Actions a příjem přes API. Pouze admin.</div>
           </div>
 
           <div id="ingestDiagnosticsSummary" class="diagnosticsSummary">
@@ -903,13 +903,15 @@
         <div class="adminCard">
           <div class="adminCardHeader">
             <div class="adminCardTitle">Vytvořit uživatele</div>
-            <div class="hint">Role ops/admin, možnost disable.</div>
+            <div class="hint">Role public, ops, editor a admin; možnost vypnutí účtu.</div>
           </div>
           <div class="adminRow" style="flex-wrap:wrap; gap:10px;">
             <input id="newUser" class="miniInput" placeholder="username" style="min-width:140px;" />
             <input id="newPass" class="miniInput" placeholder="heslo (min 6)" type="password" style="min-width:160px;" />
             <select id="newRole" class="miniSelect" style="min-width:110px;">
+              <option value="public">public</option>
               <option value="ops">ops</option>
+              <option value="editor">editor</option>
               <option value="admin">admin</option>
             </select>
             <label class="check" style="margin:0;">

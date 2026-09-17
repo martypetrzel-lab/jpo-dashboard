@@ -146,3 +146,10 @@ test('public failures return safe categories and cannot crash async Express rout
  try{for(const route of ['/api/events','/api/stats','/api/export.csv','/api/events/audit-stable/detail']){const response=await fetch(base+route);assert.equal(response.status,500);assert.ok(!(await response.text()).includes('sensitive-database-example'));}}
  finally{pool.query=query;}
 });
+// Admin checks protect the shape used by the real UI, not invented mock fields.
+test('admin user enable/role changes match database fields and reset role permissions',async()=>{
+ const {createUser,createSession}=await import('../db.js');const admin=await createUser({username:'audit.admin',passwordHash:'unused-test-hash',role:'admin'});const token=crypto.randomUUID();await createSession({userId:admin.id,tokenSha256:crypto.createHash('sha256').update(token).digest('hex'),expiresAt:new Date(Date.now()+3600000).toISOString(),ip:'127.0.0.1'});const cookie='FWSESS='+token;
+ const created=await jsonRequest('/api/admin/users',{username:'audit.disabled',password:crypto.randomUUID(),role:'editor',is_enabled:false},cookie);assert.equal(created.status,200);assert.equal(created.data.user.is_enabled,false);assert.equal(created.data.user.role,'editor');
+ const patch=async body=>{const r=await fetch(base+'/api/admin/users/'+created.data.user.id,{method:'PATCH',headers:{'Content-Type':'application/json',Cookie:cookie},body:JSON.stringify(body)});assert.equal(r.status,200);return(await r.json()).user;};
+ assert.equal((await patch({is_enabled:true})).is_enabled,true);const changed=await patch({role:'ops'});assert.equal(changed.permissions.canCreateReports,false);assert.equal(changed.role,'ops');assert.equal((await patch({enabled:false})).is_enabled,false);
+});

@@ -77,6 +77,7 @@ async function authFromWsRequest(req) {
 
     return {
       sessionId: row.session_id,
+      tokenSha,
       user: {
         id: row.user_id,
         username: row.username,
@@ -472,16 +473,31 @@ export function attachOpsRadio(server, options = {}) {
     }
   }
 
-  const heartbeat = setInterval(() => {
-    const now = Date.now();
-    for (const client of clients.values()) {
-      if (now - client.lastSeenAt > HEARTBEAT_GRACE_MS) {
-        try { client.ws.close(4000, "heartbeat timeout"); } catch {}
-        continue;
+  let checkingSessions=false;
+  async function checkSessions() {
+    if(checkingSessions)return;checkingSessions=true;
+    try {
+      for(const client of clients.values()) {
+        let row=null;
+        try {row=await getSessionUserByTokenSha(client.tokenSha);} catch {}
+        if(!row||!row.is_enabled||new Date(row.expires_at).getTime()<=Date.now()) {
+          releaseTx(client,'session_revoked');client.ws.close(1008,'session expired');continue;
+        }
+        client.role=String(row.role||'public');
+        if(!roomAllowedForRole(getRoomMeta(client.room),client.role)) {
+          releaseTx(client,'role_changed');client.room=firstAllowedRoom(client.role);broadcastAllRoomStates();
+        }
       }
-      sendJson(client.ws, { type: "ping", ts: now });
+    }finally{checkingSessions=false;}
+  }
+  const heartbeat=setInterval(()=>{
+    const now=Date.now();
+    for(const client of clients.values()) {
+      if(now-client.lastSeenAt>HEARTBEAT_GRACE_MS){client.ws.close(4000,'heartbeat timeout');continue;}
+      sendJson(client.ws,{type:'ping',ts:now});
     }
-  }, HEARTBEAT_INTERVAL_MS);
+    void checkSessions();
+  },HEARTBEAT_INTERVAL_MS);
   heartbeat.unref?.();
 
   wss.on("close", () => clearInterval(heartbeat));
@@ -507,6 +523,7 @@ export function attachOpsRadio(server, options = {}) {
       id,
       ws,
       userId: auth.user.id,
+      tokenSha:auth.tokenSha,
       name: auth.user.username || "Uživatel",
       role: auth.user.role,
       room: initialRoom,
@@ -862,5 +879,5 @@ export function attachOpsRadio(server, options = {}) {
   });
 
   console.log(`[FW TALK] v0.9 WebSocket/PCM relay běží na /ops-radio | enabled=${enabled} | customRooms=true | lastVoicePerUser=memory`);
-  return { wss };
+  return { wss,checkSessions };
 }

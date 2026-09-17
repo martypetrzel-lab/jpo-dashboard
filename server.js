@@ -69,6 +69,7 @@ import {
   updateUserById,
   createSession,
   deleteSessionByTokenSha,
+  deleteUserSessions,
   deleteExpiredSessions,
   getSessionUserByTokenSha,
   insertAudit,
@@ -2634,13 +2635,13 @@ app.post("/api/admin/users", requireAdmin, safeRoute(async (req, res) => {
     const username = String(req.body?.username || "").trim();
     const password = String(req.body?.password || "");
     const role = String(req.body?.role || "ops").trim();
-    const isEnabled = req.body?.is_enabled !== false;
+    const isEnabled = (req.body?.is_enabled ?? req.body?.enabled) !== false;
     const permissions = (req.body?.permissions && typeof req.body.permissions === "object") ? req.body.permissions : {};
 
     if (!/^[a-zA-Z0-9_.-]{2,40}$/.test(username)) {
       return res.status(400).json({ ok: false, error: "invalid_username" });
     }
-    if (password.length < 6) {
+    if (password.length < 6 || password.length>128) {
       return res.status(400).json({ ok: false, error: "weak_password" });
     }
     if (!["public", "ops", "editor", "admin", "custom"].includes(role)) {
@@ -2677,14 +2678,16 @@ app.patch("/api/admin/users/:id", requireAdmin, safeRoute(async (req, res) => {
       }
       patch.permissions = normalizePermissions(patch.role || "custom", req.body.permissions);
     }
-    if (req.body?.is_enabled != null) patch.isEnabled = !!req.body.is_enabled;
+    if(req.body?.is_enabled!=null||req.body?.enabled!=null)patch.isEnabled=!!(req.body.is_enabled ?? req.body.enabled);
+    if(patch.role && req.body?.permissions==null)patch.permissions=normalizePermissions(patch.role);
     if (req.body?.password != null) {
       const pw = String(req.body.password);
-      if (pw.length < 6) return res.status(400).json({ ok: false, error: "weak_password" });
+      if (pw.length < 6 || pw.length>128) return res.status(400).json({ ok: false, error: "weak_password" });
       patch.passwordHash = await bcrypt.hash(pw, 12);
     }
     const updated = await updateUserById(id, patch);
     if (!updated) return res.status(404).json({ ok: false, error: "not_found" });
+    if(patch.passwordHash || patch.isEnabled===false)await deleteUserSessions(id);
 
     await insertAudit({ userId: req.auth.user.id, username: req.auth.user.username, action: "user_update", details: `${updated.username}`, ip: getClientIp(req) });
     return res.json({ ok: true, user: updated });

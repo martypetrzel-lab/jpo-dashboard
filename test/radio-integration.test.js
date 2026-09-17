@@ -1,5 +1,5 @@
 import test,{before,after} from 'node:test';import assert from 'node:assert/strict';import crypto from 'node:crypto';import http from 'node:http';import {once} from 'node:events';import {WebSocket} from 'ws';
-import {createTestDatabase} from '../test-support/database.js';import {createUser,createSession} from '../db.js';import {attachOpsRadio,isAllowedRadioOrigin} from '../radio-server.js';
+import {createTestDatabase} from '../test-support/database.js';import {createUser,createSession,pool} from '../db.js';import {attachOpsRadio,isAllowedRadioOrigin} from '../radio-server.js';
 let database,server,relay,url;const clients=[];
 before(async()=>{database=await createTestDatabase();server=http.createServer();relay=attachOpsRadio(server);server.listen(0,'127.0.0.1');await once(server,'listening');url=`ws://127.0.0.1:${server.address().port}/ops-radio`;});
 after(async()=>{clients.forEach(c=>c.socket.terminate());await new Promise(r=>relay.wss.close(r));await new Promise(r=>server.close(r));await database.close();});
@@ -11,4 +11,8 @@ test('unauthenticated websocket receives auth_error and policy close',async()=>{
 test('PCM relay grants only one transmitter and releases it across room changes',async()=>{
  const a=await connect('audit.radio.a'),b=await connect('audit.radio.b');await a.wait('auth_ok');await b.wait('auth_ok');a.send({type:'ptt_request'});assert.equal((await a.wait('ptt_granted',m=>m.self)).self,true);b.send({type:'ptt_request'});await b.wait('ptt_denied');
  a.send({type:'join_room',room:'TEST'});await b.wait('ptt_released');b.send({type:'ptt_request'});assert.equal((await b.wait('ptt_granted',m=>m.self)).self,true);b.send({type:'ptt_release'});await b.wait('ptt_released');
+});
+
+test('session revocation disconnects an already connected Talk client',async()=>{
+ const c=await connect('audit.radio.revoked');await c.wait('auth_ok');const closed=once(c.socket,'close');await pool.query("UPDATE users SET is_enabled=FALSE WHERE username='audit.radio.revoked'");await relay.checkSessions();assert.equal((await closed)[0],1008);
 });
