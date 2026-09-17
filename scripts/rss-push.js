@@ -25,12 +25,19 @@ export function buildGatewayPayload(json) {
   };
 }
 
-function gatewayUrl(nowMs = Date.now()) {
+export function gatewayUrl(nowMs = Date.now(), rss2jsonApiKey = "") {
   // A five-minute bucket keeps the fallback fresh without creating a unique
   // upstream URL on every retry.
   const bucket = Math.floor(nowMs / 300_000);
   const source = `${DEFAULT_RSS_URL}?fw_bucket=${bucket}`;
-  return `${RSS2JSON_URL}?rss_url=${encodeURIComponent(source)}`;
+  const params = new URLSearchParams({ rss_url: source });
+  if (rss2jsonApiKey) {
+    params.set("api_key", rss2jsonApiKey);
+    params.set("count", "100");
+    params.set("order_by", "pubDate");
+    params.set("order_dir", "desc");
+  }
+  return `${RSS2JSON_URL}?${params.toString()}`;
 }
 
 function safeFailure(type, httpStatus = null) {
@@ -43,13 +50,14 @@ function safeFailure(type, httpStatus = null) {
 export function readPushConfig(env = process.env) {
   const ingestUrl = String(env.FIREWATCH_INGEST_URL || "").trim();
   const apiKey = String(env.FIREWATCH_API_KEY || "").trim();
+  const rss2jsonApiKey = String(env.RSS2JSON_API_KEY || "").trim();
   if (!ingestUrl || !apiKey) throw safeFailure("missing_configuration");
   let parsed;
   try { parsed = new URL(ingestUrl); } catch { throw safeFailure("invalid_ingest_url"); }
   if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.hash) {
     throw safeFailure("invalid_ingest_url");
   }
-  return { ingestUrl, apiKey };
+  return { ingestUrl, apiKey, rss2jsonApiKey };
 }
 
 export async function pushRssItems(payload, config, {
@@ -92,7 +100,7 @@ export async function runRssPush({
       const safe = sanitizeRssError(directError);
       logger.info(`[rss-push] direct RSS unavailable; fallback=rss2json; category=${safe.type}`);
       stage = "rss_gateway";
-      const gateway = await fetchRssDetailed(gatewayUrl(nowMs), {
+      const gateway = await fetchRssDetailed(gatewayUrl(nowMs, config.rss2jsonApiKey), {
         fetchImpl: gatewayFetchImpl, timeoutMs: 30_000, connectTimeoutMs: 30_000,
         sleepImpl, agentFactory
       });
