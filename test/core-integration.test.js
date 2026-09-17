@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { once } from "node:events";
 import { createTestDatabase } from "../test-support/database.js";
-import { pool, getEventMeta, autoCloseStaleOpenEvents, setCachedGeocode, initDb } from "../db.js";
+import { pool, getEventMeta, autoCloseStaleOpenEvents, setCachedGeocode, initDb, getStatsFiltered, setSetting } from "../db.js";
 
 process.env.API_KEY = crypto.randomUUID();
 const { app, normalizeFeedTimestamp, pragueLocalToUtcIso, parseTimesFromDescription, safeDurationFromStartEnd } = await import("../server.js");
@@ -30,6 +30,13 @@ test("isolated health/static/API smoke and protected diagnostics", async () => {
   assert.equal((await fetch(base + "/")).status, 200);
   assert.equal((await fetch(base + "/api/admin/ingest-diagnostics")).status, 401);
   assert.equal((await fetch(base + "/api/ingest", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })).status, 401);
+});
+test("longest statistics include trusted closed durations and exclude inferred measurements",async()=>{
+ await setSetting('longest_cutoff_v2_iso','2000-01-01T00:00:00Z');
+ for(const [id,source,duration] of [['stats-trusted','rss_end_time',42],['stats-inferred','observed',999]])await pool.query("INSERT INTO events(id,title,link,city_text,pub_date,is_closed,duration_min,duration_source) VALUES($1,'Test','https://example.test','Stats fixture',$2,true,$3,$4)",[id,new Date().toISOString(),duration,source]);
+ for(const filters of [{city:'Stats fixture'}, {city:'Stats fixture',month:dateKey().slice(0,7)}]){
+  const stats=await getStatsFiltered(filters);assert.deepEqual(stats.longest.map(r=>r.id),['stats-trusted']);assert.equal(stats.longest[0].duration_min,42);
+ }
 });
 
 test("registration creates a working session and logout invalidates it", async () => {

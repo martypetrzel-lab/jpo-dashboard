@@ -46,4 +46,13 @@ test('report calendar validates ISO weeks and counts empty calendar days in aver
  assert.throws(()=>reportPeriodFromKey('week','2025-W53'));assert.throws(()=>reportPeriodFromKey('month','2026-13'));assert.equal(reportPeriodFromKey('week','2026-W01').startIso,'2025-12-29');
  const report=buildAnalyticalReport('week','2026-W38',[]);assert.equal(report.data_json.avg_per_day,0);
 });
+test('analytics use Prague day boundaries, full calendar periods and only trusted durations',()=>{
+ const rows=Array.from({length:7},(_,i)=>({id:'time-'+i,pub_date:'2025-12-31T23:30:00Z',start_time:'2025-12-31T23:30:00Z',is_closed:true,duration_min:i?30:999,duration_source:i?'rss_end_time':'observed',event_type:'fire',city_text:'Kladno',lat:50,lon:14}));
+ const report=buildAnalyticalReport('week','2026-W01',rows);
+ assert.equal(report.data_json.avg_per_day,1);
+ assert.deepEqual(report.data_json.by_day,[{day:'2026-01-01',count:7}]);
+ assert.equal(report.data_json.longest.length,6);
+ assert.ok(report.data_json.longest.every(r=>r.duration_min===30));
+ assert.equal(buildAnalyticalReport('month','2026-01',rows).data_json.avg_per_day,0.2);
+});
 

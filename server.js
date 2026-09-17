@@ -998,6 +998,7 @@ function formatMinutesLong(min) {
 
 function buildAnalyticalReport(type, key, rows) {
   const p = reportPeriodFromKey(type, key);
+  rows=rows.map(row=>({...row,duration_min:["rss_end_time","esp_duration","explicit","manual"].includes(row.duration_source)?row.duration_min:null}));
   const total = rows.length;
   const open = rows.filter(r => !r.is_closed).length;
   const closed = rows.filter(r => !!r.is_closed).length;
@@ -1082,7 +1083,7 @@ function buildAnalyticalReport(type, key, rows) {
     const topType = typeStats[0];
     const topCity = topCities[0];
     const busiest = busiestDays[0];
-    summary = `Za období bylo evidováno ${total} událostí. Nejčastější typ: ${topType?.name || "—"} (${topType?.count || 0}). Nejvíce událostí bylo v lokalitě ${topCity?.name || "—"} (${topCity?.count || 0}). Nejvytíženější den: ${busiest?.day || "—"} (${busiest?.count || 0}).`;
+    summary = `Za období bylo evidováno ${total} událostí. Nejčastější typ: ${topType?.name || "—"} (${topType?.count || 0}). Nejvíce událostí bylo v lokalitě ${topCity?.name || "—"} (${topCity?.count || 0}). Nejvytíženější den: ${busiest?.day ? new Date(busiest.day+"T00:00:00Z").toLocaleDateString("cs-CZ",{timeZone:"UTC"}) : "—"} (${busiest?.count || 0}).`;
   }
 
   const titlePrefix = type === "month" ? "Měsíční" : type === "week" ? "Týdenní" : "Denní";

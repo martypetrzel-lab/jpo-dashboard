@@ -1365,6 +1365,7 @@ export async function getStatsFiltered(filters) {
       iL++;
     }
 
+    whereLongest.push(`duration_source IN ('rss_end_time','esp_duration','explicit','manual')`);
     // TOP za měsíc dává smysl jen pro uzavřené s uloženou délkou
     whereLongest.push(`is_closed = TRUE`);
     whereLongest.push(`duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= $${iL}`);
@@ -1440,7 +1441,7 @@ export async function getStatsFiltered(filters) {
         link,
         COALESCE(NULLIF(city_text,''), place_text) AS city,
         CASE
-          WHEN duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= $${iL}
+          WHEN duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= $${iL} AND duration_source IN ('rss_end_time','esp_duration','explicit','manual')
             THEN duration_min
           WHEN (NOT is_closed)
             THEN LEAST(
@@ -1449,7 +1450,7 @@ export async function getStatsFiltered(filters) {
                 1,
                 FLOOR(
                   EXTRACT(EPOCH FROM (
-                    NOW() - COALESCE(NULLIF(start_time_iso,'')::timestamptz, first_seen_at, created_at)
+                    NOW() - COALESCE(NULLIF(start_time_iso,'')::timestamptz, NULLIF(pub_date,'')::timestamptz)
                   )) / 60
                 )::int
               )
@@ -1463,8 +1464,8 @@ export async function getStatsFiltered(filters) {
       FROM events
       ${whereLongestSql}
         AND (
-          (duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= $${iL})
-          OR (NOT is_closed)
+          (duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= $${iL} AND duration_source IN ('rss_end_time','esp_duration','explicit','manual'))
+          OR (NOT is_closed AND COALESCE(NULLIF(start_time_iso,''),NULLIF(pub_date,'')) IS NOT NULL)
         )
       ORDER BY duration_min DESC NULLS LAST
       LIMIT 10;
