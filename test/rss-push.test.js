@@ -157,6 +157,7 @@ test("invalid XML is not retried or sent to ingest", async () => {
   const h = harness();
   assert.equal(await runRssPush({ env, logger: h.logger,
     rssFetchImpl: async () => { calls++; return new Response("invalid xml"); },
+    gatewayFetchImpl: async () => Response.json({ status: "error" }),
     ingestFetchImpl: async () => assert.fail("unexpected ingest")
   }), false);
   assert.equal(calls, 1);

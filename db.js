@@ -160,6 +160,8 @@ export async function initDb() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
+  await pool.query(`ALTER TABLE ingest_log ADD COLUMN IF NOT EXISTS skipped_count INTEGER NOT NULL DEFAULT 0;`);
+  await pool.query(`ALTER TABLE ingest_log ADD COLUMN IF NOT EXISTS skipped_older_count INTEGER NOT NULL DEFAULT 0;`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_ingest_log_created_at ON ingest_log(created_at DESC);`);
 
 
@@ -463,7 +465,7 @@ export async function getLongestCutoffIso() {
 
 export async function getEventMeta(id) {
   const res = await pool.query(
-    `SELECT id, is_closed, first_seen_at, pub_date, start_time_iso, end_time_iso, duration_min, alarm_level, is_major_event, status_text, source_kind, source_note FROM events WHERE id=$1`,
+    `SELECT id, is_closed, first_seen_at, pub_date, start_time_iso, end_time_iso, duration_min, alarm_level, is_major_event, status_text, status_source, source_kind, source_note, lat, lon, geo_source FROM events WHERE id=$1`,
     [id]
   );
   return res.rows[0] || null;
@@ -640,6 +642,8 @@ export async function autoCloseStaleOpenEvents({ staleMinutes = 20, limit = 200 
         COALESCE(NULLIF(start_time_iso,'' )::timestamptz, first_seen_at, created_at) AS start_ts
       FROM events
       WHERE is_closed = FALSE
+        AND COALESCE(source_kind, 'esp') = 'esp'
+        AND status_source IS DISTINCT FROM 'explicit_open'
         AND last_seen_at < (NOW() - ($1::text || ' minutes')::interval)
       ORDER BY last_seen_at ASC
       LIMIT $2
@@ -814,6 +818,8 @@ export async function insertIngestLog({
   updatedCount = 0,
   closedCount = 0,
   geocodedCount = 0,
+  skippedCount = 0,
+  skippedOlderCount = 0,
   errorText = null,
   ip = null,
   userAgent = null
@@ -822,9 +828,9 @@ export async function insertIngestLog({
     `
     INSERT INTO ingest_log (
       source, source_kind, received_count, accepted_count, new_count, updated_count,
-      closed_count, geocoded_count, error_text, ip, user_agent
+      closed_count, geocoded_count, error_text, ip, user_agent, skipped_count, skipped_older_count
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
     RETURNING id
     `,
     [
@@ -838,7 +844,9 @@ export async function insertIngestLog({
       Number(geocodedCount || 0),
       errorText ? String(errorText).slice(0, 2000) : null,
       ip || null,
-      userAgent || null
+      userAgent || null,
+      Number(skippedCount || 0),
+      Number(skippedOlderCount || 0)
     ]
   );
   return r.rows?.[0]?.id || null;
@@ -850,7 +858,7 @@ export async function getIngestDiagnostics({ limit = 20 } = {}) {
   const logs = await pool.query(
     `
     SELECT id, source, source_kind, received_count, accepted_count, new_count, updated_count,
-           closed_count, geocoded_count, error_text, ip, user_agent, created_at
+           closed_count, geocoded_count, skipped_count, skipped_older_count, error_text, ip, user_agent, created_at
     FROM ingest_log
     ORDER BY created_at DESC
     LIMIT $1

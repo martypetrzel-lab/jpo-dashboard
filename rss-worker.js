@@ -150,17 +150,19 @@ export function rssDateKeyInPrague(value) {
   return Number.isNaN(parsed.getTime()) ? null : pragueDateKey(parsed);
 }
 
-export function shouldIngestRssItemForToday(item = {}, { previouslyKnownOpen = false, now = new Date() } = {}) {
+export function shouldIngestRssItemForToday(item = {}, { previouslyKnownOpen = false, previouslyKnown = false, now = new Date() } = {}) {
   const itemDay = rssDateKeyInPrague(item.pubDate || item.pub_date || item.startTimeIso || item.start_time_iso);
   const today = pragueDateKey(now instanceof Date ? now : new Date(now));
   if (!itemDay) return previouslyKnownOpen;
   if (itemDay === today) return true;
   if (itemDay > today) return false;
-  if (previouslyKnownOpen) return true; // allow an older carry-over event to receive its closing update
+  if (previouslyKnown || previouslyKnownOpen) return true; // allow an older carry-over event to receive its closing update
 
   const status = `${item.statusText || item.status_text || ""} ${item.descriptionRaw || item.description || ""}`
     .normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
-  const explicitlyClosed = /ukoncen|likvidace\s+ukoncena/.test(status);
+  const state = `${item.statusText || item.status_text || ""} ${extractStatus(item.descriptionRaw || item.description || "")}`
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  const explicitlyClosed = /ukoncen|likvidace\s+ukoncena/.test(state);
   const explicitlyOpen = /stav\s*:\s*(nova|novy|neupresnen)|probiha(?:jici)?(?:\s+zasah)?/.test(status);
   return !explicitlyClosed && explicitlyOpen;
 }

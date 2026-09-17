@@ -19,5 +19,8 @@
     "pg": "^8.11.5",
     "undici": "^6.27.0",
     "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8"
   }
 }

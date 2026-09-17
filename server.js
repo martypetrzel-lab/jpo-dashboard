@@ -3,7 +3,7 @@ import http from "http";
 import PDFDocument from "pdfkit";
 import fs from "fs";
 import path from "path";
-import { fileURLToPath } from "url";
+import { fileURLToPath, pathToFileURL } from "url";
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import { attachOpsRadio } from "./radio-server.js";
@@ -96,7 +96,7 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const app = express();
+export const app = express();
 app.use(express.json({ limit: "2mb" }));
 let rssWorker = null;
 
@@ -287,34 +287,24 @@ function classifyType(title) {
 }
 
 
-function pragueLocalToUtcIso(year, monthIndex, day, hour, minute) {
-  // Převod lokálního času Europe/Prague na UTC bez externí knihovny.
-  // Vezmeme hrubý UTC čas a přes Intl zjistíme, o kolik se liší lokální Praha.
-  const approx = new Date(Date.UTC(year, monthIndex, day, hour, minute, 0));
+function pragueLocalToUtcIso(year, monthIndex, day, hour, minute, second = 0) {
+  const wanted = Date.UTC(year, monthIndex, day, hour, minute, second);
+  const calendar = new Date(wanted);
+  if (calendar.getUTCFullYear() !== year || calendar.getUTCMonth() !== monthIndex || calendar.getUTCDate() !== day
+      || hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59) return null;
   const fmt = new Intl.DateTimeFormat("en-GB", {
-    timeZone: "Europe/Prague",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false
+    timeZone: "Europe/Prague", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23"
   });
-
-  const parts = Object.fromEntries(fmt.formatToParts(approx).map(p => [p.type, p.value]));
-  const seenAsUtc = Date.UTC(
-    Number(parts.year),
-    Number(parts.month) - 1,
-    Number(parts.day),
-    Number(parts.hour),
-    Number(parts.minute),
-    Number(parts.second || 0)
-  );
-
-  const wantedAsUtc = Date.UTC(year, monthIndex, day, hour, minute, 0);
-  const offsetMs = seenAsUtc - approx.getTime();
-  return new Date(wantedAsUtc - offsetMs).toISOString();
+  // Check both legal Prague offsets, including DST boundaries. Ambiguous autumn
+  // times use the first occurrence; nonexistent spring times are rejected.
+  for (const offset of [120, 60]) {
+    const candidate = new Date(wanted - offset * 60000);
+    const parts = Object.fromEntries(fmt.formatToParts(candidate).map(p => [p.type, p.value]));
+    if (Number(parts.year) === year && Number(parts.month) === monthIndex + 1 && Number(parts.day) === day
+        && Number(parts.hour) === hour && Number(parts.minute) === minute && Number(parts.second) === second) return candidate.toISOString();
+  }
+  return null;
 }
 
 // popis v RSS bývá: "stav: ...<br>ukončení: ...<br>Město<br>okres ..."
@@ -325,8 +315,8 @@ function parseTimesFromDescription(descRaw) {
   const lower = desc.toLowerCase();
 
   // stav: ukončená / ukončeno / ukončení
-  if (lower.includes("stav:") && lower.includes("ukon")) out.isClosed = true;
-  if (lower.includes("ukončení:")) out.isClosed = true;
+  if (/stav\s*:\s*ukon(?:čen|cen)/i.test(desc)) out.isClosed = true;
+  // An empty ukončení field is present even on active RSS items.
 
   // ukončení: 31. ledna 2026, 15:07
   const mEnd = desc.match(/ukončen[íi]\s*:\s*([0-9]{1,2})\.\s*([^\n,<]+?)\s*([0-9]{4}),?\s*([0-9]{1,2})\s*:\s*([0-9]{2})/i);
@@ -345,6 +335,7 @@ function parseTimesFromDescription(descRaw) {
     const mo = months[monthName];
     if (Number.isFinite(mo)) {
       out.endIso = pragueLocalToUtcIso(year, mo, day, hh, mm);
+      if (out.endIso) out.isClosed = true;
     }
   }
 
@@ -432,9 +423,9 @@ function normalizeFeedTimestamp(value) {
   const raw = String(value || "").trim();
   if (!raw) return null;
   // rss2json vrací `YYYY-MM-DD HH:mm:ss` bez zóny, ale jde o lokální čas zdroje v ČR.
-  const local = raw.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::\d{2})?$/);
+  const local = raw.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/);
   if (local) {
-    return pragueLocalToUtcIso(Number(local[1]), Number(local[2]) - 1, Number(local[3]), Number(local[4]), Number(local[5]));
+    return pragueLocalToUtcIso(Number(local[1]), Number(local[2]) - 1, Number(local[3]), Number(local[4]), Number(local[5]), Number(local[6] || 0));
   }
   const parsed = new Date(raw);
   return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
@@ -2356,7 +2347,7 @@ app.post("/api/auth/register", async (req, res) => {
     const token = crypto.randomBytes(32).toString("hex");
     const tokenSha = sha256Hex(token);
     const expiresAt = new Date(Date.now() + SESSION_TTL_SECONDS * 1000).toISOString();
-    await createSession({ user_id: u.id, token_sha256: tokenSha, expires_at: expiresAt });
+    await createSession({ userId: u.id, tokenSha256: tokenSha, expiresAt, ip: getClientIp(req), userAgent: req.get("user-agent") });
 
     setSessionCookie(res, token, req);
     return res.json({ ok: true, user: { id: u.id, username: u.username, role: "public" }, request_ops: requestOps });
@@ -2396,7 +2387,7 @@ app.post("/api/admin/ops-requests/:id/approve", requireAdmin, async (req, res) =
     if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: "bad_id" });
     const out = await decideOpsRequest({ requestId: id, adminUserId: req.auth.user.id, approve: true });
     if (!out.ok) return res.status(400).json(out);
-    await insertAudit({ actor_user_id: req.auth.user.id, action: "ops_request_approved", detail: JSON.stringify({ request_id: id, user_id: out.user_id }) });
+    await insertAudit({ userId: req.auth.user.id, action: "ops_request_approved", details: JSON.stringify({ request_id: id, user_id: out.user_id }) });
     return res.json({ ok: true });
   } catch (e) {
     console.error(e);
@@ -2410,7 +2401,7 @@ app.post("/api/admin/ops-requests/:id/reject", requireAdmin, async (req, res) =>
     if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: "bad_id" });
     const out = await decideOpsRequest({ requestId: id, adminUserId: req.auth.user.id, approve: false });
     if (!out.ok) return res.status(400).json(out);
-    await insertAudit({ actor_user_id: req.auth.user.id, action: "ops_request_rejected", detail: JSON.stringify({ request_id: id, user_id: out.user_id }) });
+    await insertAudit({ userId: req.auth.user.id, action: "ops_request_rejected", details: JSON.stringify({ request_id: id, user_id: out.user_id }) });
     return res.json({ ok: true });
   } catch (e) {
     console.error(e);
@@ -2483,9 +2474,9 @@ app.post("/api/admin/events/:id/coords", requireAdmin, async (req, res) => {
 
     await updateEventCoords(req.params.id, lat, lon, source, note);
     await insertAudit({
-      actor_user_id: req.auth.user.id,
+      userId: req.auth.user.id,
       action: "event_coords_updated",
-      detail: JSON.stringify({ id: req.params.id, lat, lon, source, note })
+      details: JSON.stringify({ id: req.params.id, lat, lon, source, note })
     }).catch(() => {});
 
     return res.json({ ok: true });
@@ -2560,9 +2551,9 @@ app.post("/api/admin/geocode-missing", requireAdmin, async (req, res) => {
     }
 
     await insertAudit({
-      actor_user_id: req.auth.user.id,
+      userId: req.auth.user.id,
       action: "admin_geocode_missing",
-      detail: JSON.stringify({ checked, fixed })
+      details: JSON.stringify({ checked, fixed })
     }).catch(() => {});
 
     return res.json({ ok: true, checked, fixed, results });
@@ -2596,7 +2587,7 @@ app.put("/api/admin/events/:id/coords", requireAdmin, async (req, res) => {
     if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return res.status(400).json({ ok: false, error: "bad_coords" });
 
     await updateEventCoords(id, lat, lon);
-    await insertAudit({ actor_user_id: req.auth.user.id, action: "event_coords_set", detail: JSON.stringify({ event_id: id, lat, lon }) });
+    await insertAudit({ userId: req.auth.user.id, action: "event_coords_set", details: JSON.stringify({ event_id: id, lat, lon }) });
     return res.json({ ok: true });
   } catch (e) {
     console.error(e);
@@ -2609,7 +2600,7 @@ app.delete("/api/admin/events/:id/coords", requireAdmin, async (req, res) => {
     const id = String(req.params.id || "").trim();
     if (!id) return res.status(400).json({ ok: false, error: "bad_id" });
     await clearEventCoords(id);
-    await insertAudit({ actor_user_id: req.auth.user.id, action: "event_coords_cleared", detail: JSON.stringify({ event_id: id }) });
+    await insertAudit({ userId: req.auth.user.id, action: "event_coords_cleared", details: JSON.stringify({ event_id: id }) });
     return res.json({ ok: true });
   } catch (e) {
     console.error(e);
@@ -2951,18 +2942,28 @@ async function handleIngest(req, res) {
       return res.status(400).json({ ok: false, error: "items missing" });
     }
 
+    if (items.length > 200) return res.status(400).json({ ok: false, error: "too_many_items", maxItems: 200 });
+    const rssSource = ["github_actions_rss", "github_actions_rss2json", "server_rss_worker"].includes(source);
+    let skippedOlder = 0;
+    let skippedInvalid = 0;
+    const uniqueItems = new Map();
+    for (const item of items) {
+      if (!item || typeof item.id !== "string" || item.id.length > 512 || !item.id.trim()
+          || typeof item.title !== "string" || !item.title.trim() || item.title.length > 2000
+          || typeof item.link !== "string" || item.link.length > 4096 || !/^https?:\/\//i.test(item.link)) { skippedInvalid++; continue; }
+      uniqueItems.set(item.id, item);
+    }
+    const skippedDuplicates = items.length - skippedInvalid - uniqueItems.size;
     let accepted = 0;
     let updatedClosed = 0;
     let geocoded = 0;
     let inserted = 0;
     let updated = 0;
 
-    for (const it of items) {
-      if (!it?.id || !it?.title || !it?.link) continue;
+    for (const it of uniqueItems.values()) {
 
       const prev = await getEventMeta(it.id);
-      const restrictRssToCurrentDay = ["github_actions_rss", "github_actions_rss2json", "server_rss_worker"].includes(source);
-      if (restrictRssToCurrentDay && !shouldIngestRssItemForToday(it, { previouslyKnownOpen: prev?.is_closed === false })) continue;
+      if (rssSource && !shouldIngestRssItemForToday(it, { previouslyKnown: !!prev, previouslyKnownOpen: prev?.is_closed === false })) { skippedOlder++; continue; }
 
       const eventType = it.eventType || classifyType(it.title);
       const desc = it.descriptionRaw || it.descRaw || it.description || "";
@@ -3000,15 +3001,13 @@ if (statusAnalysis.source === "explicit_open") {
 const rssStartIso = eventStartIsoFromEspRss(it, times);
 
 const startIso =
-  normalizeFeedTimestamp(it.startTimeIso) ||
-  times.startIso ||
   normalizeFeedTimestamp(prev?.start_time_iso) ||
   normalizeFeedTimestamp(prev?.pub_date) ||
   rssStartIso ||
   null;
 
 let endIso =
-  it.endTimeIso ||
+  normalizeFeedTimestamp(it.endTimeIso) ||
   times.endIso ||
   null;
 
@@ -3079,7 +3078,8 @@ if (!isClosed) {
         alarmLevelText: major.alarmLevelText,
         isMajorEvent: major.isMajorEvent,
         majorReason: major.majorReason,
-        statusSource: statusAnalysis.source
+        statusSource: statusAnalysis.source,
+        sourceKind: rssSource ? "rss" : "esp"
       };
 
       await upsertEvent(ev);
@@ -3088,6 +3088,8 @@ if (!isClosed) {
 
       if (ev.isClosed) updatedClosed++;
 
+      // Retain existing coordinates, especially manual corrections.
+      if (prev?.lat != null && prev?.lon != null) continue;
       const geoQueries = buildGeocodeQueriesForEvent(ev, districtFromDesc);
 
       let fixed = false;
@@ -3107,7 +3109,9 @@ if (!isClosed) {
 
     await insertIngestLog({
       source: source || "unknown",
-      sourceKind: source === "server_rss_worker" ? "rss" : "esp",
+      sourceKind: rssSource ? "rss" : "esp",
+      skippedCount: skippedOlder + skippedInvalid + skippedDuplicates,
+      skippedOlderCount: skippedOlder,
       receivedCount: items.length,
       acceptedCount: accepted,
       newCount: inserted,
@@ -3125,14 +3129,16 @@ if (!isClosed) {
       inserted,
       updated,
       closed_seen_in_batch: updatedClosed,
-      geocoded
+      geocoded,
+      skipped: skippedOlder + skippedInvalid + skippedDuplicates,
+      skipped_older: skippedOlder
     });
   } catch (e) {
     console.error(e);
     try {
       await insertIngestLog({
         source: req.body?.source || "unknown",
-        sourceKind: req.body?.source === "server_rss_worker" ? "rss" : "esp",
+        sourceKind: ["server_rss_worker", "github_actions_rss", "github_actions_rss2json"].includes(req.body?.source) ? "rss" : "esp",
         receivedCount: Array.isArray(req.body?.items) ? req.body.items.length : 0,
         errorText: e?.message || String(e),
         ip: getClientIp(req),
@@ -4189,6 +4195,7 @@ async function initDbWithRetry() {
 }
 
 
+export async function startServer() {
 await initDbWithRetry();
 await ensureInitialAdmin();
 
@@ -4263,3 +4270,12 @@ async function shutdown(signal) {
 
 process.once("SIGTERM", () => void shutdown("SIGTERM"));
 process.once("SIGINT", () => void shutdown("SIGINT"));
+
+return { server, rssWorker };
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  await startServer();
+}
+
+export { normalizeFeedTimestamp, pragueLocalToUtcIso, parseTimesFromDescription, safeDurationFromStartEnd, reportPeriodFromKey, buildAnalyticalReport };
