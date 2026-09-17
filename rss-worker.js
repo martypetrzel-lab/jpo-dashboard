@@ -1,11 +1,13 @@
 import crypto from "crypto";
 import { XMLParser, XMLValidator } from "fast-xml-parser";
-import { fetch as undiciFetch, ProxyAgent } from "undici";
+import { fetch as undiciFetch, Agent, ProxyAgent } from "undici";
 
 export const DEFAULT_RSS_URL = "https://pkr.kr-stredocesky.cz/pkr/zasahy-jpo/feed.xml";
 export const MIN_INTERVAL_MS = 30_000;
 export const MAX_ITEMS_LIMIT = 200;
 export const DEFAULT_TIMEOUT_MS = 20_000;
+export const DEFAULT_CONNECT_TIMEOUT_MS = 30_000;
+export const RSS_RETRY_DELAY_MS = 1_500;
 export const DEFAULT_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 
 const parser = new XMLParser({
@@ -34,6 +36,7 @@ export function readRssConfig(env = process.env) {
     maxItems: boundedInt(env.RSS_MAX_ITEMS, 35, 1, MAX_ITEMS_LIMIT),
     runOnStart: envFlag(env.RSS_RUN_ON_START, true),
     proxyUrl: String(env.RSS_PROXY_URL || "").trim(),
+    connectTimeoutMs: boundedInt(env.RSS_CONNECT_TIMEOUT_MS, DEFAULT_CONNECT_TIMEOUT_MS, 5_000, 120_000),
     timeoutMs: boundedInt(env.RSS_TIMEOUT_MS, DEFAULT_TIMEOUT_MS, 1_000, 120_000),
     maxResponseBytes: boundedInt(env.RSS_MAX_RESPONSE_BYTES, DEFAULT_MAX_RESPONSE_BYTES, 64 * 1024, 10 * 1024 * 1024)
   };
@@ -160,12 +163,14 @@ export function sanitizeRssError(error, durationMs = null) {
   else if (error?.rssType) type = error.rssType;
   else if (error?.name === "AbortError" || codes.includes("ABORT_ERR") || codes.includes("UND_ERR_ABORTED")) type = "timeout";
   else if (codes.some((code) => ["ENOTFOUND", "EAI_AGAIN", "EAI_FAIL"].includes(code))) type = "dns";
-  else if (codes.some((code) => ["ECONNREFUSED", "UND_ERR_CONNECT_TIMEOUT"].includes(code))) type = "connection_refused";
+  else if (codes.includes("UND_ERR_CONNECT_TIMEOUT")) type = "connect_timeout";
+  else if (codes.includes("ECONNREFUSED")) type = "connection_refused";
   else if (codes.some((code) => code.includes("CERT") || code.includes("TLS") || code.includes("SSL"))) type = "tls";
 
   const messages = {
     dns: "DNS lookup failed",
-    timeout: "RSS request timed out",
+    timeout: "RSS request timed out (overall timeout)",
+    connect_timeout: "RSS connection timed out",
     connection_refused: "Connection refused",
     tls: "TLS connection failed",
     http_status: "RSS server returned an HTTP error",
@@ -190,9 +195,28 @@ function rssError(type, httpStatus = null) {
   return error;
 }
 
-export async function fetchRssDetailed(url, {
+export async function fetchRssDetailed(url, options = {}) {
+  const started = Date.now();
+  const sleepImpl = options.sleepImpl || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const result = await fetchRssAttempt(url, options);
+      return { ...result, durationMs: Date.now() - started };
+    } catch (error) {
+      const safe = sanitizeRssError(error);
+      const retryable = ["network_error", "dns", "connection_refused", "connect_timeout", "timeout"].includes(safe.type)
+        || (safe.type === "http_status" && safe.httpStatus >= 500 && safe.httpStatus <= 599);
+      if (attempt === 2 || !retryable) throw error;
+      await sleepImpl(RSS_RETRY_DELAY_MS);
+    }
+  }
+}
+
+async function fetchRssAttempt(url, {
   fetchImpl = undiciFetch,
   timeoutMs = DEFAULT_TIMEOUT_MS,
+  connectTimeoutMs = DEFAULT_CONNECT_TIMEOUT_MS,
+  agentFactory = (options) => new Agent(options),
   maxResponseBytes = DEFAULT_MAX_RESPONSE_BYTES,
   userAgent = "FirewatchCZ-RSS-Worker/1.0 (+https://firewatchcz.cz)",
   proxyUrl = "",
@@ -202,6 +226,8 @@ export async function fetchRssDetailed(url, {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   let dispatcher = null;
+  let response = null;
+  let reader = null;
   try {
     if (proxyUrl) {
       try {
@@ -209,6 +235,8 @@ export async function fetchRssDetailed(url, {
       } catch {
         throw rssError("invalid_proxy");
       }
+    } else {
+      dispatcher = agentFactory({ connectTimeout: boundedInt(connectTimeoutMs, DEFAULT_CONNECT_TIMEOUT_MS, 5_000, 120_000) });
     }
     const requestOptions = {
       signal: controller.signal,
@@ -216,7 +244,7 @@ export async function fetchRssDetailed(url, {
       headers: { Accept: "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8", "User-Agent": userAgent }
     };
     if (dispatcher) requestOptions.dispatcher = dispatcher;
-    const response = await fetchImpl(url, requestOptions);
+    response = await fetchImpl(url, requestOptions);
     if (!response?.ok) throw rssError(response?.status === 407 ? "proxy_authentication" : "http_status", response?.status ?? null);
     const declaredLength = Number(response.headers?.get?.("content-length") || 0);
     if (declaredLength > maxResponseBytes) throw rssError("response_too_large", response.status);
@@ -228,7 +256,7 @@ export async function fetchRssDetailed(url, {
       return { xml: text, httpStatus: response.status, responseBytes, durationMs: Date.now() - started };
     }
 
-    const reader = response.body.getReader();
+    reader = response.body.getReader();
     const chunks = [];
     let bytes = 0;
     while (true) {
@@ -251,6 +279,11 @@ export async function fetchRssDetailed(url, {
     throw error;
   } finally {
     clearTimeout(timeout);
+    // Cancel unread bodies before closing: graceful close otherwise waits for them.
+    try {
+      if (reader) await reader.cancel();
+      else await response?.body?.cancel?.();
+    } catch {}
     try { await dispatcher?.close?.(); } catch {}
   }
 }
@@ -265,6 +298,9 @@ export async function testRssConnection(config = readRssConfig(), options = {}) 
   try {
     const result = await fetchRssDetailed(config.url, {
       fetchImpl: options.fetchImpl,
+      agentFactory: options.agentFactory,
+      sleepImpl: options.sleepImpl,
+      connectTimeoutMs: config.connectTimeoutMs,
       proxyAgentFactory: options.proxyAgentFactory,
       timeoutMs: config.timeoutMs,
       maxResponseBytes: config.maxResponseBytes,
@@ -341,7 +377,7 @@ export function createRssWorker({ config = readRssConfig(), ingestItems, acquire
         logger.info?.("[rss-worker] cycle skipped: advisory lock held by another instance");
         return snapshot();
       }
-      const fetchResult = await fetchRssDetailed(config.url, { fetchImpl, timeoutMs: config.timeoutMs, maxResponseBytes: config.maxResponseBytes, proxyUrl: config.proxyUrl });
+      const fetchResult = await fetchRssDetailed(config.url, { fetchImpl, connectTimeoutMs: config.connectTimeoutMs, timeoutMs: config.timeoutMs, maxResponseBytes: config.maxResponseBytes, proxyUrl: config.proxyUrl });
       const xml = fetchResult.xml;
       const items = parseRssXml(xml, { maxItems: config.maxItems });
       const result = await ingestItems(items, "server_rss_worker");

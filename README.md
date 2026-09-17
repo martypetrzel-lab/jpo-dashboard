@@ -46,6 +46,9 @@ RSS_INTERVAL_MS=60000
 RSS_MAX_ITEMS=35
 RSS_RUN_ON_START=1
 RSS_PROXY_URL=
+RSS_CONNECT_TIMEOUT_MS=30000
+RSS_TIMEOUT_MS=30000
+RSS_MAX_RESPONSE_BYTES=2097152
 ```
 
 - `RSS_ENABLED=0` worker úplně vypne.
@@ -54,9 +57,12 @@ RSS_PROXY_URL=
 - `RSS_MAX_ITEMS` je omezeno na bezpečné rozmezí 1–200.
 - `RSS_RUN_ON_START=1` načte feed ihned po startu; hodnota `0` čeká na první interval.
 - Prázdné `RSS_PROXY_URL` používá přímé připojení. Pokud je nastavené, pouze RSS požadavky jsou směrovány přes HTTP/HTTPS proxy. URL může obsahovat přihlašovací údaje a nikdy se nevypisuje do logu ani diagnostiky.
+- `RSS_CONNECT_TIMEOUT_MS` nastavuje navázání přímého TCP/TLS spojení přes vlastní `undici.Agent` (výchozí 30000 ms, rozsah 5000–120000 ms). Dispatcher se vždy bezpečně zavře, také v proxy režimu.
+- Stažení má nejvýše dva pokusy s prodlevou 1500 ms při síťové chybě, timeoutu nebo HTTP 5xx. HTTP 4xx, neplatné XML a překročení limitu odpovědi se neopakují. `RSS_TIMEOUT_MS` zůstává samostatným celkovým limitem jednoho pokusu, včetně stažení těla; celý cyklus se dvěma pokusy může trvat déle.
+- Diagnostika rozlišuje `connect_timeout` (`UND_ERR_CONNECT_TIMEOUT`), `timeout` (celkový limit) a `connection_refused` (`ECONNREFUSED`), bez zveřejnění proxy URL nebo přihlašovacích údajů.
 - Volitelně lze nastavit `RSS_TIMEOUT_MS` (výchozí 20000) a `RSS_MAX_RESPONSE_BYTES` (výchozí 2097152).
 
-Pro Railway se doporučují výše uvedené výchozí hodnoty a platné `DATABASE_URL`. Žádný API klíč worker nepotřebuje, protože nevolá veřejný endpoint vlastní aplikace.
+Pro Railway se doporučují výše uvedené hodnoty (včetně samostatného celkového timeoutu 30000 ms) a platné `DATABASE_URL`. Žádný API klíč worker nepotřebuje, protože nevolá veřejný endpoint vlastní aplikace.
 
 ## Ověření a provoz
 
@@ -72,6 +78,6 @@ Nastavte `RSS_ENABLED=0` a znovu nasaďte službu. Původní `POST /api/ingest` 
 
 ## Testy
 
-Spusťte `npm test`. Testy používají vestavěný `node:test` a pokrývají běžnou RSS položku, HTML entity, chybějící volitelné hodnoty, stabilní ID, duplicitu, neplatné XML, timeout a vypnutý worker.
+Spusťte `npm test`. Testy používají vestavěný `node:test` a pokrývají běžnou RSS položku, HTML entity, chybějící volitelné hodnoty, stabilní ID, duplicitu, neplatné XML, přímý Agent a jeho connect timeout, skutečný proxy tunel přes ProxyAgent, bezpečné zavírání dispatcherů, retry a jeho vyloučení pro HTTP 4xx a neplatné XML, celkový timeout při čtení těla a vypnutý worker.
 
 ---

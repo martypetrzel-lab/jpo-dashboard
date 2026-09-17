@@ -1,4 +1,8 @@
 import test from "node:test";
+import { Agent, Pool, ProxyAgent } from "undici";
+import { createServer } from "node:http";
+import { connect } from "node:net";
+import { once } from "node:events";
 import assert from "node:assert/strict";
 import {
   createRssWorker,
@@ -85,7 +89,7 @@ test("rejects invalid XML", () => {
   assert.throws(() => parseRssXml("<rss><channel><item>"), /invalid_xml/);
 });
 
-test("direct mode does not install a proxy dispatcher", async () => {
+test("direct mode installs and closes its own Agent", async () => {
   let optionsSeen;
   const fetchImpl = async (_url, options) => {
     optionsSeen = options;
@@ -93,7 +97,8 @@ test("direct mode does not install a proxy dispatcher", async () => {
   };
   const result = await fetchRssDetailed("https://example.test/rss", { fetchImpl, proxyUrl: "" });
   assert.equal(result.httpStatus, 200);
-  assert.equal("dispatcher" in optionsSeen, false);
+  assert.ok(optionsSeen.dispatcher instanceof Agent);
+  assert.equal(optionsSeen.dispatcher.closed, true);
 });
 
 test("proxy mode routes RSS through a proxy dispatcher without exposing credentials", async () => {
@@ -129,6 +134,7 @@ test("safe diagnostics distinguish network and HTTP error categories", () => {
   const cases = [
     [{ cause: { code: "ENOTFOUND" } }, "dns"],
     [{ cause: { code: "ECONNREFUSED" } }, "connection_refused"],
+    [{ cause: { code: "UND_ERR_CONNECT_TIMEOUT" } }, "connect_timeout"],
     [{ cause: { code: "CERT_HAS_EXPIRED" } }, "tls"],
     [Object.assign(new Error("status"), { rssType: "http_status", rssHttpStatus: 503 }), "http_status"],
     [Object.assign(new Error("proxy"), { rssType: "proxy_authentication", rssHttpStatus: 407 }), "proxy_authentication"],
@@ -158,4 +164,178 @@ test("RSS_ENABLED=0 prevents worker startup", () => {
   assert.equal(worker.start(), false);
   assert.equal(worker.getState().enabled, false);
   assert.equal(called, false);
+});
+
+
+test("connect timeout configuration is independent and bounded", () => {
+  assert.equal(readRssConfig({}).connectTimeoutMs, 30000);
+  assert.equal(readRssConfig({ RSS_CONNECT_TIMEOUT_MS: "bad" }).connectTimeoutMs, 30000);
+  assert.equal(readRssConfig({ RSS_CONNECT_TIMEOUT_MS: "1" }).connectTimeoutMs, 5000);
+  assert.equal(readRssConfig({ RSS_CONNECT_TIMEOUT_MS: "999999" }).connectTimeoutMs, 120000);
+  const config = readRssConfig({ RSS_CONNECT_TIMEOUT_MS: "45000", RSS_TIMEOUT_MS: "30000" });
+  assert.equal(config.connectTimeoutMs, 45000);
+  assert.equal(config.timeoutMs, 30000);
+});
+
+test("real direct Agent forwards connectTimeout to its connection pool and closes", async () => {
+  const server = createServer((_req, res) => res.end(RSS));
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  let agent;
+  let timeoutSeen;
+  try {
+    const result = await testRssConnection(readRssConfig({ RSS_URL: "http://127.0.0.1:" + server.address().port, RSS_CONNECT_TIMEOUT_MS: "45000" }), {
+      agentFactory: (options) => agent = new Agent({ ...options, factory: (origin, poolOptions) => {
+        timeoutSeen = poolOptions.connectTimeout;
+        return new Pool(origin, poolOptions);
+      } })
+    });
+    assert.equal(result.success, true);
+    assert.equal(timeoutSeen, 45000);
+    assert.equal(agent.closed, true);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+for (const mode of ["direct", "proxy"]) {
+  test(mode + " retries connect timeout once, closes each dispatcher and waits 1500ms", async () => {
+    let calls = 0;
+    let closed = 0;
+    const delays = [];
+    const factory = () => ({ close: async () => { closed++; } });
+    const result = await fetchRssDetailed("https://example.test/rss", {
+      proxyUrl: mode === "proxy" ? "http://user:secret@proxy.test" : "",
+      agentFactory: factory, proxyAgentFactory: factory,
+      sleepImpl: async (ms) => { assert.equal(closed, 1); delays.push(ms); },
+      fetchImpl: async () => {
+        if (++calls === 1) throw Object.assign(new Error("fetch failed"), { cause: { code: "UND_ERR_CONNECT_TIMEOUT" } });
+        return new Response(RSS);
+      }
+    });
+    assert.equal(result.httpStatus, 200);
+    assert.equal(calls, 2);
+    assert.equal(closed, 2);
+    assert.deepEqual(delays, [1500]);
+    assert.equal(JSON.stringify(result).includes("secret"), false);
+  });
+}
+
+test("persistent connect timeout stops after two attempts with safe diagnostics", async () => {
+  let calls = 0;
+  const result = await testRssConnection(readRssConfig({}), {
+    sleepImpl: async () => {},
+    fetchImpl: async () => {
+      calls++;
+      throw Object.assign(new Error("http://user:secret@proxy.test"), { cause: { code: "UND_ERR_CONNECT_TIMEOUT" } });
+    }
+  });
+  assert.equal(calls, 2);
+  assert.equal(result.error.type, "connect_timeout");
+  assert.equal(JSON.stringify(result).includes("secret"), false);
+});
+
+for (const status of [400, 401, 403, 404, 407, 429]) {
+  test("HTTP " + status + " does not retry and cancels unread response before close", async () => {
+    let calls = 0;
+    let cancelled = false;
+    await assert.rejects(fetchRssDetailed("https://example.test/rss", {
+      fetchImpl: async () => {
+        calls++;
+        return { ok: false, status, body: { cancel: async () => { cancelled = true; } } };
+      },
+      agentFactory: () => ({ close: async () => { assert.equal(cancelled, true); } }),
+      sleepImpl: async () => assert.fail("unexpected retry")
+    }));
+    assert.equal(calls, 1);
+  });
+}
+
+test("HTTP 503 retries once and invalid XML does not retry", async () => {
+  let calls = 0;
+  const result = await testRssConnection(readRssConfig({}), {
+    sleepImpl: async () => {},
+    fetchImpl: async () => new Response(++calls === 1 ? "unavailable" : "invalid xml", { status: calls === 1 ? 503 : 200 })
+  });
+  assert.equal(calls, 2);
+  assert.equal(result.error.type, "invalid_xml");
+});
+
+test("overall timeout covers response body, retries with fresh signals and closes", async () => {
+  let calls = 0;
+  let closed = 0;
+  const signals = [];
+  await assert.rejects(fetchRssDetailed("https://example.test/rss", {
+    timeoutMs: 5, connectTimeoutMs: 45000,
+    sleepImpl: async () => {},
+    agentFactory: () => ({ close: async () => { closed++; } }),
+    fetchImpl: async (_url, { signal }) => {
+      calls++; signals.push(signal);
+      return { ok: true, status: 200, text: () => new Promise((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(new Error("body aborted")), { once: true });
+      }) };
+    }
+  }), error => sanitizeRssError(error).type === "timeout");
+  assert.equal(calls, 2);
+  assert.equal(closed, 2);
+  assert.notEqual(signals[0], signals[1]);
+});
+
+test("dispatcher close failures do not replace the original error", async () => {
+  await assert.rejects(fetchRssDetailed("https://example.test/rss", {
+    agentFactory: () => ({ close: async () => { throw new Error("close failed"); } }),
+    fetchImpl: async () => new Response("forbidden", { status: 403 })
+  }), error => error.rssHttpStatus === 403);
+});
+
+test("real ProxyAgent tunnels the RSS request and closes", async () => {
+  const source = createServer((_req, res) => res.end(RSS));
+  const proxy = createServer();
+  let tunnels = 0;
+  proxy.on("connect", (req, client, head) => {
+    tunnels++;
+    const upstream = connect(source.address().port, "127.0.0.1", () => {
+      client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+      if (head.length) upstream.write(head);
+      upstream.pipe(client); client.pipe(upstream);
+    });
+    client.on("error", () => upstream.destroy());
+    upstream.on("error", () => client.destroy());
+    client.on("close", () => upstream.destroy());
+  });
+  source.listen(0, "127.0.0.1"); proxy.listen(0, "127.0.0.1");
+  await Promise.all([once(source, "listening"), once(proxy, "listening")]);
+  let agent;
+  try {
+    const result = await fetchRssDetailed("http://127.0.0.1:" + source.address().port, {
+      proxyUrl: "http://127.0.0.1:" + proxy.address().port,
+      proxyAgentFactory: uri => agent = new ProxyAgent(uri),
+      agentFactory: () => assert.fail("direct Agent used in proxy mode")
+    });
+    assert.equal(result.xml, RSS);
+    assert.equal(tunnels, 1);
+    assert.equal(agent.closed, true);
+  } finally {
+    await Promise.all([new Promise(resolve => source.close(resolve)), new Promise(resolve => proxy.close(resolve))]);
+  }
+});
+
+
+test("invalid XML on the first response does not retry", async () => {
+  let calls = 0;
+  const result = await testRssConnection(readRssConfig({}), {
+    fetchImpl: async () => { calls++; return new Response("invalid xml"); },
+    sleepImpl: async () => assert.fail("unexpected retry")
+  });
+  assert.equal(calls, 1);
+  assert.equal(result.error.type, "invalid_xml");
+});
+
+test("invalid proxy is sanitized and does not retry", async () => {
+  let calls = 0;
+  const result = await testRssConnection(readRssConfig({ RSS_PROXY_URL: "http://user:secret@proxy.test" }), {
+    proxyAgentFactory: () => { calls++; throw new Error("secret"); },
+    sleepImpl: async () => assert.fail("unexpected retry")
+  });
+  assert.equal(calls, 1);
+  assert.equal(result.error.type, "invalid_proxy");
+  assert.equal(JSON.stringify(result).includes("secret"), false);
 });
