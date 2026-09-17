@@ -68,7 +68,7 @@ test("current-day RSS policy keeps today and open carry-over but rejects old unk
   assert.equal(shouldIngestRssItemForToday({ pubDate: "2026-09-16 23:50:00", statusText: "probíhá zásah" }, { now }), true);
   assert.equal(shouldIngestRssItemForToday({ pubDate: "2026-09-16 20:00:00", descriptionRaw: "stav: nová<br>Kladno" }, { now }), true);
   assert.equal(shouldIngestRssItemForToday({ pubDate: "2026-09-16 20:00:00", statusText: "ukončená" }, { now }), false);
-  assert.equal(shouldIngestRssItemForToday({ pubDate: "2026-09-16 20:00:00", statusText: "ukončená" }, { now, previouslyKnown: true }), true);
+  assert.equal(shouldIngestRssItemForToday({ pubDate: "2026-09-16 20:00:00", statusText: "ukončená" }, { now, previouslyKnownOpen: true }), true);
   assert.equal(shouldIngestRssItemForToday({ pubDate: "2026-09-18 08:00:00", statusText: "nová" }, { now }), false);
 });
 
