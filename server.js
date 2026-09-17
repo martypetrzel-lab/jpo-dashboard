@@ -425,7 +425,19 @@ function safeDurationFromStartEnd(startIso, endIso) {
 function eventStartIsoFromEspRss(it = {}, times = {}) {
   // Směrodatný čas začátku z ESP/RSS je pubDate.
   // startTimeIso/zahájení je jen fallback, pokud by někdy pubDate chyběl.
-  return it.pubDate || it.pub_date || it.startTimeIso || it.start_time_iso || times?.startIso || null;
+  return normalizeFeedTimestamp(it.pubDate || it.pub_date || it.startTimeIso || it.start_time_iso || times?.startIso);
+}
+
+function normalizeFeedTimestamp(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  // rss2json vrací `YYYY-MM-DD HH:mm:ss` bez zóny, ale jde o lokální čas zdroje v ČR.
+  const local = raw.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::\d{2})?$/);
+  if (local) {
+    return pragueLocalToUtcIso(Number(local[1]), Number(local[2]) - 1, Number(local[3]), Number(local[4]), Number(local[5]));
+  }
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
 }
 
 
@@ -2988,10 +3000,10 @@ if (statusAnalysis.source === "explicit_open") {
 const rssStartIso = eventStartIsoFromEspRss(it, times);
 
 const startIso =
-  it.startTimeIso ||
+  normalizeFeedTimestamp(it.startTimeIso) ||
   times.startIso ||
-  prev?.start_time_iso ||
-  prev?.pub_date ||
+  normalizeFeedTimestamp(prev?.start_time_iso) ||
+  normalizeFeedTimestamp(prev?.pub_date) ||
   rssStartIso ||
   null;
 
@@ -3052,7 +3064,7 @@ if (!isClosed) {
         id: it.id,
         title: it.title,
         link: it.link,
-        pubDate: prev?.pub_date || it.pubDate || null,
+        pubDate: startIso || it.pubDate || null,
         placeText,
         cityText,
         statusText: statusAnalysis.label || it.statusText || null,
