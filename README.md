@@ -112,3 +112,5 @@ Skript má pro RSS connect timeout 30000 ms a celkový timeout jednoho pokusu 30
 **Railway worker zatím ponechte zapnutý.** Teprve po úspěšném ručním testu s neprázdným feedem a ověření plánovaných importů nastavte na Railway `RSS_ENABLED=0` a znovu nasaďte službu. Workflow ani skript tuto proměnnou nemění a worker nemažou.
 
 Lokálně lze se stejnými dvěma proměnnými prostředí spustit `npm ci` a `node scripts/rss-push.js`. `npm test` zahrnuje payload, limit 100 položek, autentizaci ingestu, timeout/retry, HTTP chyby, neplatné XML, prázdný feed, bezpečné logování a návratový kód skriptu.
+
+Pokud původní server odmítne síť GitHub Actions, importer automaticky použije veřejnou bránu rss2json. Volitelný GitHub Secret `RSS2JSON_API_KEY` zapne požadavek na až 100 nejnovějších položek (`count=100`, řazení podle data sestupně). Bez tohoto klíče brána vrací posledních 10 položek. URL zdroje obsahuje pětiminutový cache bucket, aby brána nevracela dlouhodobě zastaralý výsledek. Stabilní ID a databázový upsert zajistí, že nové zásahy vzniknou jednou a dříve uložené zásahy se pouze aktualizují.
