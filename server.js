@@ -7,7 +7,7 @@ import { fileURLToPath } from "url";
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import { attachOpsRadio } from "./radio-server.js";
-import { createRssWorker, readRssConfig, testRssConnection } from "./rss-worker.js";
+import { createRssWorker, readRssConfig, shouldIngestRssItemForToday, testRssConnection } from "./rss-worker.js";
 
 
 // ======================
@@ -2949,6 +2949,8 @@ async function handleIngest(req, res) {
       if (!it?.id || !it?.title || !it?.link) continue;
 
       const prev = await getEventMeta(it.id);
+      const restrictRssToCurrentDay = ["github_actions_rss", "github_actions_rss2json", "server_rss_worker"].includes(source);
+      if (restrictRssToCurrentDay && !shouldIngestRssItemForToday(it, { previouslyKnown: !!prev })) continue;
 
       const eventType = it.eventType || classifyType(it.title);
       const desc = it.descriptionRaw || it.descRaw || it.description || "";
