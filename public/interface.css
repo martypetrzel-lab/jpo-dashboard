@@ -91,6 +91,7 @@ tr.eventOpen {background:#122824;}tr.eventOpen td:first-child {border-left:3px s
 .fw-shared-marker span {display:grid;place-items:center;width:36px;height:36px;border:3px solid white;border-radius:50%;background:#334155;color:white;font-weight:800;box-shadow:0 2px 8px #0008;}
 .fw-shared-marker .active {background:#b91c1c;}
 .fw-map-popup {max-height:340px;overflow:auto;overflow-wrap:anywhere;}
+#map .leaflet-popup-pane {z-index:1100;}
 .fw-map-event {padding:10px 0;border-bottom:1px solid #cbd5e1;}
 .fw-map-precision {display:inline-block;margin:6px 0;color:#92400e;}
 #geoDiagnosticsList {max-height:320px;overflow:auto;display:grid;gap:6px;}
@@ -100,3 +101,7 @@ tr.eventOpen {background:#122824;}tr.eventOpen td:first-child {border-left:3px s
 .fw-map-event .fw-map-status {font-weight:700;}
 .fw-map-event .fw-map-status.active {color:#b91c1c;}
 .fw-map-event .fw-map-status.closed {color:#334155;}
+@media(max-width:760px) {
+  #map .leaflet-popup-content {max-width:calc(100vw - 160px);}
+  .fw-map-popup {max-height:260px;}
+}

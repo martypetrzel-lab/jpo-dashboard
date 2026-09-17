@@ -50,3 +50,5 @@ Veřejný přehled počítá nespolehlivé polohy, které zůstávají v tabulce
 Automatické testy používají pouze mock provider a izolovaný PostgreSQL/PGlite. Ověřují validaci kandidátů, cache, retry, ochranu ručních i přesnějších bodů, společné markery, dry-run, změněný náhled, audit a opakovanou migraci. Produkční výsledky a počty jsou v závěrečném reportu po nasazení.
 
 Rollback: nasaďte předchozí commit, nové sloupce a tabulky ponechte. Žádná historická data se nemazala.
+
+Mobilní popup má omezenou šířku i výšku, zůstává uvnitř mapy a nad ovládáním zoomu. Automatické obnovení zachovává otevřenou skupinu i posunutí jejího seznamu; filtr odstraněné skupiny popup zavře.

@@ -1182,15 +1182,27 @@ let mapHasFitted=false;
 let mapEventPoints=[];
 function fitEventMap() {if(mapEventPoints.length)map.fitBounds(mapEventPoints,{padding:[32,32],maxZoom:12});else map.setView([50.0,14.5],8);}
 function renderMap(items) {
-  if(!markersLayer)return;markersLayer.clearLayers();mapEventPoints=[];
+  if(!markersLayer)return;
+  let popupPoint=null,popupScroll=0;
+  markersLayer.eachLayer(marker=>{
+    if(marker.isPopupOpen?.()){
+      const point=marker.getLatLng();popupPoint=point.lat+'|'+point.lng;
+      popupScroll=marker.getPopup()?.getElement()?.querySelector('.fw-map-popup')?.scrollTop || 0;
+    }
+  });
+  markersLayer.clearLayers();mapEventPoints=[];
   const rows=FireWatchData.normalizeEvents(items);let mapped=0;
   for(const group of FireWatchData.groupMapEvents(rows)){
     const it=group.find(row=>!row.is_closed)||group[0];mapped+=group.length;
     const icon=group.length>1?L.divIcon({className:'fw-shared-marker',html:'<span class="'+(group.some(row=>!row.is_closed)?'active':'closed')+'">'+group.length+'</span>',iconSize:[36,36]}):makeEventIcon(it.event_type,it);
     const marker=L.marker([it.lat,it.lon],{icon,zIndexOffset:1000,opacity:group.every(row=>row.is_closed)?0.8:1});
     const popup=group.map(ev=>'<article class="fw-map-event"><b>'+escapeHtml(ev.title)+'</b><br>'+escapeHtml(ev.geo_municipality||ev.city_text||ev.place_text||'')+(ev.district_text?' · okres '+escapeHtml(ev.district_text):'')+'<br><span class="fw-map-status '+(ev.is_closed?'closed':'active')+'">'+escapeHtml(statusLabelForEvent(ev))+'</span><br>Začátek: '+escapeHtml(formatDate(ev.start_time_iso||ev.pub_date))+'<br>Délka: '+escapeHtml(formatDuration(liveDurationForEvent(ev)))+(ev.is_closed && ['rss_end_time','esp_duration','explicit','manual'].includes(ev.duration_source)?'<br>Konec: '+escapeHtml(formatDate(ev.end_time_iso)):'')+'<br><strong class="fw-map-precision">'+escapeHtml(ev.geo_label||'Přibližná poloha')+'</strong><br><button type="button" class="eventDetailBtn" data-event-id="'+escapeHtml(ev.id)+'">Detail události</button></article>').join('');
-    marker.bindPopup('<div class="fw-map-popup">'+(group.length>1?'<p>'+group.length+' událostí na stejném místě</p>':'')+popup+'</div>',{maxWidth:340});
+    marker.bindPopup('<div class="fw-map-popup">'+(group.length>1?'<p>'+group.length+' událostí na stejném místě</p>':'')+popup+'</div>',{maxWidth:340,keepInView:true,autoPanPadding:[16,16]});
     marker.addTo(markersLayer);mapEventPoints.push([it.lat,it.lon]);
+    if(popupPoint===it.lat+'|'+it.lon){
+      marker.openPopup();
+      const popup=marker.getPopup()?.getElement()?.querySelector('.fw-map-popup');if(popup)popup.scrollTop=popupScroll;
+    }
   }
   const summary=document.getElementById('mapDataSummary');if(summary)summary.textContent=mapped+' na mapě · '+(rows.length-mapped)+' bez spolehlivé polohy';
   if(!mapHasFitted && mapEventPoints.length){fitEventMap();mapHasFitted=true;}
