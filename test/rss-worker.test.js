@@ -10,8 +10,10 @@ import {
   fetchRssDetailed,
   parseRssXml,
   readRssConfig,
+  rssDateKeyInPrague,
   rssItemToEvent,
   sanitizeRssError,
+  shouldIngestRssItemForToday,
   stableEventId,
   testRssConnection
 } from "../rss-worker.js";
@@ -56,6 +58,18 @@ test("stable ID is deterministic with and without guid", () => {
   assert.equal(stableEventId({ link: "https://example.test/123" }), "RSS_FEED_123");
   const input = { title: "Událost", pubDate: "today" };
   assert.equal(stableEventId(input), stableEventId(input));
+});
+
+test("current-day RSS policy keeps today and open carry-over but rejects old unknown closed events", () => {
+  const now = new Date("2026-09-17T10:00:00Z");
+  assert.equal(rssDateKeyInPrague("2026-09-17 00:05:00"), "2026-09-17");
+  assert.equal(rssDateKeyInPrague("2026-09-16T22:30:00Z"), "2026-09-17");
+  assert.equal(shouldIngestRssItemForToday({ pubDate: "2026-09-17 08:00:00", statusText: "ukončená" }, { now }), true);
+  assert.equal(shouldIngestRssItemForToday({ pubDate: "2026-09-16 23:50:00", statusText: "probíhá zásah" }, { now }), true);
+  assert.equal(shouldIngestRssItemForToday({ pubDate: "2026-09-16 20:00:00", descriptionRaw: "stav: nová<br>Kladno" }, { now }), true);
+  assert.equal(shouldIngestRssItemForToday({ pubDate: "2026-09-16 20:00:00", statusText: "ukončená" }, { now }), false);
+  assert.equal(shouldIngestRssItemForToday({ pubDate: "2026-09-16 20:00:00", statusText: "ukončená" }, { now, previouslyKnown: true }), true);
+  assert.equal(shouldIngestRssItemForToday({ pubDate: "2026-09-18 08:00:00", statusText: "nová" }, { now }), false);
 });
 
 test("duplicate item is upserted under the same ID", async () => {
