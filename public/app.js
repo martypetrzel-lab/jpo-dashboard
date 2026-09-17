@@ -1716,7 +1716,7 @@ function renderArchiveRows(){
     const current=new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Prague',year:'numeric',month:'2-digit'}).format(new Date());
     const months=[...new Set(archiveState.rows.map(r=>r.period_start.slice(0,7)))];
     const oldOpen=new Set([...box.querySelectorAll('details[open]')].map(d=>d.dataset.month));
-    box.innerHTML=months.map(month=>{const rows=archiveState.rows.filter(r=>r.period_start.startsWith(month));const group=archiveState.groups.find(g=>g.month_key===month)||{};return '<details class="reportMonth" data-month="'+month+'" '+(month===current||oldOpen.has(month)?'open':'')+'><summary><b>'+escapeHtml(reportDate(month+'-01',{month:'long',year:'numeric'}))+'</b><span>'+Number(group.report_count||rows.length)+' souhrnů · '+Number(group.event_count||0)+' událostí</span></summary><div>'+rows.map(row).join('')+'</div></details>';}).join('');
+    box.innerHTML=months.map((month,index)=>{const rows=archiveState.rows.filter(r=>r.period_start.startsWith(month));const group=archiveState.groups.find(g=>g.month_key===month)||{};return (index===0 || months[index-1].slice(0,4)!==month.slice(0,4) ? '<h3 class="reportYear">'+month.slice(0,4)+'</h3>' : '')+'<details class="reportMonth" data-month="'+month+'" '+(month===current||oldOpen.has(month)?'open':'')+'><summary><b>'+escapeHtml(reportDate(month+'-01',{month:'long',year:'numeric'}))+'</b><span>'+Number(group.report_count||rows.length)+' souhrnů · '+Number(group.event_count||0)+' událostí</span></summary><div>'+rows.map(row).join('')+'</div></details>';}).join('');
   }else box.innerHTML=archiveState.rows.map(row).join('');
   box.querySelectorAll('.reportItem').forEach(btn=>btn.addEventListener('click',()=>openReportDetail(btn.dataset.reportType,btn.dataset.reportKey)));
   document.getElementById('reportsCount').textContent='Načteno '+archiveState.rows.length+' z '+archiveState.total+' souhrnů';
@@ -1760,7 +1760,7 @@ function renderReportDetail(rep) {
       </div>
     </div>
 
-    <p class="reportSummary">${escapeHtml(d.summary || "")}</p>
+    <p class="reportSummary">${escapeHtml(String(d.summary || "").replace(/\d{4}-\d{2}-\d{2}/g,date=>reportDate(date)))}</p>
 
     <div class="reportKpis">
       <div><span>Celkem</span><b>${Number(rep.total_events || 0)}</b></div>
@@ -1785,7 +1785,7 @@ function renderReportDetail(rep) {
       </div>
       <div class="reportPanel">
         <h4>Nejdelší zásahy</h4>
-        ${(d.longest || []).slice(0, 10).map(x => `<div class="reportLong"><b>${escapeHtml(x.duration_text || "")}</b><span>${escapeHtml(x.date || "")} • ${escapeHtml(x.type || "")} • ${escapeHtml(x.city || "")}<br>${escapeHtml(x.title || "")}</span></div>`).join("") || "<p class='muted'>Bez dat</p>"}
+        ${(d.longest || []).slice(0, 10).map(x => `<div class="reportLong"><b>${escapeHtml(x.duration_text || "")}</b><span>${escapeHtml(reportDate(x.date))} • ${escapeHtml(x.type || "")} • ${escapeHtml(x.city || "")}<br>${escapeHtml(x.title || "")}</span></div>`).join("") || "<p class='muted'>Bez dat</p>"}
       </div>
     </div>
   `;
@@ -2839,15 +2839,6 @@ function updateCommandOverview(items = [], stats = null) {
   }
 }
 
-function wireCommandOverviewNav() {
-  document.querySelectorAll(".commandTile[data-scroll-target], .v28KpiTile[data-scroll-target], .quickJump[data-scroll-target], .fwSidebarNav [data-scroll-target]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const id = btn.getAttribute("data-scroll-target");
-      const el = id ? document.getElementById(id) : null;
-      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
-    });
-  });
-}
 
 
 
@@ -3375,6 +3366,8 @@ async function openEventDetailModal(id) {
     if (summary) {
       summary.innerHTML = `
         ${eventDetailLine("Čas", detailDateText(ev.pub_date || ev.start_time_iso || ev.created_at))}
+        ${eventDetailLine("Začátek", detailDateText(ev.start_time_iso || ev.pub_date))}
+        ${eventDetailLine("Konec", ev.is_closed && ["rss_end_time","esp_duration","explicit","manual"].includes(ev.duration_source) ? detailDateText(ev.end_time_iso) : "—")}
         ${eventDetailLine("Město / místo", ev.city_text || ev.place_text || "")}
         ${eventDetailLine("Typ", `${meta.emoji} ${meta.label || ev.event_type || ""}`)}
         ${eventDetailLine("Stav", statusLabelForEvent(ev))}
@@ -3947,7 +3940,6 @@ window.addEventListener("orientationchange", () => safeInvalidateMap());
 initMap();
 initLandingPage();
 wireProfessionalLayout();
-wireCommandOverviewNav();
 wireManualEventEditor();
 wireManualCreateAndDiagnostics();
 wireDurationAdminButtons();
@@ -5235,7 +5227,6 @@ function toggleTvMode() {
   document.getElementById("fullscreenBtn")?.addEventListener("click", toggleFullscreen);
   document.getElementById("muteBtn")?.addEventListener("click", toggleMasterMute);
   document.getElementById("tvModeBtn")?.addEventListener("click", toggleTvMode);
-  document.getElementById("audioBtn")?.addEventListener("click", () => openModal("audio"));
 
   // modal close
   document.getElementById("modalBackdrop")?.addEventListener("click", closeModals);
@@ -5267,14 +5258,6 @@ function toggleTvMode() {
   // 🔊 souhrn každé 3 hodiny (OPS): tick každých 30 s
   ensureSummarySchedule();
   setInterval(audioTickSummary, 30000);
-
-  // 🔊 souhrn po 3h (OPS) — běží nenápadně, hlásí jen pokud je audio zapnuté
-  ensureSummarySchedule();
-  setInterval(audioTickSummary, 30000);
-
-  // 🔊 souhrn po 3 hodinách (OPS): jen hlas, žádný spam
-  ensureSummarySchedule();
-  setInterval(audioTickSummary, 30 * 1000);
 
   // auth state
   await syncPublicGuestUi();
@@ -5327,7 +5310,7 @@ function toggleTalkPanel() {
 // -----------------------------------------------------------------------------
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',wireReportsArchive,{once:true});else wireReportsArchive();
 
-document.getElementById("eventsLimitSelect")?.addEventListener("change", () => loadAll());
+document.getElementById("eventsLimitSelect")?.addEventListener("change", () => renderTable(latestItemsSnapshot));
 
 
 // FireWatch CZ v2.11 – Podporovatelé jako samostatná záložka.

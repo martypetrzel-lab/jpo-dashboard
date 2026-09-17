@@ -34,14 +34,14 @@ label {color:var(--fw-muted);}
 .fwSidebarNav button:hover,.fwSidebarNav button.active {color:var(--fw-text);background:var(--fw-panel-raised);}
 .fwSidebarFooter {color:var(--fw-muted);}
 .filters {background:var(--fw-panel);border:1px solid var(--fw-line);border-radius:var(--fw-radius);padding:16px;gap:12px;}
-.v28KpiGrid {grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;}
+.v28KpiGrid {grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;}
 .v28KpiTile {background:var(--fw-panel);border:1px solid var(--fw-line);border-radius:var(--fw-radius);min-width:0;padding:18px;text-align:left;min-height:128px;box-shadow:none;}
 .v28KpiTile span {font-size:13px;color:var(--fw-muted);}.v28KpiTile b {font-size:38px;line-height:1.2;margin:8px 0;}.v28KpiTile small {font-size:12px;line-height:1.4;color:var(--fw-muted);}
 .v28KpiTile.active {border-color:#357963;background:#122a27;}.v28KpiTile.active b {color:var(--fw-active);}
 .v28KpiTile.warning {border-color:#775137;}.v28KpiTile.warning b {color:var(--fw-accent);}
 .v28OpsStrip {background:#0f1825;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:16px;border-color:var(--fw-line);}
 .v28QuickActions {grid-column:1/-1;display:flex;flex-wrap:wrap;}.v28OpsMain,.v28OpsMeta {min-width:0;overflow-wrap:anywhere;}
-.v29SignalBar {gap:8px;flex-wrap:wrap;}.v29Signal {border-color:var(--fw-line);background:#152131;font-size:12px;}
+.v29SignalBar {display:flex;gap:8px;flex-wrap:wrap;padding:0 20px 16px;}.v29Signal {display:inline-flex;padding:6px 9px;border:1px solid var(--fw-line);border-radius:999px;background:#152131;font-size:12px;}
 .tableWrap {border:1px solid var(--fw-line);border-radius:var(--fw-radius);max-width:100%;overflow:auto;}
 table {border-collapse:collapse;width:100%;font-size:13px;}
 th {background:#182437;color:var(--fw-muted);font-size:12px;text-transform:none;letter-spacing:.02em;text-align:left;}
@@ -67,7 +67,7 @@ tr.eventOpen {background:#122824;}tr.eventOpen td:first-child {border-left:3px s
 /* Mobile rows and dialog shells previously inherited conflicting old layouts. */
 .reportsList .reportItem {flex-direction:row;align-items:center;text-align:left;}
 .reportItemNums {display:block;}
-#commandOverviewCard {background:var(--fw-panel);border-color:var(--fw-line);}
+#commandOverviewCard {background:var(--fw-panel) !important;border-color:var(--fw-line) !important;}
 .v28KpiTile.active {background:#122a27;}
 .modal {background:var(--fw-panel);border-color:var(--fw-line);border-radius:var(--fw-radius-lg);max-height:calc(100dvh - 32px);}
 .modalHead {display:flex;align-items:start;justify-content:space-between;padding:18px;gap:12px;border-bottom:1px solid var(--fw-line);}
@@ -83,3 +83,7 @@ tr.eventOpen {background:#122824;}tr.eventOpen td:first-child {border-left:3px s
 .ops-radio-live {max-width:100%;white-space:normal;overflow-wrap:anywhere;}.ops-radio-live[data-state=tx] {background:#ae343c;color:#fff;}.ops-radio-live[data-state=error] {color:var(--fw-danger);}
 .ops-radio-card button {min-height:40px;}.ops-radio-users li,.ops-radio-chat li {overflow-wrap:anywhere;}
 @media(max-width:760px){.ops-radio-card {padding:16px;}.ops-radio-head-v17 {gap:12px;flex-wrap:wrap;}.ops-radio-row-main {display:flex;flex-wrap:wrap;}.ops-radio-row-main label {flex:1 1 100%;}.ops-radio-connect {width:100%;}.ops-radio-panel {display:flex;flex-direction:column;gap:12px;}.ops-talk-metrics {grid-template-columns:repeat(3,minmax(0,1fr));}.ops-radio-chat-form {flex-wrap:wrap;}.ops-radio-chat-form input {width:100%;}.ops-radio-create {flex-wrap:wrap;}}
+.btn.primary:hover,.btn.primary:focus-visible {background:#ffad78;border-color:#ffad78;color:#19120d;}
+.ops-radio-card .ops-radio-ptt {min-height:80px;background:#245b48;color:#effff7;border:1px solid #4ca881;}
+.ops-radio-card .ops-radio-ptt.is-transmitting {background:#ae343c;border-color:var(--fw-danger);color:white;}
+.reportYear {margin:14px 0 4px;color:var(--fw-muted);font-size:15px;font-weight:600;}
