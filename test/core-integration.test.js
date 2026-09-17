@@ -61,11 +61,11 @@ test("registration creates a working session and logout invalidates it", async (
 });
 
 test("Prague timestamps preserve seconds, winter/summer offsets and DST boundaries", () => {
-  assert.equal(normalizeFeedTimestamp("2026-09-17 12:23:47"), "2026-09-17T10:23:47.000Z");
-  assert.equal(normalizeFeedTimestamp("2026-01-17 12:23:47"), "2026-01-17T11:23:47.000Z");
-  assert.equal(normalizeFeedTimestamp("2026-03-29 01:30:00"), "2026-03-29T00:30:00.000Z");
-  assert.equal(normalizeFeedTimestamp("2026-03-29 03:30:00"), "2026-03-29T01:30:00.000Z");
-  assert.equal(normalizeFeedTimestamp("2026-03-29 02:30:00"), null);
+  assert.equal(normalizeFeedTimestamp("2026-09-17 12:23:47"), "2026-09-17T12:23:47.000Z");
+  assert.equal(normalizeFeedTimestamp("2026-01-17 12:23:47"), "2026-01-17T12:23:47.000Z");
+  assert.equal(normalizeFeedTimestamp("2026-03-29 01:30:00"), "2026-03-29T01:30:00.000Z");
+  assert.equal(normalizeFeedTimestamp("2026-03-29 03:30:00"), "2026-03-29T03:30:00.000Z");
+  assert.equal(normalizeFeedTimestamp("2026-03-29 02:30:00"), "2026-03-29T02:30:00.000Z");
   assert.equal(normalizeFeedTimestamp("2026-02-30 10:00:00"), null);
   assert.equal(pragueLocalToUtcIso(2026, 8, 17, 10, 15), "2026-09-17T08:15:00.000Z");
   assert.equal(parseTimesFromDescription("stav: probíhá zásah<br>ukončení: <br>Kladno").isClosed, false);
@@ -75,7 +75,7 @@ test("Prague timestamps preserve seconds, winter/summer offsets and DST boundari
 });
 
 test("ingest deduplicates a batch and updates a stable ID without changing its start", async () => {
-  const first = event("audit-stable");
+  const first = {...event("audit-stable"),startTimeIso:dateKey()+"T00:00:13Z"};
   const result = await ingest([first, first]);
   assert.equal(result.status, 200);
   assert.equal(result.data.inserted, 1);
@@ -90,20 +90,20 @@ test("ingest deduplicates a batch and updates a stable ID without changing its s
   assert.equal(next.data.updated, 1);
   const afterUpdate = await getEventMeta(first.id);
   assert.equal(afterUpdate.start_time_iso, stored.start_time_iso);
-  assert.equal(afterUpdate.pub_date, stored.pub_date);
+  assert.equal(afterUpdate.pub_date, normalizeFeedTimestamp(changed.pubDate));
   assert.equal((await pool.query("SELECT COUNT(*)::int AS count FROM events WHERE id=$1", [first.id])).rows[0].count, 1);
 });
 
 test("RSS carry-over stays open and receives exact closing time/duration across midnight", async () => {
-  const first = event("audit-carry", "2026-01-15 23:50:17");
+  const first = {...event("audit-carry", "2026-01-15 23:50:17"),startTimeIso:"2026-01-15T23:50:17Z"};
   assert.equal((await ingest([first])).data.inserted, 1);
   const item = { ...first, pubDate: "2026-01-16 00:00:00", statusText: "ukončená", endTimeIso: "2026-01-16 00:15:17", descriptionRaw: "stav: ukončená<br>Kladno" };
   const next = await ingest([item]);
   assert.equal(next.data.updated, 1);
   const stored = await getEventMeta(first.id);
   assert.equal(stored.is_closed, true);
-  assert.equal(stored.start_time_iso, "2026-01-15T22:50:17.000Z");
-  assert.equal(stored.end_time_iso, "2026-01-15T23:15:17.000Z");
+  assert.equal(stored.start_time_iso, "2026-01-15T23:50:17.000Z");
+  assert.equal(stored.end_time_iso, "2026-01-16T00:15:17.000Z");
   assert.equal(stored.duration_min, 25);
 });
 
@@ -166,4 +166,21 @@ test('admin user enable/role changes match database fields and reset role permis
  const created=await jsonRequest('/api/admin/users',{username:'audit.disabled',password:crypto.randomUUID(),role:'editor',is_enabled:false},cookie);assert.equal(created.status,200);assert.equal(created.data.user.is_enabled,false);assert.equal(created.data.user.role,'editor');
  const patch=async body=>{const r=await fetch(base+'/api/admin/users/'+created.data.user.id,{method:'PATCH',headers:{'Content-Type':'application/json',Cookie:cookie},body:JSON.stringify(body)});assert.equal(r.status,200);return(await r.json()).user;};
  assert.equal((await patch({is_enabled:true})).is_enabled,true);const changed=await patch({role:'ops'});assert.equal(changed.permissions.canCreateReports,false);assert.equal(changed.role,'ops');assert.equal((await patch({enabled:false})).is_enabled,false);
+});
+
+test('fresh RSS corrects an evidenced source timestamp, backs up original values once and leaves start unknown',async()=>{
+ const first=event('time-evidenced',new Date().toISOString());await ingest([first]);
+ await pool.query("UPDATE events SET pub_date='2026-09-17T12:30:00Z',start_time_iso='2026-09-17T12:30:00Z',time_model_version=0 WHERE id=$1",[first.id]);
+ const update={...first,pubDate:'2026-09-17 14:30:00'};const result=await ingest([update]);assert.equal(result.data.updated,1);
+ let row=(await pool.query('SELECT * FROM events WHERE id=$1',[first.id])).rows[0];assert.equal(row.pub_date,'2026-09-17T14:30:00.000Z');assert.equal(row.start_time_iso,null);assert.equal(row.duration_min,null);assert.equal(row.time_original_values.pub_date,'2026-09-17T12:30:00Z');
+ const original=JSON.stringify(row.time_original_values);await ingest([update]);row=(await pool.query('SELECT * FROM events WHERE id=$1',[first.id])).rows[0];assert.equal(JSON.stringify(row.time_original_values),original);
+});
+test('RSS description proves a start and end, while a later update cannot replace the established start',async()=>{
+ const first={...event('time-proven'),statusText:'ukončená',descriptionRaw:'stav: ukončená<br>zahájení: 17. září 2026, 16:30<br>ukončení: 17. září 2026, 16:40<br>Kladno'};
+ await ingest([first]);let row=await getEventMeta(first.id);assert.equal(row.start_time_iso,'2026-09-17T14:30:00.000Z');assert.equal(row.end_time_iso,'2026-09-17T14:40:00.000Z');assert.equal(row.duration_min,10);
+ await ingest([{...first,startTimeIso:'2026-09-17T14:35:00Z',pubDate:new Date().toISOString()}]);row=await getEventMeta(first.id);assert.equal(row.start_time_iso,'2026-09-17T14:30:00.000Z');assert.equal(row.duration_min,10);
+});
+test('manual verified start and coordinates survive RSS update; exact RSS end uses that start',async()=>{
+ const first=event('time-manual');await ingest([first]);await pool.query("UPDATE events SET start_time_iso='2026-09-17T14:30:00Z',start_time_source='manual',lat=50.1,lon=14.1,geo_source='manual' WHERE id=$1",[first.id]);
+ await ingest([{...first,statusText:'ukončená',pubDate:new Date().toISOString(),descriptionRaw:'stav: ukončená<br>ukončení: 17. září 2026, 16:40<br>Kladno'}]);const row=await getEventMeta(first.id);assert.equal(row.start_time_iso,'2026-09-17T14:30:00Z');assert.equal(row.duration_min,10);assert.equal(row.lat,50.1);assert.equal(row.lon,14.1);
 });

@@ -1,3 +1,4 @@
+import {normalizeFeedTimestamp} from './time-model.js';
 import {eventLocation} from './location.js';
 import crypto from "crypto";
 import { XMLParser, XMLValidator } from "fast-xml-parser";
@@ -113,11 +114,12 @@ export function stableEventId({ guid, link, title, pubDate }) {
 export function rssItemToEvent(item = {}) {
   const title = textValue(item.title);
   const link = textValue(item.link);
-  const pubDate = textValue(item.pubDate);
+  const originalPubDate = textValue(item.pubDate);
+  const pubDate = normalizeFeedTimestamp(originalPubDate) || originalPubDate;
   const descriptionRaw = textValue(item.description);
   const cityText = extractCity(descriptionRaw);
   return {
-    id: stableEventId({ guid: item.guid, link, title, pubDate }),
+    id: stableEventId({ guid: item.guid, link, title, pubDate: originalPubDate }),
     title,
     link,
     pubDate,
@@ -141,9 +143,7 @@ function pragueDateKey(date) {
 export function rssDateKeyInPrague(value) {
   const raw = textValue(value);
   if (!raw) return null;
-  // rss2json returns a local timestamp without a timezone. Preserve its calendar day.
-  if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?$/.test(raw)) return raw.slice(0, 10);
-  const parsed = new Date(raw);
+  const parsed = new Date(normalizeFeedTimestamp(raw) || raw);
   return Number.isNaN(parsed.getTime()) ? null : pragueDateKey(parsed);
 }
 

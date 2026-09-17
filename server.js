@@ -1,3 +1,4 @@
+import {normalizeFeedTimestamp,hasTrustedStart,annotateEventTime,diagnoseTimes} from './time-model.js';
 import {createGeocoder, createGeocodeJobs, buildQueries, eventLocation, annotateEventGeo, diagnoseCoordinates, canImprove, insideCz} from './geocoding.js';
 import {getGeoCache,setGeoCache,reserveGeocodeRequest,getGeoAuditRows,applyGeoProposal,geoFingerprint,recordGeoFailure} from './db.js';
 import express from "express";
@@ -31,6 +32,7 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 8000) {
 
 
 import {
+  pool,
   initDb,
   upsertEvent,
   getEventsFiltered,
@@ -420,22 +422,11 @@ function safeDurationFromStartEnd(startIso, endIso) {
 }
 
 function eventStartIsoFromEspRss(it = {}, times = {}) {
-  // Směrodatný čas začátku z ESP/RSS je pubDate.
-  // startTimeIso/zahájení je jen fallback, pokud by někdy pubDate chyběl.
+  // Legacy ESP compatibility only; RSS uses a separately proven start.
   return normalizeFeedTimestamp(it.pubDate || it.pub_date || it.startTimeIso || it.start_time_iso || times?.startIso);
 }
 
-function normalizeFeedTimestamp(value) {
-  const raw = String(value || "").trim();
-  if (!raw) return null;
-  // rss2json vrací `YYYY-MM-DD HH:mm:ss` bez zóny, ale jde o lokální čas zdroje v ČR.
-  const local = raw.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/);
-  if (local) {
-    return pragueLocalToUtcIso(Number(local[1]), Number(local[2]) - 1, Number(local[3]), Number(local[4]), Number(local[5]), Number(local[6] || 0));
-  }
-  const parsed = new Date(raw);
-  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
-}
+
 
 
 async function computeDurationMin(id, startIso, endIso, firstSeen, cutoffIso) {
@@ -643,7 +634,7 @@ function formatMinutesLong(min) {
 
 function buildAnalyticalReport(type, key, rows) {
   const p = reportPeriodFromKey(type, key);
-  rows=rows.map(row=>({...row,duration_min:["rss_end_time","esp_duration","explicit","manual"].includes(row.duration_source)?row.duration_min:null}));
+  rows=rows.map(annotateEventTime).map(row=>({...row,duration_min:["rss_end_time","esp_duration","explicit","manual"].includes(row.duration_source)?row.duration_min:null}));
   const total = rows.length;
   const open = rows.filter(r => !r.is_closed).length;
   const closed = rows.filter(r => !!r.is_closed).length;
@@ -2071,6 +2062,10 @@ app.get('/api/admin/geocode-suggestions/:id',requireAdmin,safeRoute(async(req,re
   const proposal=await geocoder.lookup(event,{remote:true,refresh:req.query.refresh==='1'});
   res.json({ok:true,event:annotateEventGeo(event),queries:buildQueries(eventLocation(event)),failure_reason:proposal.failure_reason || '',suggestions:proposal.precision==='failed'?[]:[{...proposal,label:proposal.display_name}]});
 }));
+app.get('/api/admin/time-diagnostics',requireAdmin,safeRoute(async(req,res)=>{
+  const rows=await getGeoAuditRows(5000);const zone=(await pool.query("SHOW timezone")).rows[0];
+  res.json({ok:true,dry_run:true,scanned:rows.length,complete:rows.length<5000,session_timezone:zone?.TimeZone || zone?.timezone || null,server_timezone:process.env.TZ || 'unset',items:rows.map(row=>diagnoseTimes(row)).slice(0,200)});
+}));
 app.get('/api/admin/geocode-diagnostics',requireAdmin,safeRoute(async(req,res)=>{
   const rows=await getGeoAuditRows(),items=diagnoseCoordinates(rows);
   res.json({ok:true,scanned:rows.length,complete:rows.length<5000,suspicious:items.length,without_reliable_coordinates:rows.filter(row=>!annotateEventGeo(row).geo_reliable).length,items:items.slice(0,200)});
@@ -2554,24 +2549,17 @@ if (statusAnalysis.source === "explicit_open") {
   );
 }
 
-// start / end timestamps podle finální logiky ESP/RSS:
-// začátek = pubDate z ESP/RSS, konec = "ukončení:" z RSS description.
-// Když konec v RSS není, použijeme okamžik, kdy FireWatch zjistí přechod aktivní -> ukončená.
-const rssStartIso = eventStartIsoFromEspRss(it, times);
-
-const startIso =
-  normalizeFeedTimestamp(prev?.start_time_iso) ||
-  normalizeFeedTimestamp(prev?.pub_date) ||
-  rssStartIso ||
-  null;
+// Source updates and verified starts are separate instants.
+const sourceUpdatedAt=normalizeFeedTimestamp(it.pubDate || it.pub_date);
+const startIso=(hasTrustedStart(prev || {}) ? normalizeFeedTimestamp(prev.start_time_iso) : null) || normalizeFeedTimestamp(it.startTimeIso || it.start_time_iso) || times.startIso || (rssSource ? null : eventStartIsoFromEspRss(it,times));
+const startTimeSource=(hasTrustedStart(prev || {}) ? (prev.start_time_source || (prev.status_source==='manual' || prev.source_kind==='manual' ? 'manual' : 'explicit')) : null) || (times.startIso ? 'rss_description' : startIso ? (rssSource ? 'explicit' : 'esp') : null);
 
 let endIso =
+  (prev?.end_time_source === "manual" ? normalizeFeedTimestamp(prev.end_time_iso) : null) ||
   normalizeFeedTimestamp(it.endTimeIso) ||
   times.endIso ||
+  (prev?.end_time_source ? normalizeFeedTimestamp(prev.end_time_iso) : null) ||
   null;
-
-const wasKnownOpen = !!(prev && prev.is_closed === false && prev.status_source === "explicit_open");
-const closingKnownOpen = isClosed && wasKnownOpen;
 
 let durationMin = null;
 let durationSource = null;
@@ -2584,18 +2572,10 @@ if (Number.isFinite(it.durationMin)) {
 }
 
 // 2) Nejlepší přesnost: RSS obsahuje "ukončení:".
-// Délka = ukončení z RSS - pubDate z RSS.
+// Délka = ukončení z RSS - doložený začátek.
 if (durationMin == null && isClosed && endIso) {
   durationMin = safeDurationFromStartEnd(startIso, endIso);
   if (durationMin != null) durationSource = "rss_end_time";
-}
-
-// 3) Bez "ukončení:" fallback jen při bezpečném přechodu aktivní -> ukončená.
-// Délka = čas zjištění ukončení - pubDate z RSS.
-if (durationMin == null && isClosed && closingKnownOpen) {
-  if (!endIso) endIso = new Date().toISOString();
-  durationMin = safeDurationFromStartEnd(startIso, endIso);
-  if (durationMin != null) durationSource = "close_update";
 }
 
 // 4) Událost přišla rovnou ukončená bez času ukončení = délka zůstane neznámá.
@@ -2623,7 +2603,10 @@ if (!isClosed) {
         id: it.id,
         title: it.title,
         link: it.link,
-        pubDate: startIso || it.pubDate || null,
+        pubDate: sourceUpdatedAt || it.pubDate || null,
+        sourceUpdatedAt: rssSource ? sourceUpdatedAt : null,
+        startTimeSource,
+        endTimeSource: times.endIso ? "rss_description" : endIso ? "explicit" : null,
         placeText,
         cityText,
         statusText: statusAnalysis.label || it.statusText || null,
@@ -2988,7 +2971,7 @@ app.get("/api/events/:id/detail", safeRoute(async (req, res) => {
   try {
     const row = await getEventDetailById(req.params.id);
     if (!row) return res.status(404).json({ ok: false, error: "event_not_found" });
-    return res.json({ ok: true, event: annotateEventGeo(row) });
+    return res.json({ ok: true, event: annotateEventGeo(annotateEventTime(row)) });
   } catch (e) {
     console.error("[event-detail-get]", e.code || "operation_failed");
     return res.status(500).json({ ok: false, error: "event_detail_get_failed" });
@@ -3160,7 +3143,7 @@ app.get("/api/admin/events/:id/manual", requireAdmin, safeRoute(async (req, res)
   try {
     const row = await getEventForManualEdit(req.params.id);
     if (!row) return res.status(404).json({ ok: false, error: "event_not_found" });
-    return res.json({ ok: true, event: annotateEventGeo(row) });
+    return res.json({ ok: true, event: annotateEventGeo(annotateEventTime(row)) });
   } catch (e) {
     console.error("[manual-event-get]", e.code || "operation_failed");
     return res.status(500).json({ ok: false, error: "manual_event_get_failed" });
@@ -3175,9 +3158,9 @@ app.post("/api/admin/events/:id/manual", requireAdmin, safeRoute(async (req, res
     const isClosed = mode === "closed" ? true : mode === "open" ? false : !!current.is_closed;
     const statusText = mode === "open" ? "probíhá zásah" : mode === "closed" ? "ukončená" : (current.status_text || null);
 
-    const startTimeIso = parseManualIso(req.body?.startTimeIso) || current.start_time_iso || current.pub_date || current.first_seen_at || current.created_at || null;
+    const startTimeIso = parseManualIso(req.body?.startTimeIso) || (hasTrustedStart(current) ? current.start_time_iso : null);
     const endTimeIso = isClosed
-      ? (parseManualIso(req.body?.endTimeIso) || current.end_time_iso || new Date().toISOString())
+      ? (parseManualIso(req.body?.endTimeIso) || (current.end_time_source || current.duration_source === "manual" ? current.end_time_iso : null))
       : null;
 
     const alarmLevelRaw = req.body?.alarmLevel;
@@ -3324,7 +3307,7 @@ app.get('/api/events', async (req,res) => {
     if(!/^\d+$/.test(raw)||Number(raw)<1)return res.status(400).json({ok:false,error:'bad_limit'});
     const limit=Math.min(Number(raw),2000),filters=parseFilters(req);
     const [rows,totalMatching,dataStatus]=await Promise.all([getEventsFiltered(filters,limit),countEventsFiltered(filters),getPublicDataStatus()]);
-    res.json({ok:true,filters,limit,total_matching:totalMatching,backfilled_coords:0,backfilled_durations:0,data_status:dataStatus,items:rows.map(annotateEventGeo)});
+    res.json({ok:true,filters,limit,total_matching:totalMatching,backfilled_coords:0,backfilled_durations:0,data_status:dataStatus,items:rows.map(row=>annotateEventGeo(annotateEventTime(row)))});
   }catch(e){if(e.status!==400)console.error('[events]',e.code||'database_error');res.status(e.status===400?400:500).json({ok:false,error:e.status===400?'bad_filters':'events_failed'});}
 });
 // Statistics retain the existing 30-day scope, independent of the day selector.
@@ -3344,9 +3327,11 @@ function csvEscape(value) {
   return /[;"\r\n]/.test(text)?'"'+text.replace(/"/g,'""')+'"':text;
 }
 function exportEventDuration(event) {
+  event=annotateEventTime(event);
   if(event.is_closed)return ["rss_end_time","esp_duration","explicit","manual"].includes(event.duration_source)?event.duration_min:null;
-  const start=Date.parse(event.start_time_iso||event.pub_date||"");
-  return Number.isFinite(start)&&start<=Date.now()?Math.floor((Date.now()-start)/60000):null;
+  const start=Date.parse(event.start_time_iso||"");
+  const minutes=Number.isFinite(start)?Math.floor((Date.now()-start)/60000):null;
+  return minutes>0 && minutes<=MAX_DURATION_MINUTES ? minutes : null;
 }
 function fmtDuration(minutes) {
   return Number.isFinite(minutes)&&minutes>=0?formatMinutesLong(minutes):"—";
@@ -3381,7 +3366,7 @@ app.get("/api/export.csv", safeRoute(async (req, res) => {
   out.push("cas;stav;typ;mesto;delka;nazev;link");
 
   for (const r of rows) {
-    const cas = csvEscape(fmtDate(r.pub_date || r.created_at));
+    const cas = csvEscape(fmtDate(r.source_updated_at || r.pub_date || r.created_at));
     const stav = csvEscape(r.is_closed ? "ukoncena" : "aktivni");
     const typ = csvEscape(typeLabel(r.event_type || "other"));
     const mesto = csvEscape(r.city_text || r.place_text || "");
@@ -3666,6 +3651,8 @@ async function initDbWithRetry() {
   while (true) {
     try {
       await initDb();
+      const dbTimeZone=(await pool.query("SHOW timezone")).rows[0];
+      console.info("[time]",JSON.stringify({storage_timezone:dbTimeZone?.TimeZone || dbTimeZone?.timezone,display_timezone:"Europe/Prague",server_timezone:process.env.TZ || "unset"}));
       return;
     } catch (e) {
       attempt++;

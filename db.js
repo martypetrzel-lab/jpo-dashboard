@@ -7,6 +7,7 @@ const MAX_DURATION_MINUTES = Math.max(60, Number(process.env.DURATION_MAX_MINUTE
 
 export const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL,
+  options: '-c timezone=UTC',
   ssl: process.env.DATABASE_URL?.includes("railway") ? { rejectUnauthorized: false } : false
 });
 
@@ -222,6 +223,7 @@ export async function initDb() {
     );
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_log_ts ON audit_log(ts DESC);`);
+  for(const [name,type] of Object.entries({source_updated_at:'TEXT',start_time_source:'TEXT',end_time_source:'TEXT',time_model_version:'INTEGER NOT NULL DEFAULT 0',time_original_values:'JSONB'})) await pool.query(`ALTER TABLE events ADD COLUMN IF NOT EXISTS ${name} ${type}`);
   for (const [name,type] of Object.entries({geo_precision:'TEXT',geo_confidence:'DOUBLE PRECISION',geo_query:'TEXT',geo_display_name:'TEXT',geo_verified:'BOOLEAN NOT NULL DEFAULT FALSE',geo_failure_reason:'TEXT',geo_context_key:'TEXT'})) await pool.query(`ALTER TABLE events ADD COLUMN IF NOT EXISTS ${name} ${type}`);
   await pool.query(`CREATE TABLE IF NOT EXISTS geocode_cache_v2 (context_key TEXT PRIMARY KEY, result JSONB NOT NULL, expires_at TIMESTAMPTZ NOT NULL)`);
   await pool.query(`CREATE TABLE IF NOT EXISTS geocode_provider_limits (provider TEXT PRIMARY KEY, next_request_at TIMESTAMPTZ NOT NULL)`);
@@ -471,7 +473,7 @@ export async function getLongestCutoffIso() {
 
 export async function getEventMeta(id) {
   const res = await pool.query(
-    `SELECT id, is_closed, first_seen_at, pub_date, start_time_iso, end_time_iso, duration_min, alarm_level, is_major_event, status_text, status_source, source_kind, source_note, lat, lon, geo_source FROM events WHERE id=$1`,
+    `SELECT source_kind, source_updated_at, start_time_source, end_time_source, time_model_version, id, is_closed, first_seen_at, pub_date, start_time_iso, end_time_iso, duration_min, duration_source, alarm_level, is_major_event, status_text, status_source, source_note, lat, lon, geo_source FROM events WHERE id=$1`,
     [id]
   );
   return res.rows[0] || null;
@@ -489,7 +491,7 @@ export async function upsertEvent(ev) {
   let normalizedDurationMin = clampDuration(ev.durationMin);
   const hasRealEndTime = !!normalizedEndTimeIso;
   if (isIncomingClosed && hasRealEndTime && normalizedDurationMin == null) {
-    const startRaw = ev.startTimeIso || ev.pubDate || null;
+    const startRaw = ev.startTimeIso || (ev.sourceKind === "rss" ? null : ev.pubDate) || null;
     const start = startRaw ? new Date(startRaw) : null;
     const end = normalizedEndTimeIso ? new Date(normalizedEndTimeIso) : null;
     if (start && end && !Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime())) {
@@ -508,19 +510,18 @@ export async function upsertEvent(ev) {
       start_time_iso, end_time_iso, duration_min, duration_source, is_closed,
       alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
       source_kind, source_note,
-      first_seen_at, last_seen_at
+      first_seen_at, last_seen_at, source_updated_at, start_time_source, end_time_source, time_model_version
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,COALESCE($22::text, CASE WHEN $12::integer IS NOT NULL AND NULLIF($11::text,'' ) IS NOT NULL THEN 'rss_end_time' ELSE NULL END),$13,$14,$15,$16,$17,$18,$20,$21, NOW(), NOW())
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,CASE WHEN $12::integer <= $19::integer THEN $12 ELSE NULL END,COALESCE($22::text, CASE WHEN $12::integer IS NOT NULL AND NULLIF($11::text,'' ) IS NOT NULL THEN 'rss_end_time' ELSE NULL END),$13,$14,$15,$16,$17,$18,$20,$21, NOW(), NOW(), $23, $24, $25, 1)
     ON CONFLICT (id) DO UPDATE SET
       title = EXCLUDED.title,
       link = EXCLUDED.link,
-      -- Starší importy ukládaly lokální český čas bez zóny. Při nejbližší
-      -- aktualizaci jej nahradíme normalizovaným ISO časem z ingestu.
-      pub_date = CASE
-        WHEN events.pub_date IS NULL OR events.pub_date ~ '^\\d{4}-\\d{2}-\\d{2}[ T]\\d{2}:\\d{2}(:\\d{2})?$'
-          THEN COALESCE(EXCLUDED.pub_date, events.pub_date)
-        ELSE events.pub_date
-      END,
+      time_original_values=CASE WHEN events.time_model_version=0 AND EXCLUDED.source_kind='rss' THEN COALESCE(events.time_original_values,jsonb_build_object('pub_date',events.pub_date,'start_time_iso',events.start_time_iso,'end_time_iso',events.end_time_iso,'duration_min',events.duration_min,'duration_source',events.duration_source,'captured_at',NOW())) ELSE events.time_original_values END,
+      time_model_version=1,
+      source_updated_at=COALESCE(EXCLUDED.source_updated_at,events.source_updated_at),
+      start_time_source=CASE WHEN events.start_time_source IN ('manual','rss_description','explicit','esp') OR events.status_source='manual' OR events.source_kind='manual' OR events.duration_source='manual' THEN COALESCE(events.start_time_source,'manual') ELSE EXCLUDED.start_time_source END,
+      end_time_source=CASE WHEN events.end_time_source='manual' AND EXCLUDED.status_source IS DISTINCT FROM 'explicit_open' THEN events.end_time_source WHEN EXCLUDED.status_source='explicit_open' THEN NULL WHEN EXCLUDED.end_time_iso IS NOT NULL THEN EXCLUDED.end_time_source ELSE events.end_time_source END,
+      pub_date=CASE WHEN EXCLUDED.source_kind='rss' AND events.source_kind IS DISTINCT FROM 'manual' AND events.status_source IS DISTINCT FROM 'manual' THEN COALESCE(EXCLUDED.pub_date,events.pub_date) ELSE COALESCE(events.pub_date,EXCLUDED.pub_date) END,
 
       place_text = COALESCE(EXCLUDED.place_text, events.place_text),
       city_text  = COALESCE(EXCLUDED.city_text,  events.city_text),
@@ -529,44 +530,16 @@ export async function upsertEvent(ev) {
       event_type  = COALESCE(EXCLUDED.event_type, events.event_type),
       description_raw = COALESCE(EXCLUDED.description_raw, events.description_raw),
 
-      start_time_iso = CASE
-        WHEN events.start_time_iso IS NULL OR events.start_time_iso ~ '^\\d{4}-\\d{2}-\\d{2}[ T]\\d{2}:\\d{2}(:\\d{2})?$'
-          THEN COALESCE(EXCLUDED.start_time_iso, events.start_time_iso)
-        ELSE events.start_time_iso
-      END,
+      start_time_iso=CASE WHEN events.start_time_source IN ('manual','rss_description','explicit','esp') OR events.status_source='manual' OR events.source_kind='manual' OR events.duration_source='manual' THEN events.start_time_iso WHEN EXCLUDED.source_kind='rss' THEN EXCLUDED.start_time_iso ELSE COALESCE(events.start_time_iso,EXCLUDED.start_time_iso) END,
       end_time_iso   = CASE
+        WHEN events.end_time_source='manual' AND EXCLUDED.status_source IS DISTINCT FROM 'explicit_open' THEN events.end_time_iso
         WHEN EXCLUDED.status_source = 'explicit_open' THEN NULL
         WHEN NULLIF(EXCLUDED.end_time_iso,'' ) IS NOT NULL THEN EXCLUDED.end_time_iso
-        WHEN (EXCLUDED.status_source = 'explicit_closed' OR EXCLUDED.is_closed = TRUE) AND events.is_closed = FALSE THEN
-          to_char((NOW() AT TIME ZONE 'UTC'), 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
         ELSE events.end_time_iso
       END,
 
-      duration_min = CASE
-        WHEN EXCLUDED.status_source = 'explicit_open' THEN NULL
-        WHEN EXCLUDED.duration_min IS NOT NULL THEN EXCLUDED.duration_min
-        WHEN events.duration_min IS NOT NULL AND events.duration_min > $19 THEN NULL
-        WHEN (EXCLUDED.status_source = 'explicit_closed' OR EXCLUDED.is_closed = TRUE)
-             AND events.is_closed = FALSE
-             AND events.status_source = 'explicit_open'
-             AND events.duration_min IS NULL THEN
-          (
-            CASE
-              -- Fallback bez RSS ukončení: čas změny na ukončená - pub_date/start_time.
-              WHEN ROUND(EXTRACT(EPOCH FROM (NOW() - COALESCE(NULLIF(events.pub_date,'' )::timestamptz, NULLIF(events.start_time_iso,'' )::timestamptz, events.first_seen_at, events.created_at))) / 60.0)::int <= 0 THEN NULL
-              WHEN ROUND(EXTRACT(EPOCH FROM (NOW() - COALESCE(NULLIF(events.pub_date,'' )::timestamptz, NULLIF(events.start_time_iso,'' )::timestamptz, events.first_seen_at, events.created_at))) / 60.0)::int > $19 THEN NULL
-              ELSE ROUND(EXTRACT(EPOCH FROM (NOW() - COALESCE(NULLIF(events.pub_date,'' )::timestamptz, NULLIF(events.start_time_iso,'' )::timestamptz, events.first_seen_at, events.created_at))) / 60.0)::int
-            END
-          )
-        ELSE events.duration_min
-      END,
-
-      duration_source = CASE
-        WHEN EXCLUDED.status_source = 'explicit_open' THEN NULL
-        WHEN EXCLUDED.duration_min IS NOT NULL THEN COALESCE(EXCLUDED.duration_source, 'rss_end_time')
-        WHEN (EXCLUDED.status_source = 'explicit_closed' OR EXCLUDED.is_closed = TRUE) AND events.is_closed = FALSE AND events.status_source = 'explicit_open' AND events.duration_min IS NULL THEN 'observed_first_seen_to_close_update'
-        ELSE events.duration_source
-      END,
+      duration_min=CASE WHEN EXCLUDED.status_source='explicit_open' THEN NULL WHEN events.duration_source='manual' THEN events.duration_min WHEN EXCLUDED.duration_min IS NOT NULL THEN EXCLUDED.duration_min WHEN EXCLUDED.source_kind='rss' THEN NULL ELSE events.duration_min END,
+      duration_source=CASE WHEN EXCLUDED.status_source='explicit_open' THEN NULL WHEN events.duration_source='manual' THEN events.duration_source WHEN EXCLUDED.duration_min IS NOT NULL THEN EXCLUDED.duration_source WHEN EXCLUDED.source_kind='rss' THEN NULL ELSE events.duration_source END,
 
       is_closed = CASE
         WHEN EXCLUDED.status_source = 'explicit_open' THEN FALSE
@@ -607,7 +580,10 @@ export async function upsertEvent(ev) {
       MAX_DURATION_MINUTES,
       ev.sourceKind || null,
       ev.sourceNote || null,
-      ev.durationSource || null
+      ev.durationSource || null,
+      ev.sourceUpdatedAt || null,
+      ev.startTimeSource || null,
+      ev.endTimeSource || null
     ]
   );
 }
@@ -939,7 +915,7 @@ export async function searchEventsAdmin({ q = "", limit = 50 } = {}) {
   const r = await pool.query(
     `
     SELECT
-      id, title, pub_date, city_text, place_text, status_text, event_type,
+      source_kind, source_updated_at, start_time_source, end_time_source, time_model_version, id, title, pub_date, city_text, place_text, status_text, event_type,
       start_time_iso, end_time_iso, duration_min, duration_source, is_closed,
       alarm_level, alarm_level_text, is_major_event, major_reason,
       source_kind, source_note, lat, lon, created_at, last_seen_at
@@ -1149,7 +1125,7 @@ export async function getEventsFiltered(filters, limit = 400) {
   const sql =
     `
     SELECT
-      id, title, link, pub_date,
+      source_kind, source_updated_at, start_time_source, end_time_source, time_model_version, id, title, link, pub_date,
       place_text, city_text,
       status_text, event_type,
       description_raw,
@@ -1371,7 +1347,7 @@ export async function getStatsFiltered(filters) {
       iL++;
     }
 
-    whereLongest.push(`duration_source IN ('rss_end_time','esp_duration','explicit','manual')`);
+    whereLongest.push(`(duration_source IN ('rss_end_time','esp_duration','explicit','manual') AND (source_kind IS DISTINCT FROM 'rss' OR duration_source IN ('esp_duration','explicit','manual') OR start_time_source IN ('manual','rss_description','explicit','esp') OR status_source='manual'))`);
     // TOP za měsíc dává smysl jen pro uzavřené s uloženou délkou
     whereLongest.push(`is_closed = TRUE`);
     whereLongest.push(`duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= $${iL}`);
@@ -1447,9 +1423,9 @@ export async function getStatsFiltered(filters) {
         link,
         COALESCE(NULLIF(city_text,''), place_text) AS city,
         CASE
-          WHEN duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= $${iL} AND duration_source IN ('rss_end_time','esp_duration','explicit','manual')
+          WHEN duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= $${iL} AND (duration_source IN ('rss_end_time','esp_duration','explicit','manual') AND (source_kind IS DISTINCT FROM 'rss' OR duration_source IN ('esp_duration','explicit','manual') OR start_time_source IN ('manual','rss_description','explicit','esp') OR status_source='manual'))
             THEN duration_min
-          WHEN (NOT is_closed)
+          WHEN (NOT is_closed) AND (source_kind IS DISTINCT FROM 'rss' OR start_time_source IN ('manual','rss_description','explicit','esp') OR status_source='manual') AND NULLIF(start_time_iso,'') IS NOT NULL
             THEN LEAST(
               $${iL},
               GREATEST(
@@ -1470,8 +1446,8 @@ export async function getStatsFiltered(filters) {
       FROM events
       ${whereLongestSql}
         AND (
-          (duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= $${iL} AND duration_source IN ('rss_end_time','esp_duration','explicit','manual'))
-          OR (NOT is_closed AND COALESCE(NULLIF(start_time_iso,''),NULLIF(pub_date,'')) IS NOT NULL)
+          (duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= $${iL} AND (duration_source IN ('rss_end_time','esp_duration','explicit','manual') AND (source_kind IS DISTINCT FROM 'rss' OR duration_source IN ('esp_duration','explicit','manual') OR start_time_source IN ('manual','rss_description','explicit','esp') OR status_source='manual')))
+          OR (NOT is_closed AND NULLIF(start_time_iso,'') IS NOT NULL AND (source_kind IS DISTINCT FROM 'rss' OR start_time_source IN ('manual','rss_description','explicit','esp') OR status_source='manual'))
         )
       ORDER BY duration_min DESC NULLS LAST
       LIMIT 10;
@@ -1739,7 +1715,7 @@ export async function getEventsForPeriod(startIso, endExclusiveIso) {
   const r = await pool.query(
     `
     SELECT
-      id, title, link, pub_date,
+      source_kind, source_updated_at, start_time_source, end_time_source, time_model_version, id, title, link, pub_date,
       place_text, city_text,
       status_text, event_type,
       description_raw,
@@ -1776,7 +1752,7 @@ export async function getEventsForPeriod(startIso, endExclusiveIso) {
 
 export async function getEventById(id) {
   const r = await pool.query(
-    `SELECT id, title, link, pub_date, place_text, city_text, status_text, event_type,
+    `SELECT source_kind, source_updated_at, start_time_source, end_time_source, time_model_version, id, title, link, pub_date, place_text, city_text, status_text, event_type,
             description_raw, start_time_iso, end_time_iso, duration_min, duration_source, is_closed,
             alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
             manual_detail_text, manual_detail_source, manual_detail_updated_at,
@@ -1811,7 +1787,7 @@ export async function listEventsForMajorBackfill(limit = 5000) {
   const r = await pool.query(
     `
     SELECT
-      id, title, link, pub_date,
+      source_kind, source_updated_at, start_time_source, end_time_source, time_model_version, id, title, link, pub_date,
       place_text, city_text, status_text, event_type,
       description_raw,
       start_time_iso, end_time_iso, duration_min, duration_source, is_closed,
@@ -1868,7 +1844,7 @@ export async function getMajorEventsSummary(limit = 20) {
   const r = await pool.query(
     `
     SELECT
-      id, title, link, pub_date,
+      source_kind, source_updated_at, start_time_source, end_time_source, time_model_version, id, title, link, pub_date,
       city_text, place_text, status_text, event_type,
       is_closed,
       alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
@@ -1890,7 +1866,7 @@ export async function getEventForManualEdit(id) {
   const r = await pool.query(
     `
     SELECT
-      id, title, link, pub_date,
+      source_kind, source_updated_at, start_time_source, end_time_source, time_model_version, id, title, link, pub_date,
       place_text, city_text, status_text, event_type,
       description_raw,
       start_time_iso, end_time_iso, duration_min, duration_source, is_closed,
@@ -1925,6 +1901,9 @@ export async function updateEventManualMeta(id, patch = {}) {
       is_major_event = $6,
       major_reason = $7,
       start_time_iso = $8,
+      start_time_source = CASE WHEN $8::text IS NOT NULL THEN 'manual' ELSE NULL END,
+      end_time_source = CASE WHEN $9::text IS NOT NULL THEN 'manual' ELSE NULL END,
+      time_model_version = 1,
       end_time_iso = $9,
       duration_min = $10,
       lat = CASE
@@ -1986,7 +1965,7 @@ export async function getEventDetailById(id) {
   const r = await pool.query(
     `
     SELECT
-      id, title, link, pub_date,
+      source_kind, source_updated_at, start_time_source, end_time_source, time_model_version, id, title, link, pub_date,
       place_text, city_text, status_text, event_type,
       description_raw,
       start_time_iso, end_time_iso, duration_min, duration_source, is_closed,

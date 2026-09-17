@@ -73,3 +73,10 @@ test('explicit manual creation/edit stores proper precision and NULL coordinates
  await updateEventManualMeta(id,{isClosed:true,coordsProvided:true,lat:50.2,lon:14.2});row=await getEventById(id);assert.equal(row.geo_precision,'manual');assert.equal(row.lat,50.2);
  await insertManualEvent({id:'manual-no-coords',title:'Local fixture',cityText:'Kladno',lat:null,lon:null});row=await getEventById('manual-no-coords');assert.equal(row.lat,null);assert.equal(row.lon,null);
 });
+
+test('time diagnostics is authorized, read-only and preserves ambiguous rows',async()=>{
+ await insert('time-diagnostic');await pool.query("UPDATE events SET pub_date='2026-09-17 14:30:00' WHERE id='time-diagnostic'");
+ const before=(await pool.query("SELECT * FROM events WHERE id='time-diagnostic'")).rows[0];const response=await request('/api/admin/time-diagnostics',undefined,'GET');assert.equal(response.status,200);assert.equal(response.data.dry_run,true);assert.equal(response.data.items.find(e=>e.id==='time-diagnostic').proposed,null);
+ assert.deepEqual((await pool.query("SELECT * FROM events WHERE id='time-diagnostic'")).rows[0],before);
+ assert.equal((await fetch(base+'/api/admin/time-diagnostics')).status,401);
+});
