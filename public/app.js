@@ -1062,7 +1062,7 @@ function compactTitleForMobile(title = "", city = "") {
 
 function eventMobileCardHtml(it) {
   const meta = typeMeta(it.event_type);
-  const timeValue = it.pub_date || it.start_time_iso || it.created_at || "";
+  const timeValue = it.source_updated_at || it.pub_date || it.start_time_iso || it.created_at || "";
   const city = it.city_text || it.place_text || "";
   const title = compactTitleForMobile(it.title || "", city);
   const statusText = typeof statusLabelForEvent === "function"
@@ -1085,7 +1085,7 @@ function eventMobileCardHtml(it) {
         <span class="eventMobileState">${statusEmoji(it.is_closed)} ${escapeHtml(statusText)}</span>
       </div>
       <div class="eventMobileMeta">
-        <span>🕒 ${escapeHtml(formatDate(timeValue))}</span>
+        <span>🕒 ${escapeHtml(it.time_label || "Čas události")}: ${escapeHtml(formatDate(timeValue))}</span>
         <span>⏱️ ${escapeHtml(formatDuration(durationValue))}</span>
       </div>
       <div class="eventMobileBadges">
@@ -1129,7 +1129,7 @@ function renderTable(items) {
       tr.classList.add("majorEventRow");
     }
 
-    const timeValue = it.pub_date || it.start_time_iso || it.created_at || "";
+    const timeValue = it.source_updated_at || it.pub_date || it.start_time_iso || it.created_at || "";
     const title = it.title || "";
     const city = it.city_text || it.place_text || "";
     const statusText = typeof statusLabelForEvent === "function"
@@ -1196,7 +1196,7 @@ function renderMap(items) {
     const it=group.find(row=>!row.is_closed)||group[0];mapped+=group.length;
     const icon=group.length>1?L.divIcon({className:'fw-shared-marker',html:'<span class="'+(group.some(row=>!row.is_closed)?'active':'closed')+'">'+group.length+'</span>',iconSize:[36,36]}):makeEventIcon(it.event_type,it);
     const marker=L.marker([it.lat,it.lon],{icon,zIndexOffset:1000,opacity:group.every(row=>row.is_closed)?0.8:1});
-    const popup=group.map(ev=>'<article class="fw-map-event"><b>'+escapeHtml(ev.title)+'</b><br>'+escapeHtml(ev.geo_municipality||ev.city_text||ev.place_text||'')+(ev.district_text?' · okres '+escapeHtml(ev.district_text):'')+'<br><span class="fw-map-status '+(ev.is_closed?'closed':'active')+'">'+escapeHtml(statusLabelForEvent(ev))+'</span><br>Začátek: '+escapeHtml(formatDate(ev.start_time_iso||ev.pub_date))+'<br>Délka: '+escapeHtml(formatDuration(liveDurationForEvent(ev)))+(ev.is_closed && ['rss_end_time','esp_duration','explicit','manual'].includes(ev.duration_source)?'<br>Konec: '+escapeHtml(formatDate(ev.end_time_iso)):'')+'<br><strong class="fw-map-precision">'+escapeHtml(ev.geo_label||'Přibližná poloha')+'</strong><br><button type="button" class="eventDetailBtn" data-event-id="'+escapeHtml(ev.id)+'">Detail události</button></article>').join('');
+    const popup=group.map(ev=>'<article class="fw-map-event"><b>'+escapeHtml(ev.title)+'</b><br>'+escapeHtml(ev.geo_municipality||ev.city_text||ev.place_text||'')+(ev.district_text?' · okres '+escapeHtml(ev.district_text):'')+'<br><span class="fw-map-status '+(ev.is_closed?'closed':'active')+'">'+escapeHtml(statusLabelForEvent(ev))+'</span><br>Začátek: '+escapeHtml(formatDate(ev.start_time_iso||ev.pub_date))+'<br>Délka: '+escapeHtml(formatDuration(liveDurationForEvent(ev)))+(ev.is_closed && (ev.end_time_source || ['rss_end_time','esp_duration','explicit','manual'].includes(ev.duration_source))?'<br>Konec: '+escapeHtml(formatDate(ev.end_time_iso)):'')+'<br><strong class="fw-map-precision">'+escapeHtml(ev.geo_label||'Přibližná poloha')+'</strong><br><button type="button" class="eventDetailBtn" data-event-id="'+escapeHtml(ev.id)+'">Detail události</button></article>').join('');
     marker.bindPopup('<div class="fw-map-popup">'+(group.length>1?'<p>'+group.length+' událostí na stejném místě</p>':'')+popup+'</div>',{maxWidth:340,keepInView:true,autoPanPadding:[16,16]});
     marker.addTo(markersLayer);mapEventPoints.push([it.lat,it.lon]);
     if(popupPoint===it.lat+'|'+it.lon){
@@ -3047,7 +3047,7 @@ async function openManualEventEditor(id) {
     document.getElementById("manualEventAlarmLevel").value = ev.alarm_level ? String(ev.alarm_level) : "";
     document.getElementById("manualEventIsMajor").checked = !!ev.is_major_event;
     document.getElementById("manualEventMajorReason").value = ev.major_reason || "";
-    document.getElementById("manualEventStart").value = toLocalDateTimeInput(ev.start_time_iso || ev.pub_date || ev.first_seen_at || ev.created_at);
+    document.getElementById("manualEventStart").value = toLocalDateTimeInput(ev.start_time_iso);
     document.getElementById("manualEventEnd").value = toLocalDateTimeInput(ev.end_time_iso);
 
     const latInput = document.getElementById("manualEventLat");
@@ -3378,9 +3378,9 @@ async function openEventDetailModal(id) {
 
     if (summary) {
       summary.innerHTML = `
-        ${eventDetailLine("Čas", detailDateText(ev.pub_date || ev.start_time_iso || ev.created_at))}
-        ${eventDetailLine("Začátek", detailDateText(ev.start_time_iso || ev.pub_date))}
-        ${eventDetailLine("Konec", ev.is_closed && ["rss_end_time","esp_duration","explicit","manual"].includes(ev.duration_source) ? detailDateText(ev.end_time_iso) : "—")}
+        ${eventDetailLine(ev.time_label || "Čas události", detailDateText(ev.source_updated_at || ev.pub_date || ev.created_at))}
+        ${eventDetailLine("Začátek", detailDateText(ev.start_time_iso))}
+        ${eventDetailLine("Konec", ev.is_closed && (ev.end_time_source || ["rss_end_time","esp_duration","explicit","manual"].includes(ev.duration_source)) ? detailDateText(ev.end_time_iso) : "—")}
         ${eventDetailLine("Obec", ev.geo_municipality || ev.city_text || "")}
         ${eventDetailLine("Místo / upřesnění", ev.geo_detail || ev.place_text || "—")}
         ${eventDetailLine("Okres", ev.district_text || "—")}
@@ -3895,7 +3895,7 @@ async function searchAdminEventsDb() {
       results.innerHTML = items.map((it) => `
         <div class="adminSearchItem">
           <b>${escapeHtml(it.title || "")}</b>
-          <span>${escapeHtml(it.city_text || it.place_text || "")} • ${escapeHtml(formatDate(it.pub_date || it.start_time_iso || it.created_at))} • ${it.is_closed ? "ukončená" : "aktivní"} • GPS: ${it.lat != null && it.lon != null ? "ano" : "ne"} • v hlavním přehledu: ${it.visible_in_current_overview ? "ano" : "ne"}</span>
+          <span>${escapeHtml(it.city_text || it.place_text || "")} • ${escapeHtml(formatDate(it.source_updated_at || it.pub_date || it.start_time_iso || it.created_at))} • ${it.is_closed ? "ukončená" : "aktivní"} • GPS: ${it.lat != null && it.lon != null ? "ano" : "ne"} • v hlavním přehledu: ${it.visible_in_current_overview ? "ano" : "ne"}</span>
           <small>ID: ${escapeHtml(it.id || "")}${it.source_kind === "manual" ? " • admin: ručně doplněno" : ""}</small>
         </div>
       `).join("");
