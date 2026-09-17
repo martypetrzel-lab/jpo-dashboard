@@ -16,7 +16,7 @@ const harness = () => {
   const logs = [];
   return { logs, logger: { info: line => logs.push(line), error: line => logs.push(line) } };
 };
-const response = () => Response.json({ ok: true, accepted: 2, inserted: 1, updated: 1 });
+const response = () => Response.json({ ok: true, accepted: 2, inserted: 1, updated: 1, skipped: 5, skipped_older: 4 });
 
 test("RSS payload caps 105 items at 100 and preserves stable IDs and ingest fields", () => {
   const payload = buildRssPayload(rss(105));
@@ -92,6 +92,7 @@ test("script posts expected JSON and API key and logs only safe counts", async (
   assert.match(h.logs.join("\n"), /RSS items=2/);
   assert.match(h.logs.join("\n"), /HTTP status=200/);
   assert.match(h.logs.join("\n"), /accepted=2; inserted=1; updated=1/);
+  assert.match(h.logs.join("\n"), /skipped=5; skipped_older=4/);
   assert.equal(h.logs.join("\n").includes(env.FIREWATCH_API_KEY), false);
 });
 

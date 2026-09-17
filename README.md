@@ -103,7 +103,7 @@ API klíč zjistíte v Railway u služby FireWatch v **Variables → API_KEY**. 
 
 1. Otevřete **Actions → RSS ingest**. Pokud GitHub nabízí povolení Actions, nejprve je povolte.
 2. Klikněte **Run workflow**, vyberte větev **main** a potvrďte **Run workflow**.
-3. Otevřete běh a krok **Import RSS into FireWatch**. Úspěšný výstup obsahuje `RSS items=…`, `ingest HTTP status=200` a `accepted=…; inserted=…; updated=…`. Již uložené události mohou mít `inserted=0` a `updated>0`.
+3. Otevřete běh a krok **Import RSS into FireWatch**. Úspěšný výstup obsahuje `RSS items=…`, `ingest HTTP status=200` a `accepted=…; inserted=…; updated=…; skipped=…; skipped_older=…`. Již uložené události mohou mít `inserted=0` a `updated>0`. `skipped_older` počítá starší neznámé ukončené položky, které se podle pravidel aktuálního RSS dne nevkládají.
 4. Ověřte události na webu a v admin diagnostice příjmu dat vyhledejte `source: github_actions_rss`. Zelený běh s `RSS items=0` jen bezpečně přeskočil prázdný feed, nepotvrzuje funkčnost ingestu.
 5. Plán `*/5 * * * *` na výchozí větvi automaticky žádá spuštění každých 5 minut. GitHub může plánované běhy zpozdit; nejde o přesnou časovou garanci. Společná concurrency skupina brání souběhu ručního a plánovaného importu.
 

@@ -118,11 +118,11 @@ export async function runRssPush({
     logger.info(`[rss-push] ingest HTTP status=${result.httpStatus}`);
     let data;
     try { data = JSON.parse(result.xml); } catch { throw safeFailure("invalid_ingest_response", result.httpStatus); }
-    const counters = [data?.accepted, data?.inserted, data?.updated];
+    const counters = [data?.accepted, data?.inserted, data?.updated, data?.skipped ?? 0, data?.skipped_older ?? 0];
     if (data?.ok !== true || counters.some(n => !Number.isSafeInteger(n) || n < 0)) {
       throw safeFailure("invalid_ingest_response", result.httpStatus);
     }
-    logger.info(`[rss-push] accepted=${data.accepted}; inserted=${data.inserted}; updated=${data.updated}`);
+    logger.info(`[rss-push] accepted=${data.accepted}; inserted=${data.inserted}; updated=${data.updated}; skipped=${data.skipped ?? 0}; skipped_older=${data.skipped_older ?? 0}`);
     return true;
   } catch (error) {
     const safe = sanitizeRssError(error);
