@@ -20,3 +20,9 @@ test('automatic map refresh preserves open group and its scroll position; filter
  context.renderMap(rows);assert.equal(layer.markers[0].opened,true);assert.equal(layer.markers[0].popup.scrollTop,123);
  context.renderMap([rows[2]]);assert.equal(layer.markers.length,0);
 });
+
+test('map popup labels source update separately and never substitutes pubDate for unknown start',()=>{
+ const {context,layer}=setup();context.renderMap([{...rows[0],pub_date:'2026-09-17T14:30:00Z',source_updated_at:'2026-09-17T14:30:00Z',start_time_iso:null,time_label:'Poslední aktualizace zdroje'}]);
+ assert.match(layer.markers[0].html,/Poslední aktualizace zdroje: 2026-09-17T14:30:00Z/);
+ assert.ok(!layer.markers[0].html.includes('Začátek: 2026-09-17T14:30:00Z'));
+});
