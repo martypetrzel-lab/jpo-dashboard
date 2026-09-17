@@ -48,7 +48,7 @@ function parseCookiesFromHeader(headerValue) {
     if (i < 0) return;
     const k = pair.substring(0, i).trim();
     const v = pair.substring(i + 1).trim();
-    out[k] = decodeURIComponent(v);
+    try {out[k]=decodeURIComponent(v);} catch {}
   });
   return out;
 }
@@ -193,6 +193,11 @@ function formatVoiceTime(ts) {
   return d.toLocaleTimeString("cs-CZ", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
+export function isAllowedRadioOrigin(req) {
+  const origin=req.headers.origin;if(!origin)return true;
+  try {const url=new URL(origin);return ['http:','https:'].includes(url.protocol) && url.host===req.headers.host;} catch {return false;}
+}
+
 export function attachOpsRadio(server, options = {}) {
   const enabled = String(process.env.RADIO_ENABLED || options.enabled || "true").toLowerCase() !== "false";
 
@@ -213,7 +218,10 @@ export function attachOpsRadio(server, options = {}) {
 
   const wss = new WebSocketServer({
     server,
-    path: "/ops-radio"
+    path: "/ops-radio",
+    maxPayload:64*1024,
+    perMessageDeflate:false,
+    verifyClient: info => isAllowedRadioOrigin(info.req)
   });
 
   function getRoomMeta(room) {
@@ -515,6 +523,7 @@ export function attachOpsRadio(server, options = {}) {
 
     if (client.role === "admin") client.unlockedRooms.add("SPRÁVA");
 
+    if(ws.readyState!==ws.OPEN)return;
     clients.set(id, client);
 
     sendJson(ws, {

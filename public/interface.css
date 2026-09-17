@@ -76,3 +76,10 @@ tr.eventOpen {background:#122824;}tr.eventOpen td:first-child {border-left:3px s
 .eventDetailBody {padding:16px;}.eventDetailPanel {background:#101a27;border-color:var(--fw-line);}.eventDetailFooter {display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;}
 .field {display:grid;gap:6px;}.adminGrid {min-width:0;}.adminRow {flex-wrap:wrap;}.adminCard {min-width:0;border-color:var(--fw-line);background:#101a27;}.adminCard input {width:100%;}.adminCardHeader {flex-wrap:wrap;}.adminTableWrap {overflow:auto;max-width:100%;}
 @media(max-width:760px){.modal:not(.modalWide) {width:calc(100vw - 32px);}.modalHead {padding:16px;}.eventDetailBody {padding:12px;}.reportItem>span:first-child {text-align:left;}.reportItemNums {text-align:right;}.miniRow {flex-wrap:wrap;}.miniToggle {max-width:100%;}.adminGrid {grid-template-columns:1fr;}}
+.ops-radio-card {background:var(--fw-panel);border:1px solid var(--fw-line);border-radius:var(--fw-radius-lg);box-shadow:var(--fw-shadow);}
+.ops-radio-panel,.ops-radio-row,.ops-radio-users,.ops-radio-chat,.ops-radio-history,.ops-radio-presence {min-width:0;}
+.ops-radio-ptt {min-height:80px;border-radius:var(--fw-radius);touch-action:none;}.ops-radio-ptt.is-transmitting {background:#ae343c;border-color:var(--fw-danger);color:white;}
+.ops-radio-mic {grid-column:1/-1;color:var(--fw-muted);font-size:12px;margin:0;}
+.ops-radio-live {max-width:100%;white-space:normal;overflow-wrap:anywhere;}.ops-radio-live[data-state=tx] {background:#ae343c;color:#fff;}.ops-radio-live[data-state=error] {color:var(--fw-danger);}
+.ops-radio-card button {min-height:40px;}.ops-radio-users li,.ops-radio-chat li {overflow-wrap:anywhere;}
+@media(max-width:760px){.ops-radio-card {padding:16px;}.ops-radio-head-v17 {gap:12px;flex-wrap:wrap;}.ops-radio-row-main {display:flex;flex-wrap:wrap;}.ops-radio-row-main label {flex:1 1 100%;}.ops-radio-connect {width:100%;}.ops-radio-panel {display:flex;flex-direction:column;gap:12px;}.ops-talk-metrics {grid-template-columns:repeat(3,minmax(0,1fr));}.ops-radio-chat-form {flex-wrap:wrap;}.ops-radio-chat-form input {width:100%;}.ops-radio-create {flex-wrap:wrap;}}

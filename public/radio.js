@@ -17,7 +17,7 @@
   const DEFAULT_ROOM = "HLAVNÍ";
   const PTT_SOUND_URL = "/sounds/ptt-press.mp3";
   const PTT_SOUND_VOLUME = 0.42;
-  const RECONNECT_DELAY_MS = 1800;
+  const MAX_RECONNECT_ATTEMPTS = 6;
   const KEEPALIVE_MS = 20000;
 
   let mount = null;
@@ -39,6 +39,11 @@
   let nextPlaybackTime = 0;
   let manualCloseRequested = false;
   let reconnectTimer = null;
+  let reconnectAttempts = 0;
+  let stableConnectionTimer = null;
+  let pttHeld = false;
+  let pttGeneration = 0;
+  let micRequest = null;
   let keepAliveTimer = null;
   let pttSoundFailed = false;
   let voiceMessages = [];
@@ -361,6 +366,7 @@
             <button class="ops-radio-connect" id="opsRadioConnect">Připojit Talk</button>
           </div>
 
+          <p class="ops-radio-mic" data-radio-mic aria-live="polite">Mikrofon vypnutý – aktivuje se při PTT</p>
           <div class="ops-room-cards" data-room-cards></div>
 
           <div class="ops-radio-presence">
@@ -495,29 +501,26 @@
     ptt.addEventListener("pointerdown", down);
     window.addEventListener("pointerup", up);
     window.addEventListener("pointercancel", up);
+    window.addEventListener("blur", releasePtt);
+    ptt.addEventListener("keydown",event=>{if([" ","Enter"].includes(event.key)&&!event.repeat)down(event);});
+    ptt.addEventListener("keyup",event=>{if([" ","Enter"].includes(event.key))up(event);});
     ptt.addEventListener("contextmenu", (event) => event.preventDefault());
   }
 
+  function setMicState(text) {const el=mount?.querySelector('[data-radio-mic]');if(el)el.textContent=text;}
   async function ensureMic() {
     await unlockAudio();
-
-    if (localStream) return true;
-
-    try {
-      localStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        },
-        video: false
-      });
-      return true;
-    } catch (error) {
-      console.warn("[FW TALK] mic error", error);
-      setStatus("Mikrofon není povolený", "error");
-      return false;
-    }
+    if(localStream)return true;
+    if(micRequest)return micRequest;
+    setMicState('Čekám na povolení mikrofonu');
+    micRequest=(async()=>{
+      try {
+        localStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true},video:false});
+        setMicState('Mikrofon připraven');return true;
+      }catch(error){setMicState('Mikrofon nepovolen nebo nedostupný');setStatus('Povol mikrofon v nastavení prohlížeče a zkus PTT znovu','error');return false;}
+      finally{micRequest=null;}
+    })();
+    return micRequest;
   }
 
   async function toggleConnection() {
@@ -529,6 +532,7 @@
     }
 
     manualCloseRequested = false;
+    reconnectAttempts=0;
     await connectRadio();
   }
 
@@ -541,20 +545,22 @@
 
     try {
       ws = new WebSocket(wsUrl());
+      const socket=ws;
       ws.binaryType = "arraybuffer";
       setStatus("Připojuji…", "connecting");
 
-      ws.addEventListener("open", async () => {
-        authenticated = false;
-        await ensureMic();
-      });
+      ws.addEventListener("open", () => {if(ws!==socket)return;authenticated=false;});
 
       ws.addEventListener("message", (event) => {
+        if(ws!==socket)return;
         if (typeof event.data === "string") handleControlMessage(event.data);
         else handleAudioPacket(event.data);
       });
 
-      ws.addEventListener("close", () => {
+      ws.addEventListener("close", (event) => {
+        if(ws!==socket)return;
+        clearTimeout(stableConnectionTimer);
+        releasePtt();
         authenticated = false;
         stopTransmit();
         stopKeepAlive();
@@ -570,10 +576,11 @@
         }
 
         setStatus("Spojení spadlo, obnovuji…", "connecting");
-        scheduleReconnect();
+        scheduleReconnect(event.code);
       });
 
       ws.addEventListener("error", () => {
+        if(ws!==socket)return;releasePtt();
         setStatus("Chyba spojení", "error");
       });
     } catch (error) {
@@ -583,14 +590,19 @@
     }
   }
 
-  function scheduleReconnect() {
+  function scheduleReconnect(closeCode=1006) {
     clearTimeout(reconnectTimer);
-    reconnectTimer = setTimeout(() => {
-      if (!manualCloseRequested && visible) connectRadio();
-    }, RECONNECT_DELAY_MS);
+    if(manualCloseRequested||!visible)return;
+    const delay=FireWatchData.reconnectDelay(reconnectAttempts,closeCode);
+    if(delay===null||reconnectAttempts>=MAX_RECONNECT_ATTEMPTS){setStatus('Odpojeno. Spojení obnovíš tlačítkem Připojit Talk.','error');return;}
+    reconnectAttempts++;
+    setStatus('Obnovuji spojení '+reconnectAttempts+'/'+MAX_RECONNECT_ATTEMPTS+'…','connecting');
+    reconnectTimer=setTimeout(()=>{if(!manualCloseRequested&&visible)connectRadio();},delay);
   }
 
   function closeRadio() {
+    manualCloseRequested=true;
+    clearTimeout(stableConnectionTimer);
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
     stopKeepAlive();
@@ -618,6 +630,7 @@
       localStream.getTracks().forEach((track) => track.stop());
     }
     localStream = null;
+    setMicState("Mikrofon vypnutý – aktivuje se při PTT");
   }
 
   function startKeepAlive() {
@@ -647,6 +660,8 @@
 
     if (data.type === "auth_ok") {
       authenticated = true;
+      clearTimeout(stableConnectionTimer);
+      stableConnectionTimer=setTimeout(()=>{reconnectAttempts=0;},30000);
       clientId = data.clientId;
       myName = data.name || myName;
       myRole = data.role || myRole;
@@ -775,6 +790,8 @@
 
     if (data.type === "ptt_granted") {
       if (data.self) {
+        if(!pttHeld||!localStream){if(ws?.readyState===WebSocket.OPEN)ws.send(JSON.stringify({type:"ptt_release",room}));stopTransmit();return;}
+        mount?.querySelector("#opsRadioPtt")?.classList.add("is-transmitting");
         pttActive = true;
         startTransmit();
         setStatus("Mluvíš", "tx");
@@ -1126,6 +1143,7 @@
 
   function joinRoom(targetRoom, password = "") {
     const nextRoom = normalizeRoom(targetRoom);
+    releasePtt();
     resetPlaybackClock();
 
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -1164,25 +1182,20 @@
     }
   }
 
-  function requestPtt() {
-    if (!authenticated || !ws || ws.readyState !== WebSocket.OPEN) return;
-
-    const ptt = mount?.querySelector("#opsRadioPtt");
-    if (ptt) ptt.classList.add("is-transmitting");
-
-    playPttSound();
-    ws.send(JSON.stringify({ type: "ptt_request", room }));
+  async function requestPtt() {
+    if(pttHeld||!authenticated||!ws||ws.readyState!==WebSocket.OPEN)return;
+    pttHeld=true;const generation=++pttGeneration;
+    const ready=await ensureMic();
+    if(!pttHeld){stopMic();return;}
+    if(generation!==pttGeneration)return;
+    if(!ready||!authenticated||!ws||ws.readyState!==WebSocket.OPEN){pttHeld=false;stopMic();return;}
+    playPttSound();ws.send(JSON.stringify({type:'ptt_request',room}));
   }
-
   function releasePtt() {
-    const ptt = mount?.querySelector("#opsRadioPtt");
-    if (ptt) ptt.classList.remove("is-transmitting");
-
-    if (!authenticated || !ws || ws.readyState !== WebSocket.OPEN) return;
-
-    ws.send(JSON.stringify({ type: "ptt_release", room }));
-    pttActive = false;
+    const wasHeld=pttHeld||pttActive;pttHeld=false;pttGeneration++;pttActive=false;
+    mount?.querySelector('#opsRadioPtt')?.classList.remove('is-transmitting');
     stopTransmit();
+    if(wasHeld && authenticated && ws?.readyState===WebSocket.OPEN)ws.send(JSON.stringify({type:'ptt_release',room}));
   }
 
   function startTransmit() {
@@ -1209,11 +1222,13 @@
       zeroGain.connect(audioContext.destination);
     } catch (error) {
       console.warn("[FW TALK] start transmit error", error);
+      releasePtt();
       setStatus("Mikrofon nejde spustit", "error");
     }
   }
 
   function stopTransmit() {
+    pttActive=false;
     try { if (processor) processor.onaudioprocess = null; } catch {}
     try { micSource?.disconnect(); } catch {}
     try { processor?.disconnect(); } catch {}
@@ -1221,6 +1236,7 @@
     micSource = null;
     processor = null;
     zeroGain = null;
+    stopMic();
   }
 
   function downsampleToInt16(input, inputRate, outputRate) {
@@ -1289,7 +1305,7 @@
     const view = new DataView(buffer);
     const sampleRate = view.getUint16(4, true) || TARGET_SAMPLE_RATE;
     const sampleCount = view.getUint16(6, true);
-    if (!sampleCount) return;
+    if (!sampleCount || sampleRate<8000 || sampleRate>48000 || PACKET_HEADER_SIZE+sampleCount*2>buffer.byteLength) return;
 
     const pcm = new Int16Array(buffer, PACKET_HEADER_SIZE, sampleCount);
     const audioBuffer = ctx.createBuffer(1, sampleCount, sampleRate);
@@ -1302,7 +1318,7 @@
     source.buffer = audioBuffer;
     source.connect(ctx.destination);
 
-    const startAt = Math.max(ctx.currentTime + 0.02, nextPlaybackTime || ctx.currentTime + 0.02);
+    const startAt = Math.max(ctx.currentTime + 0.02, Math.min(nextPlaybackTime || ctx.currentTime + 0.02,ctx.currentTime+0.5));
     source.start(startAt);
     nextPlaybackTime = startAt + audioBuffer.duration;
   }
