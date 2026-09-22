@@ -801,7 +801,16 @@ function durationPresentation(it) {
 
 function durationHtml(it) {
   const value=durationPresentation(it);
-  return `<span class="eventDuration${value.estimate?' isEstimate':''}" title="${escapeHtml(value.tooltip)}">${escapeHtml(value.text)}</span>`;
+  return `<span class="eventDuration${value.estimate?' isEstimate':''}" data-duration-event-id="${escapeHtml(it?.id || '')}" title="${escapeHtml(value.tooltip)}">${escapeHtml(value.text)}</span>`;
+}
+
+function refreshLiveDurationLabels() {
+  const rows=new Map((Array.isArray(window.latestItemsSnapshot)?window.latestItemsSnapshot:[]).map(it=>[String(it.id),it]));
+  if (__eventDetailCurrentEvent?.id) rows.set(String(__eventDetailCurrentEvent.id),__eventDetailCurrentEvent);
+  for (const node of document.querySelectorAll('[data-duration-event-id]')) {
+    const event=rows.get(String(node.dataset.durationEventId || ''));if(!event)continue;
+    const value=durationPresentation(event);node.textContent=value.text;node.title=value.tooltip;node.classList.toggle('isEstimate',value.estimate);
+  }
 }
 
 function escapeHtml(s) {
@@ -3397,7 +3406,7 @@ async function openEventDetailModal(id) {
         ${eventDetailLine("Poloha", ev.geo_label || "Poloha na mapě nebyla spolehlivě určena.")}
         ${eventDetailLine("Typ", `${meta.emoji} ${meta.label || ev.event_type || ""}`)}
         ${eventDetailLine("Stav", statusLabelForEvent(ev))}
-        ${eventDetailLine("Délka", durationPresentation(ev).text, durationPresentation(ev).tooltip)}
+        <div class="eventDetailLine"><span>Délka</span><b>${durationHtml(ev)}</b></div>
         ${eventDetailLine("Stupeň", ev.alarm_level_text || "")}
         ${eventDetailLine("Význam", ev.major_reason || (ev.is_major_event ? "významná událost" : ""))}
       `;
@@ -4027,7 +4036,7 @@ setInterval(() => {
 
 // Průběžné odhady rostou z neměnného first_seen_at bez nového požadavku na server.
 setInterval(() => {
-  if (Array.isArray(window.latestItemsSnapshot)) renderTable(window.latestItemsSnapshot);
+  refreshLiveDurationLabels();
 }, 30 * 1000);
 
 // ==============================
