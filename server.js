@@ -13,6 +13,7 @@ import bcrypt from "bcryptjs";
 import { attachOpsRadio } from "./radio-server.js";
 import { createRssWorker, readRssConfig, shouldIngestRssItemForToday, testRssConnection } from "./rss-worker.js";
 import { shouldIngestPrahaItem } from "./prague-atom.js";
+import { pardubickyAgeClass } from "./pardubicky-rss.js";
 
 
 // ======================
@@ -38,6 +39,7 @@ import {
   upsertEvent,
   getEventsFiltered,
   getPublicDataStatus,
+  getPublicSourceStatus,
   countEventsFiltered,
   getStatsFiltered,
   updateEventCoords,
@@ -46,6 +48,9 @@ import {
   getEventMeta,
   getEventMetaBySourceExternal,
   touchEventLastSeen,
+  getSourceIdentityState,
+  updateEventSourceDetails,
+  auditCrossRegionStationAssignments,
   updateEventDuration,
   getDurationCutoffIso,
   getLongestCutoffIso,
@@ -287,6 +292,7 @@ function typeLabel(t) {
     traffic: "Dopravní nehoda",
     tech: "Technická pomoc",
     rescue: "Záchrana",
+    hazmat: "Únik nebezpečných látek",
     false_alarm: "Planý poplach",
     hzs: "Událost HZS",
     water: "Voda",
@@ -299,7 +305,9 @@ function typeLabel(t) {
 }
 
 function eventSourceLabel(event) {
-  return event?.source === "praha" ? "Praha" : "Středočeský kraj";
+  if (event?.source === "praha") return "Praha";
+  if (event?.source === "pardubicky") return "Pardubický kraj";
+  return "Středočeský kraj";
 }
 
 function classifyType(title) {
@@ -489,7 +497,7 @@ function parseFilters(req) {
   const day = String(req.query.day || "all").trim();
   const month = String(req.query.month || "").trim();
   const source = String(req.query.source || "all").trim();
-  if(types.length>10||types.some(value=>value.length>64)||city.length>120||!['all','open','closed'].includes(status)||!['all','today','yesterday'].includes(day)||!['all','stredocesky','praha'].includes(source)|| (month && (!/^\d{4}-\d{2}$/.test(month)||Number(month.slice(5))<1||Number(month.slice(5))>12))) {const error=new Error('bad_filters');error.status=400;throw error;}
+  if(types.length>10||types.some(value=>value.length>64)||city.length>120||!['all','open','closed'].includes(status)||!['all','today','yesterday'].includes(day)||!['all','stredocesky','praha','pardubicky'].includes(source)|| (month && (!/^\d{4}-\d{2}$/.test(month)||Number(month.slice(5))<1||Number(month.slice(5))>12))) {const error=new Error('bad_filters');error.status=400;throw error;}
   return { types, city, status, day, month, source };
 }
 
@@ -512,7 +520,7 @@ function exportFiltersLabel(filters) {
 
   const cityLabel = filters.city || "vše";
 
-  const sourceLabel = filters.source === 'praha' ? 'Praha' : filters.source === 'stredocesky' ? 'Středočeský kraj' : 'vše';
+  const sourceLabel = filters.source === 'praha' ? 'Praha' : filters.source === 'pardubicky' ? 'Pardubický kraj' : filters.source === 'stredocesky' ? 'Středočeský kraj' : 'vše';
   return `Den: ${dayLabel} | Typ: ${typeLabelText} | Město: ${cityLabel} | Stav: ${statusLabel} | Zdroj: ${sourceLabel}`;
 }
 
@@ -739,6 +747,7 @@ function buildAnalyticalReport(type, key, rows) {
   }
 
   const titlePrefix = type === "month" ? "Měsíční" : type === "week" ? "Týdenní" : "Denní";
+  const regionalComparison = buildRegionComparison(rows, [], { start: p.startIso, end: p.endExclusiveIso, sourceStatus: {} });
 
   return {
     period_type: type,
@@ -769,6 +778,7 @@ function buildAnalyticalReport(type, key, rows) {
       busiest_days: busiestDays,
       longest,
       important_events: importantEvents,
+      region_comparison: regionalComparison,
       notes: [
         "Souhrn je archivní snapshot vytvořený z dat dostupných v době generování.",
         "Údaje mají orientační a analytický charakter."
@@ -873,186 +883,158 @@ function formatReportDateTimeCs(value) {
   });
 }
 
-function drawPdfTableRows(doc, rows, columns, startY, opts = {}) {
-  let y = startY;
-  const rowH = opts.rowHeight || 18;
-  const pageBottom = doc.page.height - doc.page.margins.bottom;
-
-  doc.fontSize(8).fillColor("#555");
-  columns.forEach(c => doc.text(c.label, c.x, y, { width: c.w, continued: false }));
-  y += 13;
-  doc.moveTo(doc.page.margins.left, y - 3).lineTo(doc.page.width - doc.page.margins.right, y - 3).strokeColor("#ddd").lineWidth(0.5).stroke();
-
-  doc.fontSize(8).fillColor("#222");
-
-  for (const row of rows) {
-    if (y + rowH > pageBottom) {
-      doc.addPage();
-      y = doc.page.margins.top;
-      doc.fontSize(8).fillColor("#555");
-      columns.forEach(c => doc.text(c.label, c.x, y, { width: c.w, continued: false }));
-      y += 13;
-      doc.moveTo(doc.page.margins.left, y - 3).lineTo(doc.page.width - doc.page.margins.right, y - 3).strokeColor("#ddd").lineWidth(0.5).stroke();
-      doc.fontSize(8).fillColor("#222");
-    }
-
-    columns.forEach(c => {
-      const txt = typeof c.value === "function" ? c.value(row) : row[c.value];
-      doc.text(String(txt ?? ""), c.x, y, { width: c.w, height: rowH - 2, ellipsis: true });
-    });
-
-    y += rowH;
-  }
-
-  doc.y = y + 4;
+function pdfSafeText(value, fallback = "—") {
+  const clean = String(value ?? "").replace(/<br\s*\/?>/gi, " ").replace(/<[^>]+>/g, " ").replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, " ").replace(/\s+/g, " ").trim();
+  return clean || fallback;
 }
 
-function drawReportPdf(doc, row) {
-  const report = reportJson(row);
-  const data = report.data || {};
-  const left = doc.page.margins.left;
-  const right = doc.page.width - doc.page.margins.right;
-  const usableW = right - left;
-
+function drawProfessionalReportPdf(doc, row) {
+  const report = reportJson(row), data = report.data || {};
   tryApplyPdfFont(doc);
-
-  // Header
-  doc.fontSize(22).fillColor("#111").text("FireWatch CZ", left, 42, { width: usableW });
-  doc.fontSize(15).fillColor("#111").text(report.title || "Analytický souhrn", left, 70, { width: usableW });
-
-  const periodText = report.period_start === report.period_end
-    ? formatReportDateCs(report.period_start)
-    : `${formatReportDateCs(report.period_start)} – ${formatReportDateCs(report.period_end)}`;
-
-  doc.fontSize(9).fillColor("#555").text(`Období: ${periodText}`, left, 96, { width: usableW });
-  doc.text(`Vytvořeno: ${formatReportDateTimeCs(report.created_at || Date.now())}`, left, 110, { width: usableW });
-
-  doc.moveTo(left, 130).lineTo(right, 130).strokeColor("#ddd").lineWidth(0.8).stroke();
-  doc.y = 144;
-
-  // Summary
-  doc.fontSize(10).fillColor("#111").text(data.summary || "", left, doc.y, {
-    width: usableW,
-    lineGap: 2
-  });
-  doc.moveDown(0.25);
-  doc.fontSize(9).fillColor("#444").text(`JPO / HZS: ${Number(data.jpo_events ?? report.total_events)} · ostatní krizové události: ${Number(data.other_crisis_events || 0)}`, left, doc.y, { width: usableW });
-  doc.moveDown(0.9);
-
-  // KPI cards - fixed width, no overflow
-  const gap = 10;
-  const cardCount = 4;
-  const cardW = (usableW - gap * (cardCount - 1)) / cardCount;
-  const cardH = 48;
-  const y0 = doc.y;
-
-  const cards = [
-    ["Celkem", report.total_events],
-    ["Aktivní", report.open_count],
-    ["Ukončené", report.closed_count],
-    ["Bez GPS", report.missing_coords_count]
-  ];
-
-  cards.forEach((c, idx) => {
-    const x = left + idx * (cardW + gap);
-    doc.roundedRect(x, y0, cardW, cardH, 7).strokeColor("#c8c8c8").lineWidth(0.8).stroke();
-    doc.fontSize(8).fillColor("#666").text(c[0], x + 9, y0 + 8, { width: cardW - 18 });
-    doc.fontSize(17).fillColor("#111").text(String(c[1] ?? 0), x + 9, y0 + 23, { width: cardW - 18 });
-  });
-
-  doc.y = y0 + cardH + 18;
-
-  const section = (title) => {
-    if (doc.y > doc.page.height - doc.page.margins.bottom - 80) doc.addPage();
-    doc.moveDown(0.2);
-    doc.fontSize(13).fillColor("#111").text(title, left, doc.y, { width: usableW });
-    doc.moveDown(0.25);
+  const colors = {navy:"#0b1f33",blue:"#2563a8",orange:"#d97706",ink:"#172033",muted:"#596579",line:"#d9e0e8",soft:"#f4f7fa",white:"#ffffff"};
+  const left=42, right=doc.page.width-42, width=right-left, contentBottom=doc.page.height-82;
+  const generated=formatReportDateTimeCs(data.generated_at || report.created_at || Date.now());
+  const period=report.period_start===report.period_end?formatReportDateCs(report.period_start):`${formatReportDateCs(report.period_start)} – ${formatReportDateCs(report.period_end)}`;
+  const reportKind=report.period_type==="month"?"Měsíční":report.period_type==="week"?"Týdenní":"Denní";
+  let y=42;
+  const setY=value=>{y=value;doc.y=value;};
+  const addPage=()=>{doc.addPage();doc.rect(0,0,doc.page.width,7).fill(colors.blue);doc.fontSize(9).fillColor(colors.muted).text(`FIREWATCH CZ · ${reportKind} analytický souhrn`,left,28,{width,lineBreak:false});setY(55);};
+  const ensure=height=>{if(y+height>contentBottom)addPage();};
+  const heading=title=>{ensure(35);doc.fontSize(13).fillColor(colors.navy).text(pdfSafeText(title),left,y,{width});y=doc.y+8;doc.moveTo(left,y-3).lineTo(right,y-3).strokeColor(colors.line).lineWidth(.7).stroke();};
+  const empty=text=>{ensure(28);doc.fontSize(9).fillColor(colors.muted).text(text,left,y,{width});y=doc.y+10;};
+  const table=(rows,columns,{maxRows=50}={})=>{
+    const list=(Array.isArray(rows)?rows:[]).slice(0,maxRows);
+    const headerH=22;
+    const drawHeader=()=>{ensure(headerH+20);doc.rect(left,y,width,headerH).fill(colors.navy);for(const c of columns)doc.fontSize(7.5).fillColor(colors.white).text(c.label,left+c.x,y+7,{width:c.w,align:c.align||"left",lineBreak:false});y+=headerH;};
+    if(!list.length){empty("Pro tuto část nejsou dostupná data.");return;}
+    drawHeader();
+    list.forEach((row,index)=>{
+      const values=columns.map(c=>pdfSafeText(typeof c.value==="function"?c.value(row):row[c.value]));
+      const heights=columns.map((c,i)=>doc.fontSize(7.5).heightOfString(values[i],{width:c.w,lineGap:1}));
+      const rowH=Math.max(21,Math.min(46,Math.max(...heights)+10));
+      if(y+rowH>contentBottom){addPage();drawHeader();}
+      if(index%2===0)doc.rect(left,y,width,rowH).fill(colors.soft);
+      columns.forEach((c,i)=>doc.fontSize(7.5).fillColor(colors.ink).text(values[i],left+c.x,y+5,{width:c.w,height:rowH-8,ellipsis:true,lineGap:1,align:c.align||"left"}));
+      doc.moveTo(left,y+rowH).lineTo(right,y+rowH).strokeColor(colors.line).lineWidth(.35).stroke();y+=rowH;
+    });
+    y+=12;
+  };
+  const barChart=(title,items)=>{
+    heading(title);const list=(items||[]).slice(0,8),max=Math.max(1,...list.map(v=>Number(v.count||0)));
+    if(!list.length){empty("Bez dat pro graf.");return;}
+    for(const item of list){ensure(25);doc.fontSize(7.5).fillColor(colors.ink).text(pdfSafeText(item.name||item.day),left,y,{width:165,height:12,ellipsis:true});doc.rect(left+170,y+1,width-205,9).fill(colors.soft);doc.rect(left+170,y+1,(width-205)*(Number(item.count||0)/max),9).fill(colors.blue);doc.fontSize(7.5).fillColor(colors.ink).text(String(Number(item.count||0)),right-28,y,{width:28,align:"right",lineBreak:false});y+=20;}y+=5;
   };
 
-  // Type stats + Top cities side by side
-  const halfGap = 16;
-  const halfW = (usableW - halfGap) / 2;
-  let ySection = doc.y;
+  doc.rect(0,0,doc.page.width,10).fill(colors.orange);
+  doc.rect(0,10,doc.page.width,112).fill(colors.navy);
+  const logo=path.join(__dirname,"public","logo-firewatch-cz.png");
+  if(fs.existsSync(logo)){try{doc.image(logo,left,28,{fit:[55,55]});}catch{}}
+  doc.fontSize(23).fillColor(colors.white).text("FireWatch CZ",left+68,30,{width:width-68});
+  doc.fontSize(14).fillColor("#d9e9f8").text("Analytický souhrn zásahů JPO",left+68,61,{width:width-68});
+  doc.fontSize(8.5).fillColor(colors.white).text(`${reportKind} report · ${period} · vytvořeno ${generated}`,left+68,86,{width:width-68});
+  doc.roundedRect(right-160,28,160,34,4).strokeColor("#7aa2c8").lineWidth(.8).stroke();
+  doc.fontSize(7.5).fillColor("#f4c078").text("NEOFICIÁLNÍ ANALYTICKÝ VÝSTUP",right-153,37,{width:146,align:"center"});
+  doc.fontSize(6.5).fillColor("#c8d8e8").text("VYGENEROVÁNO SYSTÉMEM FIREWATCH CZ",right-153,50,{width:146,align:"center"});
+  setY(142);
+  doc.fontSize(10).fillColor(colors.ink).text(pdfSafeText(data.summary,"Za vybrané období nejsou dostupná data."),left,y,{width,lineGap:3});y=doc.y+16;
+  doc.fontSize(8.5).fillColor(colors.muted).text(`Zásahy HZS/JPO: ${Number(data.jpo_events ?? report.total_events ?? 0)} · ostatní krizové události: ${Number(data.other_crisis_events||0)}`,left,y,{width});y=doc.y+14;
 
-  section("Rozdělení podle typů");
-  ySection = doc.y;
-  drawPdfTableRows(
-    doc,
-    (data.type_stats || []).slice(0, 12),
-    [
-      { label: "Typ", x: left, w: halfW - 95, value: "name" },
-      { label: "Počet", x: left + halfW - 90, w: 34, value: "count" },
-      { label: "%", x: left + halfW - 52, w: 38, value: "percent" }
-    ],
-    ySection,
-    { rowHeight: 16 }
-  );
-  const yAfterTypes = doc.y;
+  const cards=[{label:"Celkem",value:report.total_events},{label:"Aktivní",value:report.open_count},{label:"Ukončené",value:report.closed_count},{label:"Bez ověřené GPS",value:report.missing_coords_count}];
+  const gap=9,cardW=(width-gap*3)/4,cardH=57;ensure(cardH+16);
+  cards.forEach((card,i)=>{const x=left+i*(cardW+gap);doc.roundedRect(x,y,cardW,cardH,6).fillAndStroke(i===0?"#eef5fc":colors.soft,colors.line);doc.fontSize(7.5).fillColor(colors.muted).text(card.label,x+10,y+10,{width:cardW-20});doc.fontSize(20).fillColor(i===0?colors.blue:colors.navy).text(String(Number(card.value||0)),x+10,y+27,{width:cardW-20});});y+=cardH+18;
+  barChart("Rozdělení podle typů",data.type_stats);
+  heading("Nejčastější lokality");
+  table((data.top_cities||[]).slice(0,10),[{label:"Lokalita",x:0,w:width-100,value:"name"},{label:"Počet",x:width-90,w:45,value:"count",align:"right"},{label:"Podíl",x:width-42,w:42,value:r=>`${Number(r.percent||0)} %`,align:"right"}],{maxRows:10});
+  heading("Nejvytíženější období");
+  table((data.busiest_days||[]).slice(0,10),[{label:"Datum",x:0,w:180,value:r=>formatReportDateCs(r.day)},{label:"Počet událostí",x:190,w:120,value:"count",align:"right"}],{maxRows:10});
+  heading("Nejdelší ověřené ukončené zásahy");
+  table(data.longest,[{label:"Datum",x:0,w:66,value:r=>formatReportDateCs(r.date)},{label:"Délka",x:72,w:62,value:"duration_text"},{label:"Typ",x:140,w:95,value:"type"},{label:"Lokalita",x:241,w:90,value:"city"},{label:"Událost",x:337,w:width-337,value:"title"}],{maxRows:15});
+  heading("Významné nebo otevřené události");
+  table(data.important_events,[{label:"Datum",x:0,w:66,value:r=>formatReportDateCs(r.date)},{label:"Stav",x:72,w:58,value:r=>r.is_closed?"ukončená":"probíhá"},{label:"Typ",x:136,w:92,value:"type"},{label:"Lokalita",x:234,w:88,value:"city"},{label:"Událost",x:328,w:width-328,value:"title"}],{maxRows:20});
 
-  doc.y = ySection - 20;
-  doc.fontSize(13).fillColor("#111").text("TOP města / lokality", left + halfW + halfGap, doc.y, { width: halfW });
-  drawPdfTableRows(
-    doc,
-    (data.top_cities || []).slice(0, 12),
-    [
-      { label: "Město", x: left + halfW + halfGap, w: halfW - 62, value: "name" },
-      { label: "Počet", x: right - 50, w: 48, value: "count" }
-    ],
-    ySection,
-    { rowHeight: 16 }
-  );
-  doc.y = Math.max(yAfterTypes, doc.y) + 8;
+  const regional=data.region_comparison;
+  if(regional?.regions?.length){ensure(215);heading("Porovnání krajů");empty(regional.disclaimer);table(regional.regions,[{label:"Kraj",x:0,w:145,value:"name"},{label:"Události",x:151,w:55,value:r=>r.all.total,align:"right"},{label:"HZS/JPO",x:212,w:55,value:r=>r.jpo.total,align:"right"},{label:"Aktivní",x:273,w:52,value:r=>r.all.open,align:"right"},{label:"Ověřená GPS",x:331,w:72,value:r=>`${r.all.verified_gps_percent} %`,align:"right"},{label:"Stanice",x:409,w:width-409,value:r=>r.station_data_available?"data dostupná":"Databáze stanic pro tento kraj není v systému zatím dostupná."}],{maxRows:3});}
 
-  section("Nejvytíženější dny");
-  drawPdfTableRows(
-    doc,
-    (data.busiest_days || []).slice(0, 10),
-    [
-      { label: "Datum", x: left, w: 140, value: (x) => formatReportDateCs(x.day) },
-      { label: "Počet událostí", x: left + 150, w: 120, value: "count" }
-    ],
-    doc.y,
-    { rowHeight: 16 }
-  );
+  ensure(50);doc.roundedRect(left,y,width,38,5).strokeColor(colors.orange).lineWidth(.8).stroke();doc.fontSize(8).fillColor(colors.navy).text("NEOFICIÁLNÍ ANALYTICKÝ VÝSTUP · VYGENEROVÁNO SYSTÉMEM FIREWATCH CZ",left+10,y+9,{width:width-20,align:"center"});doc.fontSize(7).fillColor(colors.muted).text("Výstup slouží pouze k informativním a analytickým účelům.",left+10,y+23,{width:width-20,align:"center"});
 
-  section("Nejdelší zásahy");
-  drawPdfTableRows(
-    doc,
-    (data.longest || []).slice(0, 15),
-    [
-      { label: "Datum", x: left, w: 65, value: (x) => formatReportDateCs(x.date) },
-      { label: "Délka", x: left + 70, w: 55, value: "duration_text" },
-      { label: "Typ", x: left + 130, w: 95, value: "type" },
-      { label: "Město", x: left + 230, w: 85, value: "city" },
-      { label: "Název", x: left + 320, w: usableW - 320, value: "title" }
-    ],
-    doc.y,
-    { rowHeight: 24 }
-  );
-
-  section("Významné / otevřené události");
-  drawPdfTableRows(
-    doc,
-    (data.important_events || []).slice(0, 15),
-    [
-      { label: "Datum", x: left, w: 65, value: (x) => formatReportDateCs(x.date) },
-      { label: "Stav", x: left + 70, w: 60, value: (x) => x.is_closed ? "ukončené" : "aktivní" },
-      { label: "Typ", x: left + 135, w: 95, value: "type" },
-      { label: "Město", x: left + 235, w: 85, value: "city" },
-      { label: "Název", x: left + 325, w: usableW - 325, value: "title" }
-    ],
-    doc.y,
-    { rowHeight: 24 }
-  );
-
-  // Footer
-  const footer = "FireWatch CZ není oficiální systém HZS/JPO/IZS. Údaje jsou orientační a analytické.";
-  const pageRange = doc.bufferedPageRange();
-  for (let i = pageRange.start; i < pageRange.start + pageRange.count; i++) {
-    doc.switchToPage(i);
-    doc.fontSize(7).fillColor("#777").text(footer, left, doc.page.height - 35, { width: usableW, align: "center" });
-    doc.text(`Strana ${i + 1 - pageRange.start} / ${pageRange.count}`, left, doc.page.height - 24, { width: usableW, align: "center" });
+  const range=doc.bufferedPageRange(),total=range.count,disclaimer="FireWatch CZ není oficiální systém HZS ČR, JPO ani IZS. Údaje mají informativní a analytický charakter.";
+  for(let index=range.start;index<range.start+range.count;index++){
+    doc.switchToPage(index);const oldBottom=doc.page.margins.bottom;doc.page.margins.bottom=0;
+    doc.save();doc.fillColor(colors.navy).opacity(.04).fontSize(48).rotate(-32,{origin:[doc.page.width/2,doc.page.height/2]}).text("FIREWATCH CZ",95,doc.page.height/2-25,{width:405,align:"center",lineBreak:false});doc.restore();
+    const footerTop=doc.page.height-67;doc.moveTo(left,footerTop).lineTo(right,footerTop).strokeColor(colors.line).lineWidth(.6).stroke();
+    doc.fontSize(6.2).fillColor(colors.muted).text(disclaimer,left,footerTop+7,{width,align:"center",lineBreak:false});
+    doc.fontSize(6.5).fillColor(colors.muted).text(`firewatchcz.cz · ${reportKind.toLowerCase()} report ${pdfSafeText(report.period_key)} · ${generated} · ID ${report.id}`,left,footerTop+22,{width:width-85,lineBreak:false});
+    doc.text(`Strana ${index-range.start+1} / ${total}`,right-80,footerTop+22,{width:80,align:"right",lineBreak:false});doc.page.margins.bottom=oldBottom;
   }
+}
+
+const REGION_COMPARISON = Object.freeze([
+  { source: "stredocesky", name: "Středočeský kraj" },
+  { source: "praha", name: "Hlavní město Praha" },
+  { source: "pardubicky", name: "Pardubický kraj" }
+]);
+
+function comparisonEventTime(row) {
+  return row.source_updated_at || row.pub_date || row.start_time_iso || row.first_seen_at || row.created_at;
+}
+
+function aggregateRegionRows(rows, source, periodDays) {
+  const selected = rows.filter(row => row.source === source);
+  const byType = new Map(), byDay = new Map(), byHour = new Map(), byLocation = new Map();
+  let open = 0, closed = 0, unknown = 0, verifiedGps = 0, jpo = 0;
+  for (const row of selected) {
+    if (row.is_jpo_event !== false) jpo++;
+    if (["unknown", "source_estimated_unknown", null, undefined, ""].includes(row.status_source)) unknown++;
+    else if (row.is_closed) closed++;
+    else open++;
+    if (annotateEventGeo(row).geo_reliable) verifiedGps++;
+    const type = reportTypeLabel(row.event_type || "other");
+    byType.set(type, (byType.get(type) || 0) + 1);
+    const instant = new Date(comparisonEventTime(row));
+    if (!Number.isNaN(instant.getTime())) {
+      const day = pragueDateKey(instant);
+      const hour = new Intl.DateTimeFormat("cs-CZ", { timeZone: "Europe/Prague", hour: "2-digit", hourCycle: "h23" }).format(instant);
+      byDay.set(day, (byDay.get(day) || 0) + 1);
+      byHour.set(hour, (byHour.get(hour) || 0) + 1);
+    }
+    const location = String(row.district_text || row.city_text || row.place_text || "Neznámá lokalita").trim();
+    byLocation.set(location || "Neznámá lokalita", (byLocation.get(location || "Neznámá lokalita") || 0) + 1);
+  }
+  const descending = map => [...map.entries()].map(([name, count]) => ({ name, count })).sort((a,b) => b.count-a.count || a.name.localeCompare(b.name, "cs"));
+  const types = descending(byType);
+  const days = [...byDay.entries()].map(([day,count]) => ({day,count})).sort((a,b)=>a.day.localeCompare(b.day));
+  const busiest = [...days].sort((a,b)=>b.count-a.count || a.day.localeCompare(b.day))[0] || null;
+  return {
+    total: selected.length, jpo, other: selected.length-jpo, open, closed, unknown,
+    verified_gps: verifiedGps, missing_gps: selected.length-verifiedGps,
+    verified_gps_percent: safePercent(verifiedGps, selected.length),
+    avg_per_day: Math.round((selected.length / Math.max(1, periodDays))*10)/10,
+    top_type: types[0] || null, types, days,
+    hours: [...byHour.entries()].map(([hour,count])=>({hour,count})).sort((a,b)=>a.hour.localeCompare(b.hour)),
+    busiest_day: busiest,
+    top_locations: descending(byLocation).slice(0,8)
+  };
+}
+
+function buildRegionComparison(currentRows, previousRows, { start, end, sourceStatus = {} } = {}) {
+  const periodMs = Math.max(86400000, new Date(end).getTime() - new Date(start).getTime());
+  const periodDays = Math.max(1, Math.round(periodMs / 86400000));
+  const regions = REGION_COMPARISON.map(region => {
+    const all = aggregateRegionRows(currentRows, region.source, periodDays);
+    const previousAll = aggregateRegionRows(previousRows, region.source, periodDays);
+    const currentJpoRows = currentRows.filter(row => row.source === region.source && row.is_jpo_event !== false);
+    const previousJpoRows = previousRows.filter(row => row.source === region.source && row.is_jpo_event !== false);
+    const jpo = aggregateRegionRows(currentJpoRows, region.source, periodDays);
+    const previousJpo = aggregateRegionRows(previousJpoRows, region.source, periodDays);
+    const change = (value, previous) => previous ? Math.round(((value-previous)/previous)*1000)/10 : (value ? null : 0);
+    all.change_percent = change(all.total, previousAll.total);
+    jpo.change_percent = change(jpo.total, previousJpo.total);
+    return { ...region, all, jpo, last_successful_import: sourceStatus[region.source] || null, station_data_available: region.source === "stredocesky" };
+  });
+  return {
+    period: { start, end, days: periodDays }, regions,
+    disclaimer: "Jednotlivé kraje používají rozdílné zdroje a rozsah zveřejňovaných údajů. Hodnoty proto představují evidované události ve FireWatch CZ, nikoliv úplnou oficiální statistiku HZS ČR."
+  };
 }
 
 
@@ -2507,6 +2489,19 @@ function publicSafeManualSourceNote() {
 
 
 // ingest (data z ESP)
+app.post("/api/ingest/source-state", requireKey, safeRoute(async (req, res) => {
+  const source = String(req.body?.source || "");
+  if (!['pardubicky'].includes(source) || !Array.isArray(req.body?.external_ids) || req.body.external_ids.length > 200) return res.status(400).json({ok:false,error:'bad_source_state_request'});
+  const state = await getSourceIdentityState(source, req.body.external_ids);
+  res.json({ok:true,source,...state});
+}));
+app.post('/api/admin/station-assignment-audit',requireAdmin,safeRoute(async(req,res)=>{
+  const apply=req.body?.apply===true;
+  const result=await auditCrossRegionStationAssignments({apply});
+  if(apply) await insertAudit({userId:req.auth?.user?.id||null,username:req.auth?.user?.username||null,action:'clear_invalid_cross_region_station_assignments',details:JSON.stringify({count:result.automatically_incorrect,ids:result.ids}),ip:getClientIp(req)});
+  res.json({ok:true,...result});
+}));
+
 async function handleIngest(req, res) {
   try {
     const { items } = req.body || {};
@@ -2517,7 +2512,8 @@ async function handleIngest(req, res) {
 
     if (items.length > 200) return res.status(400).json({ ok: false, error: "too_many_items", maxItems: 200 });
     const prahaSource = source === "github_actions_praha_atom";
-    const rssSource = prahaSource || ["github_actions_rss", "github_actions_rss2json", "server_rss_worker"].includes(source);
+    const pardubickySource = source === "github_actions_pardubicky_rss";
+    const rssSource = prahaSource || pardubickySource || ["github_actions_rss", "github_actions_rss2json", "server_rss_worker"].includes(source);
     let skippedOlder = 0;
     let skippedInvalid = 0;
     const uniqueItems = new Map();
@@ -2535,21 +2531,26 @@ async function handleIngest(req, res) {
     let inserted = 0;
     let updated = 0;
     let unchanged = 0;
+    let statusChanged = 0;
 
     for (const it of uniqueItems.values()) {
 
       if (prahaSource && (it.source !== "praha" || !/^urn:uuid:[0-9a-f-]{36}$/i.test(String(it.externalId || "")))) { skippedInvalid++; continue; }
-      const eventId = prahaSource ? `praha:${it.externalId}` : it.id;
-      const prev = prahaSource
-        ? await getEventMetaBySourceExternal("praha", it.externalId)
+      if (pardubickySource && (it.source !== "pardubicky" || !/^\d+$/.test(String(it.externalId || "")))) { skippedInvalid++; continue; }
+      const eventId = prahaSource ? `praha:${it.externalId}` : pardubickySource ? `pardubicky:${it.externalId}` : it.id;
+      const prev = (prahaSource || pardubickySource)
+        ? await getEventMetaBySourceExternal(prahaSource ? "praha" : "pardubicky", it.externalId)
         : await getEventMeta(eventId);
       if (prahaSource) {
         if (!shouldIngestPrahaItem(it, { previouslyKnown: !!prev, maxAgeHours: process.env.PRAHA_MAX_AGE_HOURS })) { skippedOlder++; continue; }
+      } else if (pardubickySource) {
+        const age=pardubickyAgeClass({reportedAt:it.reportedAt || it.pubDate});
+        if (!prev && age !== 'today' && !(age === 'yesterday' && it.isClosed === false && it.statusSource === 'explicit_open')) { skippedOlder++; continue; }
       } else if (rssSource && !shouldIngestRssItemForToday(it, { previouslyKnown: !!prev, previouslyKnownOpen: prev?.is_closed === false })) { skippedOlder++; continue; }
 
       const eventType = it.eventType || classifyType(it.title);
       const desc = it.descriptionRaw || it.descRaw || it.description || "";
-      const times = prahaSource ? { startIso: null, endIso: null, isClosed: false } : parseTimesFromDescription(desc);
+      const times = (prahaSource || pardubickySource) ? { startIso: null, endIso: null, isClosed: false } : parseTimesFromDescription(desc);
 
 // --- Server-side status intelligence ---
 // ESP zůstává jen zdroj dat; server umí opravit stav podle textu/detailu.
@@ -2557,6 +2558,9 @@ async function handleIngest(req, res) {
 const statusAnalysis = prahaSource ? {
   source: ["source_estimated_open","source_estimated_closed","source_estimated_unknown"].includes(it.statusSource) ? it.statusSource : "source_estimated_unknown",
   label: String(it.statusText || "stav neupřesněn").slice(0, 200)
+} : pardubickySource ? {
+  source: ['explicit_open','explicit_closed'].includes(it.statusSource) ? it.statusSource : 'unknown',
+  label: String(it.statusText || 'stav neupřesněn').slice(0,200)
 } : analyzeStatusFromText({
   statusText: it.statusText || it.status_text || "",
   description: desc,
@@ -2566,6 +2570,8 @@ const statusAnalysis = prahaSource ? {
 let isClosed = false;
 if (prahaSource) {
   isClosed = statusAnalysis.source === "source_estimated_closed" && it.isClosed === true;
+} else if (pardubickySource) {
+  isClosed = statusAnalysis.source === 'explicit_closed' && it.isClosed === true;
 } else if (statusAnalysis.source === "explicit_open") {
   isClosed = false;
 } else if (statusAnalysis.source === "explicit_closed") {
@@ -2584,7 +2590,7 @@ if (prahaSource) {
 
 // Source updates and verified starts are separate instants.
 const sourceUpdatedAt=normalizeFeedTimestamp(it.sourceUpdatedAt || it.pubDate || it.pub_date);
-const startIso=prahaSource ? null : ((hasTrustedStart(prev || {}) ? normalizeFeedTimestamp(prev.start_time_iso) : null) || normalizeFeedTimestamp(it.startTimeIso || it.start_time_iso) || times.startIso || (rssSource ? null : eventStartIsoFromEspRss(it,times)));
+const startIso=(prahaSource || pardubickySource) ? null : ((hasTrustedStart(prev || {}) ? normalizeFeedTimestamp(prev.start_time_iso) : null) || normalizeFeedTimestamp(it.startTimeIso || it.start_time_iso) || times.startIso || (rssSource ? null : eventStartIsoFromEspRss(it,times)));
 const startTimeSource=(hasTrustedStart(prev || {}) ? (prev.start_time_source || (prev.status_source==='manual' || prev.source_kind==='manual' ? 'manual' : 'explicit')) : null) || (times.startIso ? 'rss_description' : startIso ? (rssSource ? 'explicit' : 'esp') : null);
 
 let endIso =
@@ -2601,7 +2607,7 @@ const firstSeenWasOpen = prev ? prev.first_seen_was_open : (prahaSource ? null :
 const firstSeenStatus = prev ? prev.first_seen_status : (prahaSource || statusAnalysis.source === "unknown" ? null : statusAnalysis.label);
 
 // 1) Pokud ESP někdy pošle délku explicitně, přijmeme ji.
-if (!prahaSource && Number.isFinite(it.durationMin)) {
+if (!prahaSource && !pardubickySource && Number.isFinite(it.durationMin)) {
   const candidate = Math.round(it.durationMin);
   durationMin = (candidate > 0 && candidate <= MAX_DURATION_MINUTES) ? candidate : null;
   if (durationMin != null) durationSource = "esp_duration";
@@ -2648,7 +2654,7 @@ if (!isClosed) {
       const major = analyzeMajorEvent(it, desc);
 
       const cityText =
-        (prahaSource ? it.cityText : (rssSource ? cityFromDesc : it.cityText)) ||
+        ((prahaSource || pardubickySource) ? it.cityText : (rssSource ? cityFromDesc : it.cityText)) ||
         it.cityText ||
         cityFromDesc ||
         (!placeText ? cityFromTitle : (isDistrictPlace(placeText) ? cityFromTitle : placeText)) ||
@@ -2664,6 +2670,9 @@ if (!isClosed) {
         endTimeSource: times.endIso ? "rss_description" : endIso ? "explicit" : null,
         placeText,
         cityText,
+        district: pardubickySource ? it.district : districtFromDesc,
+        street: pardubickySource ? it.street : null,
+        cityPart: pardubickySource ? it.cityPart : null,
         statusText: statusAnalysis.label || it.statusText || null,
         eventType,
         descriptionRaw: desc || null,
@@ -2681,16 +2690,16 @@ if (!isClosed) {
         majorReason: major.majorReason,
         statusSource: statusAnalysis.source,
         sourceKind: rssSource ? "rss" : "esp",
-        source: prahaSource ? "praha" : "stredocesky",
-        externalId: prahaSource ? it.externalId : eventId,
-        sourceUrl: prahaSource ? it.sourceUrl : it.link,
-        region: prahaSource ? "Hlavní město Praha" : "Středočeský kraj",
-        contentHash: prahaSource ? it.contentHash : null,
-        rawPayload: prahaSource ? it.rawPayload : null,
+        source: prahaSource ? "praha" : pardubickySource ? "pardubicky" : "stredocesky",
+        externalId: (prahaSource || pardubickySource) ? it.externalId : eventId,
+        sourceUrl: (prahaSource || pardubickySource) ? it.sourceUrl : it.link,
+        region: prahaSource ? "Hlavní město Praha" : pardubickySource ? "Pardubický kraj" : "Středočeský kraj",
+        contentHash: (prahaSource || pardubickySource) ? it.contentHash : null,
+        rawPayload: (prahaSource || pardubickySource) ? it.rawPayload : null,
         isJpoEvent: prahaSource ? it.isJpoEvent === true : true
       };
 
-      if (prahaSource && prev && prev.content_hash && prev.content_hash === it.contentHash) {
+      if ((prahaSource || pardubickySource) && prev && prev.content_hash && prev.content_hash === it.contentHash) {
         await touchEventLastSeen(prev.id);
         accepted++;
         unchanged++;
@@ -2698,8 +2707,15 @@ if (!isClosed) {
       }
 
       await upsertEvent(ev);
+      if (pardubickySource) await updateEventSourceDetails(ev.id, {
+        reportedAt: it.reportedAt || it.pubDate, subtype: it.subtype, district: it.district,
+        cityPart: it.cityPart, street: it.street, respondingUnits: it.respondingUnits,
+        statusObserved: !!prev && prev.is_closed === false && ev.isClosed === true,
+        eventRegion: 'Pardubický kraj', assignmentMethod: 'none'
+      });
       accepted++;
       if (prev) updated++; else inserted++;
+      if (prev && prev.is_closed !== ev.isClosed) statusChanged++;
 
       if (ev.isClosed) updatedClosed++;
 
@@ -2734,6 +2750,7 @@ if (!isClosed) {
       inserted,
       updated,
       unchanged,
+      status_changed: statusChanged,
       closed_seen_in_batch: updatedClosed,
       geocoded,
       skipped: skippedOlder + skippedInvalid + skippedDuplicates,
@@ -2744,7 +2761,7 @@ if (!isClosed) {
     try {
       await insertIngestLog({
         source: String(req.body?.source || "unknown").slice(0,80),
-        sourceKind: ["server_rss_worker", "github_actions_rss", "github_actions_rss2json", "github_actions_praha_atom"].includes(req.body?.source) ? "rss" : "esp",
+        sourceKind: ["server_rss_worker", "github_actions_rss", "github_actions_rss2json", "github_actions_praha_atom", "github_actions_pardubicky_rss"].includes(req.body?.source) ? "rss" : "esp",
         receivedCount: Array.isArray(req.body?.items) ? req.body.items.length : 0,
         errorText: "ingest_failed",
         ip: getClientIp(req),
@@ -3589,6 +3606,24 @@ app.get("/api/weather/regions/:zoneId", safeRoute(async (req, res) => {
   }
 }));
 
+app.get("/api/analytics/regions", safeRoute(async (req, res) => {
+  const end = String(req.query.end || todayPragueISO());
+  const start = String(req.query.start || new Date(`${end}T00:00:00Z`).toISOString().slice(0,10));
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end)) return res.status(400).json({ok:false,error:"invalid_period"});
+  const startDate = new Date(`${start}T00:00:00Z`), endInclusive = new Date(`${end}T00:00:00Z`);
+  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endInclusive.getTime()) || startDate > endInclusive) return res.status(400).json({ok:false,error:"invalid_period"});
+  const endExclusive = new Date(endInclusive.getTime()+86400000);
+  const span = endExclusive.getTime()-startDate.getTime();
+  if (span > 366*86400000) return res.status(400).json({ok:false,error:"period_too_large"});
+  const previousStart = new Date(startDate.getTime()-span);
+  const [currentRows, previousRows, sourceStatus] = await Promise.all([
+    getEventsForPeriod(start, endExclusive.toISOString().slice(0,10)),
+    getEventsForPeriod(previousStart.toISOString().slice(0,10), start),
+    getPublicSourceStatus()
+  ]);
+  res.json({ok:true,...buildRegionComparison(currentRows, previousRows, {start, end:endExclusive.toISOString(), sourceStatus})});
+}));
+
 app.get("/api/stats/pro", safeRoute(async (req, res) => {
   try {
     const preset = String(req.query.preset || "month").trim();
@@ -3650,11 +3685,12 @@ app.get(/^\/api\/reports\/([^/]+)\/(.+)\.pdf$/, safeRoute(async (req, res) => {
     if (!row) return res.status(404).json({ ok: false, error: "report_not_found" });
 
     res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename="firewatch_report_${type}_${key}.pdf"`);
+    const typeName = type === "month" ? "mesicni" : type === "week" ? "tydenni" : "denni";
+    res.setHeader("Content-Disposition", `attachment; filename="firewatch-${typeName}-souhrn-${String(key).replace(/[^0-9A-Za-z-]/g,"-")}.pdf"`);
 
     const doc = new PDFDocument({ size: "A4", layout: "portrait", margin: 40, bufferPages: true });
     doc.pipe(res);
-    drawReportPdf(doc, row);
+    drawProfessionalReportPdf(doc, row);
     doc.end();
   } catch (e) {
     console.error(e.code || "operation_failed");
@@ -3828,4 +3864,4 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
   await startServer();
 }
 
-export { normalizeFeedTimestamp, pragueLocalToUtcIso, parseTimesFromDescription, safeDurationFromStartEnd, reportPeriodFromKey, buildAnalyticalReport };
+export { normalizeFeedTimestamp, pragueLocalToUtcIso, parseTimesFromDescription, safeDurationFromStartEnd, reportPeriodFromKey, buildAnalyticalReport, buildRegionComparison, drawProfessionalReportPdf };

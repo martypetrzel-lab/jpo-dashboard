@@ -229,10 +229,12 @@ export async function initDb() {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_log_ts ON audit_log(ts DESC);`);
   for(const [name,type] of Object.entries({source_updated_at:'TEXT',start_time_source:'TEXT',end_time_source:'TEXT',first_seen_status:'TEXT',first_seen_was_open:'BOOLEAN',duration_is_estimate:'BOOLEAN NOT NULL DEFAULT FALSE',time_model_version:'INTEGER NOT NULL DEFAULT 0',time_original_values:'JSONB'})) await pool.query(`ALTER TABLE events ADD COLUMN IF NOT EXISTS ${name} ${type}`);
   for (const [name,type] of Object.entries({source:'TEXT',external_id:'TEXT',source_url:'TEXT',region:'TEXT',content_hash:'TEXT',raw_payload:'JSONB',is_jpo_event:'BOOLEAN NOT NULL DEFAULT TRUE'})) await pool.query(`ALTER TABLE events ADD COLUMN IF NOT EXISTS ${name} ${type}`);
+  for (const [name,type] of Object.entries({reported_at:'TEXT',subtype:'TEXT',district_text:'TEXT',city_part:'TEXT',street:'TEXT',responding_units:"JSONB NOT NULL DEFAULT '[]'::jsonb",status_observed_at:'TIMESTAMPTZ',event_region:'TEXT',station_region:'TEXT',station_id:'TEXT',assignment_method:"TEXT NOT NULL DEFAULT 'none'",assignment_confidence:'DOUBLE PRECISION',cross_region_assistance:'BOOLEAN NOT NULL DEFAULT FALSE'})) await pool.query(`ALTER TABLE events ADD COLUMN IF NOT EXISTS ${name} ${type}`);
   for (const [name,type] of Object.entries({geo_precision:'TEXT',geo_confidence:'DOUBLE PRECISION',geo_query:'TEXT',geo_display_name:'TEXT',geo_verified:'BOOLEAN NOT NULL DEFAULT FALSE',geo_failure_reason:'TEXT',geo_context_key:'TEXT'})) await pool.query(`ALTER TABLE events ADD COLUMN IF NOT EXISTS ${name} ${type}`);
   await pool.query(`CREATE TABLE IF NOT EXISTS geocode_cache_v2 (context_key TEXT PRIMARY KEY, result JSONB NOT NULL, expires_at TIMESTAMPTZ NOT NULL)`);
   await pool.query(`CREATE TABLE IF NOT EXISTS geocode_provider_limits (provider TEXT PRIMARY KEY, next_request_at TIMESTAMPTZ NOT NULL)`);
   await pool.query(`UPDATE events SET source=COALESCE(source,'stredocesky'), external_id=COALESCE(external_id,id), source_url=COALESCE(source_url,link), region=COALESCE(region,'Středočeský kraj'), is_jpo_event=COALESCE(is_jpo_event,TRUE) WHERE source IS NULL OR external_id IS NULL OR source_url IS NULL OR region IS NULL OR is_jpo_event IS NULL`);
+  await pool.query(`UPDATE events SET event_region=COALESCE(event_region,region), assignment_method=COALESCE(assignment_method,'none'), cross_region_assistance=COALESCE(cross_region_assistance,FALSE) WHERE event_region IS NULL OR assignment_method IS NULL OR cross_region_assistance IS NULL`);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_events_source_external_id ON events(source, external_id) WHERE external_id IS NOT NULL`);
 
 
@@ -480,7 +482,7 @@ export async function getLongestCutoffIso() {
 
 export async function getEventMeta(id) {
   const res = await pool.query(
-    `SELECT source, external_id, source_url, region, content_hash, raw_payload, is_jpo_event, source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, description_raw, event_type, is_closed, first_seen_at, pub_date, start_time_iso, end_time_iso, duration_min, duration_source, alarm_level, is_major_event, status_text, status_source, source_note, lat, lon, geo_source FROM events WHERE id=$1`,
+    `SELECT source, external_id, source_url, region, content_hash, raw_payload, is_jpo_event, reported_at, subtype, district_text, city_part, street, responding_units, status_observed_at, event_region, station_region, station_id, assignment_method, assignment_confidence, cross_region_assistance, source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, description_raw, event_type, is_closed, first_seen_at, pub_date, start_time_iso, end_time_iso, duration_min, duration_source, alarm_level, is_major_event, status_text, status_source, source_note, lat, lon, geo_source FROM events WHERE id=$1`,
     [id]
   );
   return res.rows[0] || null;
@@ -488,7 +490,7 @@ export async function getEventMeta(id) {
 
 export async function getEventMetaBySourceExternal(source, externalId) {
   const res = await pool.query(
-    `SELECT source, external_id, source_url, region, content_hash, raw_payload, is_jpo_event, source_kind, source_updated_at, first_seen_status, first_seen_was_open, id, title, link, description_raw, event_type, is_closed, first_seen_at, status_text, status_source, lat, lon, geo_source FROM events WHERE source=$1 AND external_id=$2 LIMIT 1`,
+    `SELECT source, external_id, source_url, region, content_hash, raw_payload, is_jpo_event, reported_at, subtype, district_text, city_part, street, responding_units, status_observed_at, event_region, station_region, station_id, assignment_method, assignment_confidence, cross_region_assistance, source_kind, source_updated_at, first_seen_status, first_seen_was_open, id, title, link, description_raw, event_type, is_closed, first_seen_at, status_text, status_source, lat, lon, geo_source FROM events WHERE source=$1 AND external_id=$2 LIMIT 1`,
     [source, externalId]
   );
   return res.rows[0] || null;
@@ -496,6 +498,51 @@ export async function getEventMetaBySourceExternal(source, externalId) {
 
 export async function touchEventLastSeen(id) {
   await pool.query(`UPDATE events SET last_seen_at=NOW() WHERE id=$1`, [id]);
+}
+
+export async function getSourceIdentityState(source, externalIds = []) {
+  const ids = [...new Set((externalIds || []).map(String).filter(Boolean))].slice(0, 200);
+  const known = ids.length ? await pool.query(`SELECT id,external_id,is_closed,source_url,content_hash,title,city_text,pub_date,reported_at FROM events WHERE source=$1 AND external_id=ANY($2::text[])`, [source, ids]) : { rows: [] };
+  const open = await pool.query(`SELECT id,external_id,is_closed,source_url,content_hash,title,city_text,pub_date,reported_at FROM events WHERE source=$1 AND is_closed=FALSE ORDER BY last_seen_at DESC LIMIT 200`, [source]);
+  return { known: known.rows || [], open: open.rows || [] };
+}
+
+export async function updateEventSourceDetails(id, details = {}) {
+  await pool.query(`UPDATE events SET reported_at=COALESCE($2,reported_at), subtype=$3, district_text=$4, city_part=$5, street=$6, responding_units=$7::jsonb, status_observed_at=CASE WHEN $8::boolean=TRUE AND is_closed=TRUE AND status_observed_at IS NULL THEN NOW() ELSE status_observed_at END, event_region=COALESCE($9,event_region,region), station_region=$10, station_id=$11, assignment_method=COALESCE($12,'none'), assignment_confidence=$13, cross_region_assistance=COALESCE($14,FALSE) WHERE id=$1`, [
+    id, details.reportedAt || null, details.subtype || null, details.district || null,
+    details.cityPart || null, details.street || null, JSON.stringify(details.respondingUnits || []),
+    details.statusObserved === true, details.eventRegion || null, details.stationRegion || null,
+    details.stationId || null, details.assignmentMethod || 'none', details.assignmentConfidence ?? null,
+    details.crossRegionAssistance === true,
+  ]);
+}
+
+export async function auditCrossRegionStationAssignments({ apply = false } = {}) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await client.query(`
+      SELECT id, source, event_region, station_id, station_region, assignment_method, cross_region_assistance
+      FROM events
+      WHERE station_id IS NOT NULL
+        AND event_region IS NOT NULL
+        AND station_region IS NOT NULL
+        AND event_region <> station_region
+      ORDER BY id
+      FOR UPDATE
+    `);
+    const automatic = result.rows.filter(row => row.assignment_method === 'regional_match');
+    if (apply && automatic.length) {
+      await client.query(`
+        UPDATE events SET station_id=NULL, station_region=NULL, assignment_method='none', assignment_confidence=NULL, cross_region_assistance=FALSE
+        WHERE id=ANY($1::text[]) AND assignment_method='regional_match'
+      `, [automatic.map(row => row.id)]);
+    }
+    if (apply) await client.query('COMMIT'); else await client.query('ROLLBACK');
+    return { dry_run: !apply, found: result.rows.length, automatically_incorrect: automatic.length, ids: automatic.map(row => row.id), preserved_explicit: result.rows.length-automatic.length };
+  } catch (error) {
+    await client.query('ROLLBACK'); throw error;
+  } finally { client.release(); }
 }
 
 export async function upsertEvent(ev) {
@@ -956,7 +1003,7 @@ export async function searchEventsAdmin({ q = "", limit = 50 } = {}) {
   const r = await pool.query(
     `
     SELECT
-      source, external_id, source_url, region, content_hash, is_jpo_event, source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, pub_date, city_text, place_text, status_text, event_type,
+      source, external_id, source_url, region, content_hash, is_jpo_event, reported_at, subtype, district_text, city_part, street, responding_units, status_observed_at, event_region, station_region, station_id, assignment_method, assignment_confidence, cross_region_assistance, source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, pub_date, city_text, place_text, status_text, event_type,
       start_time_iso, end_time_iso, duration_min, duration_source, is_closed,
       alarm_level, alarm_level_text, is_major_event, major_reason,
       source_kind, source_note, lat, lon, created_at, last_seen_at
@@ -1168,7 +1215,7 @@ export async function getEventsFiltered(filters, limit = 400) {
   const sql =
     `
     SELECT
-      source, external_id, source_url, region, content_hash, is_jpo_event, source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, pub_date,
+      source, external_id, source_url, region, content_hash, is_jpo_event, reported_at, subtype, district_text, city_part, street, responding_units, status_observed_at, event_region, station_region, station_id, assignment_method, assignment_confidence, cross_region_assistance, source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, pub_date,
       place_text, city_text,
       status_text, event_type,
       description_raw,
@@ -1778,7 +1825,7 @@ export async function getEventsForPeriod(startIso, endExclusiveIso) {
   const r = await pool.query(
     `
     SELECT
-      source, external_id, source_url, region, content_hash, is_jpo_event, source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, pub_date,
+      source, external_id, source_url, region, content_hash, is_jpo_event, reported_at, subtype, district_text, city_part, street, responding_units, status_observed_at, event_region, station_region, station_id, assignment_method, assignment_confidence, cross_region_assistance, source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, pub_date,
       place_text, city_text,
       status_text, event_type,
       description_raw,
@@ -1815,7 +1862,7 @@ export async function getEventsForPeriod(startIso, endExclusiveIso) {
 
 export async function getEventById(id) {
   const r = await pool.query(
-    `SELECT source, external_id, source_url, region, content_hash, is_jpo_event, source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, pub_date, place_text, city_text, status_text, event_type,
+    `SELECT source, external_id, source_url, region, content_hash, is_jpo_event, reported_at, subtype, district_text, city_part, street, responding_units, status_observed_at, event_region, station_region, station_id, assignment_method, assignment_confidence, cross_region_assistance, source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, pub_date, place_text, city_text, status_text, event_type,
             description_raw, start_time_iso, end_time_iso, duration_min, duration_source, is_closed,
             alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
             manual_detail_text, manual_detail_source, manual_detail_updated_at,
@@ -1850,7 +1897,7 @@ export async function listEventsForMajorBackfill(limit = 5000) {
   const r = await pool.query(
     `
     SELECT
-      source, external_id, source_url, region, content_hash, is_jpo_event, source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, pub_date,
+      source, external_id, source_url, region, content_hash, is_jpo_event, reported_at, subtype, district_text, city_part, street, responding_units, status_observed_at, event_region, station_region, station_id, assignment_method, assignment_confidence, cross_region_assistance, source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, pub_date,
       place_text, city_text, status_text, event_type,
       description_raw,
       start_time_iso, end_time_iso, duration_min, duration_source, is_closed,
@@ -1907,7 +1954,7 @@ export async function getMajorEventsSummary(limit = 20) {
   const r = await pool.query(
     `
     SELECT
-      source, external_id, source_url, region, content_hash, is_jpo_event, source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, pub_date,
+      source, external_id, source_url, region, content_hash, is_jpo_event, reported_at, subtype, district_text, city_part, street, responding_units, status_observed_at, event_region, station_region, station_id, assignment_method, assignment_confidence, cross_region_assistance, source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, pub_date,
       city_text, place_text, status_text, event_type,
       is_closed,
       alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
@@ -1929,7 +1976,7 @@ export async function getEventForManualEdit(id) {
   const r = await pool.query(
     `
     SELECT
-      source, external_id, source_url, region, content_hash, is_jpo_event, source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, pub_date,
+      source, external_id, source_url, region, content_hash, is_jpo_event, reported_at, subtype, district_text, city_part, street, responding_units, status_observed_at, event_region, station_region, station_id, assignment_method, assignment_confidence, cross_region_assistance, source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, pub_date,
       place_text, city_text, status_text, event_type,
       description_raw,
       start_time_iso, end_time_iso, duration_min, duration_source, is_closed,
@@ -2030,7 +2077,7 @@ export async function getEventDetailById(id) {
   const r = await pool.query(
     `
     SELECT
-      source, external_id, source_url, region, content_hash, is_jpo_event, source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, pub_date,
+      source, external_id, source_url, region, content_hash, is_jpo_event, reported_at, subtype, district_text, city_part, street, responding_units, status_observed_at, event_region, station_region, station_id, assignment_method, assignment_confidence, cross_region_assistance, source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, pub_date,
       place_text, city_text, status_text, event_type,
       description_raw,
       start_time_iso, end_time_iso, duration_min, duration_source, is_closed,
@@ -2080,6 +2127,21 @@ export async function getPublicDataStatus() {
   const r=await pool.query(`SELECT MAX(created_at) FILTER (WHERE error_text IS NULL OR error_text='') AS last_success, MAX(created_at) AS last_attempt FROM ingest_log`);
   const row=r.rows[0]||{};
   return {last_success:row.last_success||null,last_attempt:row.last_attempt||null};
+}
+
+export async function getPublicSourceStatus() {
+  const r = await pool.query(`
+    SELECT source, MAX(created_at) FILTER (WHERE error_text IS NULL OR error_text='') AS last_success
+    FROM ingest_log
+    WHERE source IN ('github_actions_rss','github_actions_rss2json','server_rss_worker','github_actions_praha_atom','github_actions_pardubicky_rss')
+    GROUP BY source
+  `);
+  const mapped = { stredocesky: null, praha: null, pardubicky: null };
+  for (const row of r.rows || []) {
+    const key = row.source === 'github_actions_praha_atom' ? 'praha' : row.source === 'github_actions_pardubicky_rss' ? 'pardubicky' : 'stredocesky';
+    if (row.last_success && (!mapped[key] || new Date(row.last_success) > new Date(mapped[key]))) mapped[key] = row.last_success;
+  }
+  return mapped;
 }
 
 export async function deleteUserSessions(userId){await pool.query('DELETE FROM user_sessions WHERE user_id=$1',[userId]);}

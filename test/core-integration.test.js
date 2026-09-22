@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { once } from "node:events";
 import { createTestDatabase } from "../test-support/database.js";
-import { pool, getEventMeta, autoCloseStaleOpenEvents, setCachedGeocode, initDb, getStatsFiltered, setSetting } from "../db.js";
+import { pool, getEventMeta, autoCloseStaleOpenEvents, setCachedGeocode, initDb, getStatsFiltered, setSetting, auditCrossRegionStationAssignments } from "../db.js";
 import { parsePrahaAtomXml } from "../prague-atom.js";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -28,6 +28,7 @@ const dateKey = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Pragu
 const event = (id, pubDate = dateKey() + " 00:00:13") => ({ id, title: "Technická pomoc - Kladno", link: "https://example.test/" + id, pubDate, cityText: "Kladno", statusText: "probíhá zásah", descriptionRaw: "stav: probíhá zásah<br>ukončení: <br>Kladno" });
 const ingest = items => jsonRequest("/api/ingest", { source: "github_actions_rss", items });
 const ingestPraha = items => jsonRequest("/api/ingest", { source: "github_actions_praha_atom", items });
+const ingestPardubicky = items => jsonRequest("/api/ingest", { source: "github_actions_pardubicky_rss", items });
 
 test("isolated health/static/API smoke and protected diagnostics", async () => {
   assert.equal((await fetch(base + "/health")).status, 200);
@@ -165,6 +166,26 @@ test("Praha Atom ingest uses source identity, skips old history and updates chan
  assert.equal((await pool.query("SELECT COUNT(*)::int AS count FROM events WHERE source='praha' AND external_id=$1",[fresh.externalId])).rows[0].count,1);
  const filtered=await fetch(base+'/api/events?day=all&source=praha&limit=100').then(r=>r.json());assert.ok(filtered.items.some(item=>item.id===fresh.id));assert.ok(filtered.items.every(item=>item.source==='praha'));
  const stats=await fetch(base+'/api/stats?day=all&source=praha').then(r=>r.json());assert.equal(stats.categorySplit.other_crisis_count,1);assert.equal(stats.categorySplit.jpo_count,0);
+});
+test("Pardubice detail stays deduplicated, preserves source fields and synchronizes status",async()=>{
+ const reported=new Date().toISOString(), externalId='251817053';
+ const open={id:`pardubicky:${externalId}`,source:'pardubicky',externalId,sourceUrl:`https://www.hzspa.cz/vyjezdy/udalost.php?id=${externalId}`,link:`https://www.hzspa.cz/vyjezdy/udalost.php?id=${externalId}`,title:'Technická pomoc – Otevření uzavřených prostor – Letohrad',reportedAt:reported,pubDate:reported,sourceUpdatedAt:reported,eventType:'tech',subtype:'Otevření uzavřených prostor',district:'Ústí nad Orlicí',cityText:'Letohrad',street:'Spořilov III',respondingUnits:['Letohrad'],statusText:'Probíhající',statusSource:'explicit_open',isClosed:false,contentHash:'c'.repeat(64),rawPayload:{detail:{status:'Probíhající'}}};
+ let result=await ingestPardubicky([open]);assert.equal(result.status,200);assert.equal(result.data.inserted,1);
+ let row=await getEventMeta(open.id);const firstSeen=new Date(row.first_seen_at).toISOString();assert.equal(row.source,'pardubicky');assert.equal(row.first_seen_was_open,true);assert.equal(row.duration_source,'first_seen_open_estimate');
+ let detail=await fetch(base+`/api/events/${encodeURIComponent(open.id)}/detail`).then(r=>r.json());assert.equal(detail.event.subtype,'Otevření uzavřených prostor');assert.equal(detail.event.street,'Spořilov III');assert.deepEqual(detail.event.responding_units,['Letohrad']);assert.equal(detail.event.station_id,null);
+ result=await ingestPardubicky([open]);assert.equal(result.data.unchanged,1);assert.equal((await pool.query('SELECT COUNT(*)::int AS count FROM events WHERE id=$1',[open.id])).rows[0].count,1);
+ const closed={...open,statusText:'Ukončená',statusSource:'explicit_closed',isClosed:true,contentHash:'d'.repeat(64),rawPayload:{detail:{status:'Ukončená'}}};
+ result=await ingestPardubicky([closed]);assert.equal(result.data.updated,1);assert.equal(result.data.status_changed,1);row=await getEventMeta(open.id);assert.equal(row.is_closed,true);assert.equal(row.duration_min,null);assert.equal(new Date(row.first_seen_at).toISOString(),firstSeen);
+ const state=await jsonRequest('/api/ingest/source-state',{source:'pardubicky',external_ids:[externalId]});assert.equal(state.data.known.length,1);assert.equal(state.data.open.length,0);
+});
+test("station audit dry-run preserves data and apply clears only automatic cross-region mistakes",async()=>{
+ await pool.query(`INSERT INTO events(id,title,link,event_region,station_id,station_region,assignment_method,cross_region_assistance) VALUES
+ ('station-auto-wrong','Test','https://example.test','Hlavní město Praha','sc-test','Středočeský kraj','regional_match',FALSE),
+ ('station-explicit-cross','Test','https://example.test','Pardubický kraj','sc-explicit','Středočeský kraj','source_explicit',TRUE)`);
+ let audit=await auditCrossRegionStationAssignments();assert.equal(audit.dry_run,true);assert.ok(audit.ids.includes('station-auto-wrong'));assert.equal(audit.preserved_explicit,1);
+ assert.equal((await getEventMeta('station-auto-wrong')).station_id,'sc-test');
+ audit=await auditCrossRegionStationAssignments({apply:true});assert.equal(audit.automatically_incorrect,1);
+ assert.equal((await getEventMeta('station-auto-wrong')).station_id,null);assert.equal((await getEventMeta('station-explicit-cross')).station_id,'sc-explicit');
 });
 // Failure paths use the isolated database and never production credentials.
 test('API validates limits/filters, handles malformed cookies and rejects foreign origins',async()=>{
