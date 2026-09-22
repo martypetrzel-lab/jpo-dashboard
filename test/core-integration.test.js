@@ -177,8 +177,28 @@ test('fresh RSS corrects an evidenced source timestamp, backs up original values
 });
 test('RSS description proves a start and end, while a later update cannot replace the established start',async()=>{
  const first={...event('time-proven'),statusText:'ukončená',descriptionRaw:'stav: ukončená<br>zahájení: 17. září 2026, 16:30<br>ukončení: 17. září 2026, 16:40<br>Kladno'};
- await ingest([first]);let row=await getEventMeta(first.id);assert.equal(row.start_time_iso,'2026-09-17T14:30:00.000Z');assert.equal(row.end_time_iso,'2026-09-17T14:40:00.000Z');assert.equal(row.duration_min,10);
+ await ingest([first]);let row=await getEventMeta(first.id);assert.equal(row.start_time_iso,'2026-09-17T14:30:00.000Z');assert.equal(row.end_time_iso,'2026-09-17T14:40:00.000Z');assert.equal(row.duration_min,10);assert.equal(row.duration_source,'rss_start_and_end');assert.equal(row.duration_is_estimate,false);
  await ingest([{...first,startTimeIso:'2026-09-17T14:35:00Z',pubDate:new Date().toISOString()}]);row=await getEventMeta(first.id);assert.equal(row.start_time_iso,'2026-09-17T14:30:00.000Z');assert.equal(row.duration_min,10);
+});
+test('first explicitly open observation drives live and closed estimates without moving first_seen_at',async()=>{
+ const id='duration-first-open';const open=event(id,new Date().toISOString());
+ assert.equal((await ingest([open])).data.inserted,1);
+ const end=new Date(Math.floor(Date.now()/1000)*1000);const first=new Date(end.getTime()-70*60000);
+ await pool.query('UPDATE events SET first_seen_at=$2 WHERE id=$1',[id,first.toISOString()]);
+ let row=await getEventMeta(id);assert.equal(row.first_seen_was_open,true);assert.equal(row.first_seen_status,'probíhá zásah');assert.equal(row.duration_source,'first_seen_open_estimate');assert.equal(row.duration_is_estimate,true);
+ const originalFirst=new Date(row.first_seen_at).toISOString();
+ const active=await fetch(base+'/api/events/'+id+'/detail').then(r=>r.json());assert.equal(active.event.duration_is_estimate,true);assert.ok(active.event.duration_min>=69&&active.event.duration_min<=70);
+ await ingest([{...open,pubDate:new Date().toISOString()}]);row=await getEventMeta(id);assert.equal(new Date(row.first_seen_at).toISOString(),originalFirst);
+ const closed={...open,pubDate:new Date().toISOString(),statusText:'ukončená',endTimeIso:end.toISOString(),descriptionRaw:'stav: ukončená<br>Kladno'};
+ assert.equal((await ingest([closed])).data.updated,1);row=await getEventMeta(id);assert.equal(row.duration_min,70);assert.equal(row.duration_source,'first_seen_to_rss_end_estimate');assert.equal(row.duration_is_estimate,true);assert.equal(new Date(row.first_seen_at).toISOString(),originalFirst);
+ assert.equal((await ingest([closed])).data.inserted,0);assert.equal((await pool.query('SELECT COUNT(*)::int AS count FROM events WHERE id=$1',[id])).rows[0].count,1);
+});
+test('an event first seen closed and an invalid first-seen interval never receive estimates',async()=>{
+ const direct={...event('duration-first-closed',new Date().toISOString()),statusText:'ukončená',endTimeIso:new Date().toISOString(),descriptionRaw:'stav: ukončená<br>Kladno'};
+ await ingest([direct]);let row=await getEventMeta(direct.id);assert.equal(row.first_seen_was_open,false);assert.equal(row.duration_min,null);assert.equal(row.duration_source,null);assert.equal(row.duration_is_estimate,false);
+ const id='duration-invalid-order',open=event(id,new Date().toISOString());await ingest([open]);
+ const end=new Date();await pool.query('UPDATE events SET first_seen_at=$2 WHERE id=$1',[id,new Date(end.getTime()+60000).toISOString()]);
+ await ingest([{...open,statusText:'ukončená',endTimeIso:end.toISOString(),descriptionRaw:'stav: ukončená<br>Kladno'}]);row=await getEventMeta(id);assert.equal(row.duration_min,null);assert.equal(row.duration_source,null);assert.equal(row.duration_is_estimate,false);
 });
 test('manual verified start and coordinates survive RSS update; exact RSS end uses that start',async()=>{
  const first=event('time-manual');await ingest([first]);await pool.query("UPDATE events SET start_time_iso='2026-09-17T14:30:00Z',start_time_source='manual',lat=50.1,lon=14.1,geo_source='manual' WHERE id=$1",[first.id]);

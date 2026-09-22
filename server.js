@@ -634,7 +634,7 @@ function formatMinutesLong(min) {
 
 function buildAnalyticalReport(type, key, rows) {
   const p = reportPeriodFromKey(type, key);
-  rows=rows.map(annotateEventTime).map(row=>({...row,duration_min:["rss_end_time","esp_duration","explicit","manual"].includes(row.duration_source)?row.duration_min:null}));
+  rows=rows.map(annotateEventTime).map(row=>({...row,duration_min:row.duration_is_estimate?null:row.duration_min}));
   const total = rows.length;
   const open = rows.filter(r => !r.is_closed).length;
   const closed = rows.filter(r => !!r.is_closed).length;
@@ -2563,6 +2563,9 @@ let endIso =
 
 let durationMin = null;
 let durationSource = null;
+let durationIsEstimate = false;
+const firstSeenWasOpen = prev ? prev.first_seen_was_open : statusAnalysis.source === "explicit_open";
+const firstSeenStatus = prev ? prev.first_seen_status : (statusAnalysis.source === "unknown" ? null : statusAnalysis.label);
 
 // 1) Pokud ESP někdy pošle délku explicitně, přijmeme ji.
 if (Number.isFinite(it.durationMin)) {
@@ -2575,14 +2578,33 @@ if (Number.isFinite(it.durationMin)) {
 // Délka = ukončení z RSS - doložený začátek.
 if (durationMin == null && isClosed && endIso) {
   durationMin = safeDurationFromStartEnd(startIso, endIso);
-  if (durationMin != null) durationSource = "rss_end_time";
+  if (durationMin != null) {
+    durationSource = startTimeSource === "rss_description" ? "rss_start_and_end" : startTimeSource === "manual" ? "manual_start_rss_end" : "trusted_start_rss_end";
+  }
 }
 
-// 4) Událost přišla rovnou ukončená bez času ukončení = délka zůstane neznámá.
+// Bez doloženého začátku lze odhadovat pouze od neměnného prvního zachycení,
+// a jen pokud byl první pozorovaný stav výslovně otevřený.
+if (durationMin == null && firstSeenWasOpen === true) {
+  if (!isClosed) {
+    durationSource = "first_seen_open_estimate";
+    durationIsEstimate = true;
+  } else if (endIso && prev?.first_seen_at) {
+    durationMin = safeDurationFromStartEnd(prev.first_seen_at, endIso);
+    if (durationMin != null) {
+      durationSource = "first_seen_to_rss_end_estimate";
+      durationIsEstimate = true;
+    }
+  }
+}
+
+// Otevřená událost nemá konec; průběžnou délku dopočítá API/UI z first_seen_at.
 if (!isClosed) {
   endIso = null;
-  durationMin = null;
-  durationSource = null;
+  if (!durationIsEstimate) {
+    durationMin = null;
+    durationSource = null;
+  }
 }
 
       const placeText = it.placeText || null;
@@ -2616,6 +2638,9 @@ if (!isClosed) {
         endTimeIso: endIso,
         durationMin,
         durationSource,
+        durationIsEstimate,
+        firstSeenStatus,
+        firstSeenWasOpen,
         isClosed,
         alarmLevel: major.alarmLevel,
         alarmLevelText: major.alarmLevelText,
@@ -3328,12 +3353,13 @@ function csvEscape(value) {
 }
 function exportEventDuration(event) {
   event=annotateEventTime(event);
-  if(event.is_closed)return ["rss_end_time","esp_duration","explicit","manual"].includes(event.duration_source)?event.duration_min:null;
+  if(event.is_closed)return event.duration_min;
+  if(event.duration_is_estimate)return event.duration_min;
   const start=Date.parse(event.start_time_iso||"");
   const minutes=Number.isFinite(start)?Math.floor((Date.now()-start)/60000):null;
   return minutes>0 && minutes<=MAX_DURATION_MINUTES ? minutes : null;
 }
-function fmtDuration(minutes) {
+function fmtDuration(minutes,estimate=false) {
   return Number.isFinite(minutes)&&minutes>=0?formatMinutesLong(minutes):"—";
 }
 function fmtDate(value) {
@@ -3370,7 +3396,8 @@ app.get("/api/export.csv", safeRoute(async (req, res) => {
     const stav = csvEscape(r.is_closed ? "ukoncena" : "aktivni");
     const typ = csvEscape(typeLabel(r.event_type || "other"));
     const mesto = csvEscape(r.city_text || r.place_text || "");
-    const delka = csvEscape(fmtDuration(exportEventDuration(r)));
+    const exportDuration=exportEventDuration(r);
+    const delka = csvEscape((r.duration_is_estimate&&exportDuration!=null?'≈ ':'')+fmtDuration(exportDuration));
     const nazev = csvEscape(r.title || "");
     const link = csvEscape(r.link || "");
     out.push([cas, stav, typ, mesto, delka, nazev, link].join(";"));
@@ -3459,7 +3486,8 @@ app.get("/api/export.pdf", safeRoute(async (req, res) => {
     const state = r.is_closed ? "UKONČENO" : "AKTIVNÍ";
     const typ = typeLabel(r.event_type || "other");
     const city = r.city_text || r.place_text || "";
-    const dur = fmtDuration(exportEventDuration(r));
+    const exportDuration=exportEventDuration(r);
+    const dur = (r.duration_is_estimate&&exportDuration!=null?'≈ ':'')+fmtDuration(exportDuration);
     const title = r.title || "";
 
     doc.fillColor("#000").text(time, col.time, y, { width: 120 });

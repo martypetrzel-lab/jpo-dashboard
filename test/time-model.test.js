@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';
-import {normalizeFeedTimestamp,annotateEventTime,diagnoseTimes} from '../time-model.js';
+import {normalizeFeedTimestamp,annotateEventTime,diagnoseTimes,durationForEvent} from '../time-model.js';
 import {pragueLocalToUtcIso,parseTimesFromDescription} from '../server.js';
 import {buildGatewayPayload,buildRssPayload} from '../scripts/rss-push.js';
 import {rssDateKeyInPrague} from '../rss-worker.js';import '../public/event-utils.js';
@@ -40,4 +40,12 @@ test('time dry run skips ambiguous and already shifted ISO without source eviden
 
 test('uncertain legacy manual start remains unknown even if a manual status is present',()=>{
  const e=annotateEventTime({source_kind:'rss',status_source:'manual',start_time_iso:iso,start_time_source:'legacy_manual_unverified',is_closed:false});assert.equal(e.start_time_iso,null);assert.equal(e.start_time_trusted,false);assert.equal(FireWatchData.duration(e),null);
+});
+test('server duration model distinguishes exact, estimated and unknown durations',()=>{
+ const exact={source_kind:'rss',start_time_iso:'2026-09-17T10:00:00Z',start_time_source:'rss_description',duration_min:84,duration_source:'rss_start_and_end',duration_is_estimate:false,is_closed:true};
+ assert.equal(durationForEvent(exact),84);assert.equal(annotateEventTime(exact).duration_is_estimate,false);
+ const estimate={first_seen_at:'2026-09-17T10:00:00Z',first_seen_was_open:true,end_time_iso:'2026-09-17T11:10:00Z',duration_source:'first_seen_to_rss_end_estimate',duration_is_estimate:true,is_closed:true};
+ assert.equal(durationForEvent(estimate),70);assert.equal(annotateEventTime(estimate).duration_is_estimate,true);
+ assert.equal(durationForEvent({...estimate,first_seen_was_open:null}),null);
+ assert.equal(durationForEvent({...estimate,first_seen_at:'2026-09-17T12:00:00Z'}),null);
 });

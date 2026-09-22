@@ -73,6 +73,7 @@ export async function initDb() {
       end_time_iso TEXT,
       duration_min INTEGER,
       duration_source TEXT,
+      duration_is_estimate BOOLEAN NOT NULL DEFAULT FALSE,
       is_closed BOOLEAN NOT NULL DEFAULT FALSE,
 
       alarm_level INTEGER,
@@ -93,6 +94,8 @@ export async function initDb() {
       geo_updated_at TIMESTAMPTZ,
 
       first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      first_seen_status TEXT,
+      first_seen_was_open BOOLEAN,
       last_seen_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
@@ -223,7 +226,7 @@ export async function initDb() {
     );
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_log_ts ON audit_log(ts DESC);`);
-  for(const [name,type] of Object.entries({source_updated_at:'TEXT',start_time_source:'TEXT',end_time_source:'TEXT',time_model_version:'INTEGER NOT NULL DEFAULT 0',time_original_values:'JSONB'})) await pool.query(`ALTER TABLE events ADD COLUMN IF NOT EXISTS ${name} ${type}`);
+  for(const [name,type] of Object.entries({source_updated_at:'TEXT',start_time_source:'TEXT',end_time_source:'TEXT',first_seen_status:'TEXT',first_seen_was_open:'BOOLEAN',duration_is_estimate:'BOOLEAN NOT NULL DEFAULT FALSE',time_model_version:'INTEGER NOT NULL DEFAULT 0',time_original_values:'JSONB'})) await pool.query(`ALTER TABLE events ADD COLUMN IF NOT EXISTS ${name} ${type}`);
   for (const [name,type] of Object.entries({geo_precision:'TEXT',geo_confidence:'DOUBLE PRECISION',geo_query:'TEXT',geo_display_name:'TEXT',geo_verified:'BOOLEAN NOT NULL DEFAULT FALSE',geo_failure_reason:'TEXT',geo_context_key:'TEXT'})) await pool.query(`ALTER TABLE events ADD COLUMN IF NOT EXISTS ${name} ${type}`);
   await pool.query(`CREATE TABLE IF NOT EXISTS geocode_cache_v2 (context_key TEXT PRIMARY KEY, result JSONB NOT NULL, expires_at TIMESTAMPTZ NOT NULL)`);
   await pool.query(`CREATE TABLE IF NOT EXISTS geocode_provider_limits (provider TEXT PRIMARY KEY, next_request_at TIMESTAMPTZ NOT NULL)`);
@@ -473,7 +476,7 @@ export async function getLongestCutoffIso() {
 
 export async function getEventMeta(id) {
   const res = await pool.query(
-    `SELECT source_kind, source_updated_at, start_time_source, end_time_source, time_model_version, id, is_closed, first_seen_at, pub_date, start_time_iso, end_time_iso, duration_min, duration_source, alarm_level, is_major_event, status_text, status_source, source_note, lat, lon, geo_source FROM events WHERE id=$1`,
+    `SELECT source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, is_closed, first_seen_at, pub_date, start_time_iso, end_time_iso, duration_min, duration_source, alarm_level, is_major_event, status_text, status_source, source_note, lat, lon, geo_source FROM events WHERE id=$1`,
     [id]
   );
   return res.rows[0] || null;
@@ -510,9 +513,10 @@ export async function upsertEvent(ev) {
       start_time_iso, end_time_iso, duration_min, duration_source, is_closed,
       alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
       source_kind, source_note,
-      first_seen_at, last_seen_at, source_updated_at, start_time_source, end_time_source, time_model_version
+      first_seen_at, last_seen_at, source_updated_at, start_time_source, end_time_source,
+      first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,CASE WHEN $12::integer <= $19::integer THEN $12 ELSE NULL END,COALESCE($22::text, CASE WHEN $12::integer IS NOT NULL AND NULLIF($11::text,'' ) IS NOT NULL THEN 'rss_end_time' ELSE NULL END),$13,$14,$15,$16,$17,$18,$20,$21, NOW(), NOW(), $23, $24, $25, 1)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,CASE WHEN $12::integer <= $19::integer THEN $12 ELSE NULL END,COALESCE($22::text, CASE WHEN $12::integer IS NOT NULL AND NULLIF($11::text,'' ) IS NOT NULL THEN 'rss_end_time' ELSE NULL END),$13,$14,$15,$16,$17,$18,$20,$21, NOW(), NOW(), $23, $24, $25, $26, $27, $28, 1)
     ON CONFLICT (id) DO UPDATE SET
       title = EXCLUDED.title,
       link = EXCLUDED.link,
@@ -538,8 +542,9 @@ export async function upsertEvent(ev) {
         ELSE events.end_time_iso
       END,
 
-      duration_min=CASE WHEN EXCLUDED.status_source='explicit_open' THEN NULL WHEN events.duration_source='manual' THEN events.duration_min WHEN EXCLUDED.duration_min IS NOT NULL THEN EXCLUDED.duration_min WHEN EXCLUDED.source_kind='rss' THEN NULL ELSE events.duration_min END,
-      duration_source=CASE WHEN EXCLUDED.status_source='explicit_open' THEN NULL WHEN events.duration_source='manual' THEN events.duration_source WHEN EXCLUDED.duration_min IS NOT NULL THEN EXCLUDED.duration_source WHEN EXCLUDED.source_kind='rss' THEN NULL ELSE events.duration_source END,
+      duration_min=CASE WHEN events.duration_source='manual' THEN events.duration_min WHEN EXCLUDED.duration_min IS NOT NULL THEN EXCLUDED.duration_min WHEN EXCLUDED.duration_is_estimate AND EXCLUDED.duration_source='first_seen_open_estimate' THEN NULL WHEN EXCLUDED.source_kind='rss' THEN NULL ELSE events.duration_min END,
+      duration_source=CASE WHEN events.duration_source='manual' THEN events.duration_source WHEN EXCLUDED.duration_source IS NOT NULL THEN EXCLUDED.duration_source WHEN EXCLUDED.source_kind='rss' THEN NULL ELSE events.duration_source END,
+      duration_is_estimate=CASE WHEN events.duration_source='manual' THEN FALSE WHEN EXCLUDED.duration_source IS NOT NULL THEN EXCLUDED.duration_is_estimate WHEN EXCLUDED.source_kind='rss' THEN FALSE ELSE events.duration_is_estimate END,
 
       is_closed = CASE
         WHEN EXCLUDED.status_source = 'explicit_open' THEN FALSE
@@ -583,7 +588,10 @@ export async function upsertEvent(ev) {
       ev.durationSource || null,
       ev.sourceUpdatedAt || null,
       ev.startTimeSource || null,
-      ev.endTimeSource || null
+      ev.endTimeSource || null,
+      ev.firstSeenStatus || null,
+      typeof ev.firstSeenWasOpen === "boolean" ? ev.firstSeenWasOpen : null,
+      !!ev.durationIsEstimate
     ]
   );
 }
@@ -915,7 +923,7 @@ export async function searchEventsAdmin({ q = "", limit = 50 } = {}) {
   const r = await pool.query(
     `
     SELECT
-      source_kind, source_updated_at, start_time_source, end_time_source, time_model_version, id, title, pub_date, city_text, place_text, status_text, event_type,
+      source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, pub_date, city_text, place_text, status_text, event_type,
       start_time_iso, end_time_iso, duration_min, duration_source, is_closed,
       alarm_level, alarm_level_text, is_major_event, major_reason,
       source_kind, source_note, lat, lon, created_at, last_seen_at
@@ -1125,7 +1133,7 @@ export async function getEventsFiltered(filters, limit = 400) {
   const sql =
     `
     SELECT
-      source_kind, source_updated_at, start_time_source, end_time_source, time_model_version, id, title, link, pub_date,
+      source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, pub_date,
       place_text, city_text,
       status_text, event_type,
       description_raw,
@@ -1347,7 +1355,7 @@ export async function getStatsFiltered(filters) {
       iL++;
     }
 
-    whereLongest.push(`(duration_source IN ('rss_end_time','esp_duration','explicit','manual') AND (source_kind IS DISTINCT FROM 'rss' OR duration_source IN ('esp_duration','explicit','manual') OR start_time_source IN ('manual','rss_description','explicit','esp') OR status_source='manual'))`);
+    whereLongest.push(`(COALESCE(duration_is_estimate,FALSE)=FALSE AND duration_source IN ('rss_start_and_end','manual_start_rss_end','trusted_start_rss_end','rss_end_time','esp_duration','explicit','manual') AND (source_kind IS DISTINCT FROM 'rss' OR duration_source IN ('esp_duration','explicit','manual') OR start_time_source IN ('manual','rss_description','explicit','esp') OR status_source='manual'))`);
     // TOP za měsíc dává smysl jen pro uzavřené s uloženou délkou
     whereLongest.push(`is_closed = TRUE`);
     whereLongest.push(`duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= $${iL}`);
@@ -1423,7 +1431,7 @@ export async function getStatsFiltered(filters) {
         link,
         COALESCE(NULLIF(city_text,''), place_text) AS city,
         CASE
-          WHEN duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= $${iL} AND (duration_source IN ('rss_end_time','esp_duration','explicit','manual') AND (source_kind IS DISTINCT FROM 'rss' OR duration_source IN ('esp_duration','explicit','manual') OR start_time_source IN ('manual','rss_description','explicit','esp') OR status_source='manual'))
+          WHEN duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= $${iL} AND (COALESCE(duration_is_estimate,FALSE)=FALSE AND duration_source IN ('rss_start_and_end','manual_start_rss_end','trusted_start_rss_end','rss_end_time','esp_duration','explicit','manual') AND (source_kind IS DISTINCT FROM 'rss' OR duration_source IN ('esp_duration','explicit','manual') OR start_time_source IN ('manual','rss_description','explicit','esp') OR status_source='manual'))
             THEN duration_min
           WHEN (NOT is_closed) AND (source_kind IS DISTINCT FROM 'rss' OR start_time_source IN ('manual','rss_description','explicit','esp') OR status_source='manual') AND NULLIF(start_time_iso,'') IS NOT NULL
             THEN LEAST(
@@ -1446,7 +1454,7 @@ export async function getStatsFiltered(filters) {
       FROM events
       ${whereLongestSql}
         AND (
-          (duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= $${iL} AND (duration_source IN ('rss_end_time','esp_duration','explicit','manual') AND (source_kind IS DISTINCT FROM 'rss' OR duration_source IN ('esp_duration','explicit','manual') OR start_time_source IN ('manual','rss_description','explicit','esp') OR status_source='manual')))
+          (duration_min IS NOT NULL AND duration_min > 0 AND duration_min <= $${iL} AND (COALESCE(duration_is_estimate,FALSE)=FALSE AND duration_source IN ('rss_start_and_end','manual_start_rss_end','trusted_start_rss_end','rss_end_time','esp_duration','explicit','manual') AND (source_kind IS DISTINCT FROM 'rss' OR duration_source IN ('esp_duration','explicit','manual') OR start_time_source IN ('manual','rss_description','explicit','esp') OR status_source='manual')))
           OR (NOT is_closed AND NULLIF(start_time_iso,'') IS NOT NULL AND (source_kind IS DISTINCT FROM 'rss' OR start_time_source IN ('manual','rss_description','explicit','esp') OR status_source='manual'))
         )
       ORDER BY duration_min DESC NULLS LAST
@@ -1715,7 +1723,7 @@ export async function getEventsForPeriod(startIso, endExclusiveIso) {
   const r = await pool.query(
     `
     SELECT
-      source_kind, source_updated_at, start_time_source, end_time_source, time_model_version, id, title, link, pub_date,
+      source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, pub_date,
       place_text, city_text,
       status_text, event_type,
       description_raw,
@@ -1752,7 +1760,7 @@ export async function getEventsForPeriod(startIso, endExclusiveIso) {
 
 export async function getEventById(id) {
   const r = await pool.query(
-    `SELECT source_kind, source_updated_at, start_time_source, end_time_source, time_model_version, id, title, link, pub_date, place_text, city_text, status_text, event_type,
+    `SELECT source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, pub_date, place_text, city_text, status_text, event_type,
             description_raw, start_time_iso, end_time_iso, duration_min, duration_source, is_closed,
             alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
             manual_detail_text, manual_detail_source, manual_detail_updated_at,
@@ -1787,7 +1795,7 @@ export async function listEventsForMajorBackfill(limit = 5000) {
   const r = await pool.query(
     `
     SELECT
-      source_kind, source_updated_at, start_time_source, end_time_source, time_model_version, id, title, link, pub_date,
+      source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, pub_date,
       place_text, city_text, status_text, event_type,
       description_raw,
       start_time_iso, end_time_iso, duration_min, duration_source, is_closed,
@@ -1844,7 +1852,7 @@ export async function getMajorEventsSummary(limit = 20) {
   const r = await pool.query(
     `
     SELECT
-      source_kind, source_updated_at, start_time_source, end_time_source, time_model_version, id, title, link, pub_date,
+      source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, pub_date,
       city_text, place_text, status_text, event_type,
       is_closed,
       alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
@@ -1866,7 +1874,7 @@ export async function getEventForManualEdit(id) {
   const r = await pool.query(
     `
     SELECT
-      source_kind, source_updated_at, start_time_source, end_time_source, time_model_version, id, title, link, pub_date,
+      source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, pub_date,
       place_text, city_text, status_text, event_type,
       description_raw,
       start_time_iso, end_time_iso, duration_min, duration_source, is_closed,
@@ -1906,6 +1914,8 @@ export async function updateEventManualMeta(id, patch = {}) {
       time_model_version = 1,
       end_time_iso = $9,
       duration_min = $10,
+      duration_source = CASE WHEN $10::integer IS NOT NULL THEN 'manual' ELSE NULL END,
+      duration_is_estimate = FALSE,
       lat = CASE
         WHEN $11::boolean = TRUE THEN NULL
         WHEN $12::boolean = TRUE THEN $13
@@ -1965,7 +1975,7 @@ export async function getEventDetailById(id) {
   const r = await pool.query(
     `
     SELECT
-      source_kind, source_updated_at, start_time_source, end_time_source, time_model_version, id, title, link, pub_date,
+      source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, pub_date,
       place_text, city_text, status_text, event_type,
       description_raw,
       start_time_iso, end_time_iso, duration_min, duration_source, is_closed,
