@@ -234,7 +234,7 @@ export async function initDb() {
   await pool.query(`CREATE TABLE IF NOT EXISTS geocode_cache_v2 (context_key TEXT PRIMARY KEY, result JSONB NOT NULL, expires_at TIMESTAMPTZ NOT NULL)`);
   await pool.query(`CREATE TABLE IF NOT EXISTS geocode_provider_limits (provider TEXT PRIMARY KEY, next_request_at TIMESTAMPTZ NOT NULL)`);
   await pool.query(`UPDATE events SET source=COALESCE(source,'stredocesky'), external_id=COALESCE(external_id,id), source_url=COALESCE(source_url,link), region=COALESCE(region,'Středočeský kraj'), is_jpo_event=COALESCE(is_jpo_event,TRUE) WHERE source IS NULL OR external_id IS NULL OR source_url IS NULL OR region IS NULL OR is_jpo_event IS NULL`);
-  await pool.query(`UPDATE events SET event_region=COALESCE(event_region,region), assignment_method=COALESCE(assignment_method,'none'), cross_region_assistance=COALESCE(cross_region_assistance,FALSE) WHERE event_region IS NULL OR assignment_method IS NULL OR cross_region_assistance IS NULL`);
+  await pool.query(`UPDATE events SET event_region=COALESCE(event_region,region,CASE source WHEN 'praha' THEN 'Hlavní město Praha' WHEN 'pardubicky' THEN 'Pardubický kraj' ELSE 'Středočeský kraj' END), assignment_method=COALESCE(assignment_method,'none'), cross_region_assistance=COALESCE(cross_region_assistance,FALSE) WHERE event_region IS NULL OR assignment_method IS NULL OR cross_region_assistance IS NULL`);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_events_source_external_id ON events(source, external_id) WHERE external_id IS NOT NULL`);
 
 
@@ -578,9 +578,9 @@ export async function upsertEvent(ev) {
       source_kind, source_note,
       first_seen_at, last_seen_at, source_updated_at, start_time_source, end_time_source,
       first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version,
-      source, external_id, source_url, region, content_hash, raw_payload, is_jpo_event
+      source, external_id, source_url, region, content_hash, raw_payload, is_jpo_event, event_region
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,CASE WHEN $12::integer <= $19::integer THEN $12 ELSE NULL END,COALESCE($22::text, CASE WHEN $12::integer IS NOT NULL AND NULLIF($11::text,'' ) IS NOT NULL THEN 'rss_end_time' ELSE NULL END),$13,$14,$15,$16,$17,$18,$20,$21, NOW(), NOW(), $23, $24, $25, $26, $27, $28, 1,$29,$30,$31,$32,$33,$34::jsonb,$35)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,CASE WHEN $12::integer <= $19::integer THEN $12 ELSE NULL END,COALESCE($22::text, CASE WHEN $12::integer IS NOT NULL AND NULLIF($11::text,'' ) IS NOT NULL THEN 'rss_end_time' ELSE NULL END),$13,$14,$15,$16,$17,$18,$20,$21, NOW(), NOW(), $23, $24, $25, $26, $27, $28, 1,$29,$30,$31,$32,$33,$34::jsonb,$35,$36)
     ON CONFLICT (id) DO UPDATE SET
       title = EXCLUDED.title,
       link = EXCLUDED.link,
@@ -628,6 +628,7 @@ export async function upsertEvent(ev) {
       external_id = COALESCE(events.external_id, EXCLUDED.external_id),
       source_url = COALESCE(EXCLUDED.source_url, events.source_url),
       region = COALESCE(EXCLUDED.region, events.region),
+      event_region = COALESCE(events.event_region, EXCLUDED.event_region, EXCLUDED.region),
       content_hash = COALESCE(EXCLUDED.content_hash, events.content_hash),
       raw_payload = COALESCE(EXCLUDED.raw_payload, events.raw_payload),
       is_jpo_event = COALESCE(EXCLUDED.is_jpo_event, events.is_jpo_event),
@@ -669,7 +670,8 @@ export async function upsertEvent(ev) {
       ev.region || "Středočeský kraj",
       ev.contentHash || null,
       ev.rawPayload == null ? null : JSON.stringify(ev.rawPayload),
-      ev.isJpoEvent !== false
+      ev.isJpoEvent !== false,
+      ev.eventRegion || ev.region || "Středočeský kraj"
     ]
   );
 }

@@ -151,8 +151,8 @@ test("repeatable additive migration preserves rows and report unique constraint"
   await initDb();
   assert.equal((await pool.query("SELECT COUNT(*)::int AS count FROM events")).rows[0].count, before);
   assert.ok((await pool.query("SELECT skipped_count, skipped_older_count, unchanged_count FROM ingest_log LIMIT 1")).rows.length);
-  const migrated=await pool.query("SELECT source,external_id,source_url,region,is_jpo_event FROM events WHERE id='audit-stable'");
-  assert.equal(migrated.rows[0].source,'stredocesky');assert.equal(migrated.rows[0].external_id,'audit-stable');assert.equal(migrated.rows[0].is_jpo_event,true);
+  const migrated=await pool.query("SELECT source,external_id,source_url,region,event_region,is_jpo_event FROM events WHERE id='audit-stable'");
+  assert.equal(migrated.rows[0].source,'stredocesky');assert.equal(migrated.rows[0].external_id,'audit-stable');assert.equal(migrated.rows[0].event_region,'Středočeský kraj');assert.equal(migrated.rows[0].is_jpo_event,true);
 });
 test("Praha Atom ingest uses source identity, skips old history and updates changed summaries only",async()=>{
  const xml=fs.readFileSync(fileURLToPath(new URL('./fixtures/praha-atom.xml',import.meta.url)),'utf8');
