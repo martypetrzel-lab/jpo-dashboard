@@ -233,7 +233,7 @@ export async function initDb() {
   for (const [name,type] of Object.entries({geo_precision:'TEXT',geo_confidence:'DOUBLE PRECISION',geo_query:'TEXT',geo_display_name:'TEXT',geo_verified:'BOOLEAN NOT NULL DEFAULT FALSE',geo_failure_reason:'TEXT',geo_context_key:'TEXT'})) await pool.query(`ALTER TABLE events ADD COLUMN IF NOT EXISTS ${name} ${type}`);
   await pool.query(`CREATE TABLE IF NOT EXISTS geocode_cache_v2 (context_key TEXT PRIMARY KEY, result JSONB NOT NULL, expires_at TIMESTAMPTZ NOT NULL)`);
   await pool.query(`CREATE TABLE IF NOT EXISTS geocode_provider_limits (provider TEXT PRIMARY KEY, next_request_at TIMESTAMPTZ NOT NULL)`);
-  await pool.query(`UPDATE events SET source=COALESCE(source,'stredocesky'), external_id=COALESCE(external_id,id), source_url=COALESCE(source_url,link), region=COALESCE(region,'Středočeský kraj'), is_jpo_event=COALESCE(is_jpo_event,TRUE) WHERE source IS NULL OR external_id IS NULL OR source_url IS NULL OR region IS NULL OR is_jpo_event IS NULL`);
+  await pool.query(`UPDATE events SET source=CASE WHEN source IS NULL OR BTRIM(source)='' OR source='unknown' THEN 'stredocesky' ELSE source END, external_id=COALESCE(external_id,id), source_url=COALESCE(source_url,link), region=COALESCE(region,'Středočeský kraj'), is_jpo_event=COALESCE(is_jpo_event,TRUE) WHERE source IS NULL OR BTRIM(source)='' OR source='unknown' OR external_id IS NULL OR source_url IS NULL OR region IS NULL OR is_jpo_event IS NULL`);
   await pool.query(`UPDATE events SET event_region=COALESCE(event_region,region,CASE source WHEN 'praha' THEN 'Hlavní město Praha' WHEN 'pardubicky' THEN 'Pardubický kraj' ELSE 'Středočeský kraj' END), assignment_method=COALESCE(assignment_method,'none'), cross_region_assistance=COALESCE(cross_region_assistance,FALSE) WHERE event_region IS NULL OR assignment_method IS NULL OR cross_region_assistance IS NULL`);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_events_source_external_id ON events(source, external_id) WHERE external_id IS NOT NULL`);
 
@@ -624,7 +624,7 @@ export async function upsertEvent(ev) {
       status_source = COALESCE(EXCLUDED.status_source, events.status_source),
       source_kind = COALESCE(EXCLUDED.source_kind, events.source_kind),
       source_note = COALESCE(EXCLUDED.source_note, events.source_note),
-      source = COALESCE(events.source, EXCLUDED.source),
+      source = CASE WHEN events.source IS NULL OR BTRIM(events.source)='' OR events.source='unknown' THEN EXCLUDED.source ELSE events.source END,
       external_id = COALESCE(events.external_id, EXCLUDED.external_id),
       source_url = COALESCE(EXCLUDED.source_url, events.source_url),
       region = COALESCE(EXCLUDED.region, events.region),

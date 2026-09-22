@@ -147,6 +147,7 @@ test("ingest preserves manual coordinates and rejects oversized batches", async 
 });
 
 test("repeatable additive migration preserves rows and report unique constraint", async () => {
+  await pool.query("UPDATE events SET source='unknown',event_region=NULL WHERE id='audit-stable'");
   const before = (await pool.query("SELECT COUNT(*)::int AS count FROM events")).rows[0].count;
   await initDb();
   assert.equal((await pool.query("SELECT COUNT(*)::int AS count FROM events")).rows[0].count, before);
