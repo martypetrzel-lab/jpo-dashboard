@@ -244,6 +244,11 @@
           <option value="tech">technická</option>
           <option value="rescue">záchrana</option>
           <option value="false_alarm">planý poplach</option>
+          <option value="hzs">událost HZS</option>
+          <option value="water">voda</option>
+          <option value="electricity">elektřina</option>
+          <option value="transport">veřejná doprava</option>
+          <option value="crisis_other">jiná krizová událost</option>
           <option value="other">jiné</option>
         </select>
       </div>
@@ -259,6 +264,15 @@
           <option value="all">vše</option>
           <option value="open">aktivní</option>
           <option value="closed">ukončené</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label for="sourceSelect">Oblast / zdroj</label>
+        <select id="sourceSelect">
+          <option value="all">vše</option>
+          <option value="stredocesky">Středočeský kraj</option>
+          <option value="praha">Praha</option>
         </select>
       </div>
 
@@ -512,8 +526,8 @@
 
     <section id="activeClosedCard" class="card activeClosedCard v28MiniPanel">
       <div class="cardHeader">
-        <h2>Aktivní × ukončené</h2>
-        <div class="hint">Počet (30 dní, podle filtrů)</div>
+        <h2>Aktivní × ukončené JPO / HZS</h2>
+        <div class="hint">Čisté zásahové statistiky (30 dní, podle filtrů)</div>
       <div id="activeClosedTypeBreakdown" class="typeBreakdownGrid"></div>
       </div>
       <div class="splitStats">
@@ -526,6 +540,7 @@
           <div class="splitLabel">Ukončené</div>
         </div>
       </div>
+      <div id="categorySplitInfo" class="hint"></div>
     </section>
 
     <section id="cityRankCard" class="card cityRankCard v28MiniPanel">

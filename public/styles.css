@@ -4537,3 +4537,10 @@ button.btn {
   text-underline-offset: 3px;
   cursor: help;
 }
+
+/* Region/source distinction for multi-feed events */
+.sourceBadge {display:inline-flex;align-items:center;border:1px solid rgba(148,163,184,.35);border-radius:999px;padding:2px 7px;font-size:.72rem;line-height:1.2;white-space:nowrap;color:#cbd5e1;background:rgba(30,41,59,.7)}
+.sourceBadge.source-praha {border-color:rgba(250,204,21,.5);color:#fde68a;background:rgba(113,63,18,.35)}
+.fw-source-praha .fw-emoji {box-shadow:0 0 0 3px #facc15,0 0 14px rgba(250,204,21,.55)}
+.marker-water .fw-emoji {background:#075985}
+.marker-electricity .fw-emoji {background:#713f12}

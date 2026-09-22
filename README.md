@@ -84,7 +84,7 @@ Spusťte `npm test`. Testy používají vestavěný `node:test` a pokrývají b�
 
 # Záložní RSS import přes GitHub Actions
 
-Workflow `.github/workflows/rss-ingest.yml` stahuje RSS na GitHub runneru a přes existující `POST /api/ingest` posílá až 100 položek s `source: "github_actions_rss"`. Používá stejné parsování a stabilní ID jako Railway worker, takže opakované doručení skončí databázovým upsertem. ESP32 není potřeba. Serverové API ani databáze se nemění; diagnostika uchovává uvedenou hodnotu `source` (existující `source_kind` endpointu zůstává `esp`).
+Workflow `.github/workflows/rss-ingest.yml` zpracuje nezávisle středočeský RSS a pražský Atom feed. Přes existující `POST /api/ingest` posílá nejvýše 100 položek na zdroj. Selhání jednoho kroku neblokuje spuštění druhého; závěrečný krok přesto označí běh jako neúspěšný, pokud některý import selhal. ESP32 není potřeba.
 
 ## Nastavení GitHub Secrets
 
@@ -103,7 +103,7 @@ API klíč zjistíte v Railway u služby FireWatch v **Variables → API_KEY**. 
 
 1. Otevřete **Actions → RSS ingest**. Pokud GitHub nabízí povolení Actions, nejprve je povolte.
 2. Klikněte **Run workflow**, vyberte větev **main** a potvrďte **Run workflow**.
-3. Otevřete běh a krok **Import RSS into FireWatch**. Úspěšný výstup obsahuje `RSS items=…`, `ingest HTTP status=200` a `accepted=…; inserted=…; updated=…; skipped=…; skipped_older=…`. Již uložené události mohou mít `inserted=0` a `updated>0`. `skipped_older` počítá starší neznámé ukončené položky, které se podle pravidel aktuálního RSS dne nevkládají.
+3. Otevřete kroky **Import Středočeský RSS into FireWatch** a **Import Praha Atom into FireWatch**. Středočeský výstup obsahuje `RSS items=…`, `accepted`, `inserted`, `updated`, `skipped` a `skipped_older`. Pražský výstup obsahuje `found`, HTTP status, `new`, `updated`, `unchanged`, `skipped_old`, `errors` a `duration_ms`. Žádný krok nevypisuje API klíč.
 4. Ověřte události na webu a v admin diagnostice příjmu dat vyhledejte `source: github_actions_rss`. Zelený běh s `RSS items=0` jen bezpečně přeskočil prázdný feed, nepotvrzuje funkčnost ingestu.
 5. Plán `*/5 * * * *` na výchozí větvi automaticky žádá spuštění každých 5 minut. GitHub může plánované běhy zpozdit; nejde o přesnou časovou garanci. Společná concurrency skupina brání souběhu ručního a plánovaného importu.
 
@@ -116,6 +116,27 @@ Lokálně lze se stejnými dvěma proměnnými prostředí spustit `npm ci` a `n
 Pokud původní server odmítne síť GitHub Actions, importer automaticky použije veřejnou bránu rss2json. Volitelný GitHub Secret `RSS2JSON_API_KEY` zapne požadavek na až 100 nejnovějších položek (`count=100`, řazení podle data sestupně). Bez tohoto klíče brána vrací posledních 10 položek. URL zdroje obsahuje pětiminutový cache bucket, aby brána nevracela dlouhodobě zastaralý výsledek. Stabilní ID a databázový upsert zajistí, že nové zásahy vzniknou jednou a dříve uložené zásahy se pouze aktualizují.
 
 Příjem RSS je omezen na aktuální kalendářní den v časovém pásmu `Europe/Prague`. Ze starších dnů se nově přijmou jen výslovně otevřené zásahy, které pokračují přes půlnoc. Již známý přesah lze následným RSS během aktualizovat nebo ukončit; neznámé starší ukončené události se nevkládají. Pohled „dnes“ zobrazuje dnešní zásahy a všechny stále otevřené přesahy.
+## Pražský Atom feed
+
+Druhý zdroj používá `https://bezpecnost.praha.eu/Intens.CrisisPortalInfrastructureApp/events/rss`. Parser čte Atom prvky `entry`, `id`, `link[href]`, `updated`, `title`, `summary` a `author/name`. Stabilní identita je dvojice `source=praha` + původní `external_id` ve tvaru `urn:uuid:…`; technické ID události má tvar `praha:urn:uuid:…`. Středočeské identity se tím nemění a oba zdroje se nemohou navzájem přepsat.
+
+První pražský import přijme pouze neznámé položky aktualizované během posledních 24 hodin. Historické položky ve feedu se vykážou jako `skipped_old` a nevytvoří se z nich historie. Již známé ID se kontroluje i po překročení 24 hodin, aby se mohla propsat změna souhrnu nebo stavu. Shodný obsah pouze posune `last_seen_at`; změna `updated`, názvu, souhrnu, odkazu nebo odvozeného stavu provede update. Stáří lze pro provozní potřeby omezit proměnnou `PRAHA_MAX_AGE_HOURS` v rozsahu 1–168, workflow používá 24.
+
+Pražský zdroj obecně neposkytuje jistý začátek ani konec. Stav proto zůstává **stav neupřesněn**, případně se zobrazí jako **pravděpodobně probíhá/ukončeno**, pouze když text obsahuje jednoznačnou formulaci. Tyto odhady nevytvářejí čas zahájení, ukončení ani délku zásahu. Události výslovně spojené s HZS jsou zahrnuté do statistik JPO/HZS; voda, elektřina, doprava a jiné obecné krize jsou vedené odděleně. Filtr **Oblast / zdroj** přepíná všechny zdroje, Středočeský kraj a Prahu. Zdroj je uveden také v detailu, mapě a exportech.
+
+Pražské geokódování zkouší postupně úplnou adresu, ulici s městskou částí, čtvrť s Prahou a městskou část. Přijme jen český výsledek uvnitř pražského výřezu a s odpovídající pražskou správní oblastí. Neshodný nebo příliš obecný výsledek nevytvoří marker; neúspěšná událost zůstane v tabulce a může se dohledat později.
+
+Bezpečný lokální test bez zápisu do FireWatch lze spustit s běžnými GitHub Secrets v prostředí:
+
+```powershell
+$env:PRAHA_DRY_RUN='1'
+node scripts/praha-push.js
+```
+
+Dry-run stáhne živý feed, ale nevolá ingest. Vypíše pouze `found`, `eligible`, `skipped_old`, bezpečný počet chyb a dobu běhu. Automatické testy používají uložený fixture `test/fixtures/praha-atom.xml` a nejsou závislé na dostupnosti živého zdroje.
+
+`initDb()` opakovatelně přidává sloupce `source`, `external_id`, `source_url`, `region`, `content_hash`, `raw_payload`, `is_jpo_event` a unikátní index `(source, external_id)`. Existující záznamy dostanou `source=stredocesky` a původní `id` jako `external_id`; data, stabilní ID ani souřadnice se nemažou. Návrat na předchozí verzi aplikace je možný ponecháním přidaných sloupců a indexu v databázi. Není potřeba destruktivní rollback SQL.
+
 ## Audit a změny spolehlivosti (17. 9. 2026)
 
 Architektura, výchozí stav a priority jsou v `docs/audit-2026-09-17.md`. Stack zůstává Express, PostgreSQL a klasický JavaScript; RSS worker i GitHub Actions/RSS2JSON zůstávají zachované.

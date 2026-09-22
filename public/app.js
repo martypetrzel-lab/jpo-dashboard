@@ -577,6 +577,11 @@ const TYPE = {
   tech: { emoji: "🛠️", label: "technická", cls: "marker-tech" },
   rescue: { emoji: "🚑", label: "záchrana", cls: "marker-rescue" },
   false_alarm: { emoji: "🚫", label: "planý poplach", cls: "marker-false" },
+  hzs: { emoji: "🚒", label: "událost HZS", cls: "marker-rescue" },
+  water: { emoji: "💧", label: "voda", cls: "marker-water" },
+  electricity: { emoji: "⚡", label: "elektřina", cls: "marker-electricity" },
+  transport: { emoji: "🚇", label: "veřejná doprava", cls: "marker-traffic" },
+  crisis_other: { emoji: "⚠️", label: "krizová událost", cls: "marker-other" },
   other: { emoji: "❓", label: "jiné", cls: "marker-other" }
 };
 
@@ -584,8 +589,14 @@ function typeMeta(t) {
   return TYPE[t] || TYPE.other;
 }
 
-function statusEmoji(isClosed) {
-  return isClosed ? "✅" : "🔴";
+function statusEmoji(value) {
+  if (value && typeof value === "object") {
+    if (value.status_source === "source_estimated_unknown") return "🟡";
+    if (value.status_source === "source_estimated_open") return "🟠";
+    if (value.status_source === "source_estimated_closed") return "☑️";
+    return value.is_closed ? "✅" : "🔴";
+  }
+  return value ? "✅" : "🔴";
 }
 
 function setStatus(text, ok = true) {
@@ -842,6 +853,7 @@ function buildEventsQuery(filters) {
   if (filters.type) params.set("type", filters.type);
   if (filters.city) params.set("city", filters.city);
   if (filters.status && filters.status !== "all") params.set("status", filters.status);
+  if (filters.source && filters.source !== "all") params.set("source", filters.source);
   params.set("limit", String(getEventsTableLimit()));
   params.set("limit", String(getEventsApiLimit()));
   // month zde úmyslně není
@@ -854,6 +866,7 @@ function buildStatsQuery(filters) {
   if (filters.type) params.set("type", filters.type);
   if (filters.city) params.set("city", filters.city);
   if (filters.status && filters.status !== "all") params.set("status", filters.status);
+  if (filters.source && filters.source !== "all") params.set("source", filters.source);
   if (filters.month) params.set("month", filters.month);
   return params.toString();
 }
@@ -864,6 +877,7 @@ function buildExportQuery(filters) {
   if (filters.type) params.set("type", filters.type);
   if (filters.city) params.set("city", filters.city);
   if (filters.status && filters.status !== "all") params.set("status", filters.status);
+  if (filters.source && filters.source !== "all") params.set("source", filters.source);
   // month zde úmyslně není (export = tabulka/události podle filtrů)
   return params.toString();
 }
@@ -924,6 +938,7 @@ function getFiltersFromUi() {
     type: document.getElementById("typeSelect").value,
     city: document.getElementById("cityInput").value.trim(),
     status: document.getElementById("statusSelect").value,
+    source: document.getElementById("sourceSelect")?.value || "all",
     month: document.getElementById("monthInput")?.value || "",
     majorOnly: !!document.getElementById("majorOnlyCheck")?.checked
   };
@@ -967,6 +982,9 @@ function majorReasonText(it) {
 function statusLabelForEvent(it) {
   if (it?.status_source === "explicit_open" || it?.statusSource === "explicit_open") return "probíhá zásah";
   if (it?.status_source === "explicit_closed" || it?.statusSource === "explicit_closed") return "ukončená";
+  if (it?.status_source === "source_estimated_open") return "pravděpodobně probíhá";
+  if (it?.status_source === "source_estimated_closed") return "pravděpodobně ukončeno";
+  if (it?.status_source === "source_estimated_unknown") return "stav neupřesněn";
   return it?.is_closed ? "ukončená" : "aktivní";
 }
 
@@ -1010,7 +1028,7 @@ function renderMajorEvents(items = []) {
       <div class="majorEventItem ${Number(it.alarm_level || 0) >= 4 ? "alarm-special" : "alarm-major"}">
         <div>
           <b>${meta.emoji} ${escapeHtml(it.title || "")}</b>
-          <span>${escapeHtml(it.city_text || it.place_text || "")} • ${statusEmoji(it.is_closed)} ${escapeHtml(statusLabelForEvent(it))} ${carryoverBadgeHtml(it)}</span>
+          <span>${escapeHtml(it.city_text || it.place_text || "")} • ${statusEmoji(it)} ${escapeHtml(statusLabelForEvent(it))} ${carryoverBadgeHtml(it)}</span>
           <small>${escapeHtml(majorReasonText(it) || "významná událost")}</small>
         </div>
         <div>${alarmLevelBadge(it)} <button type="button" class="btn miniBtn adminOnly majorManualEditBtn" data-event-id="${escapeHtml(it.id || "")}">Edit</button></div>
@@ -1053,6 +1071,9 @@ function detailDateText(value) {
 function eventDetailLine(label, value, tooltip = "") {
   return `<div class="eventDetailLine"${tooltip?` title="${escapeHtml(tooltip)}"`:''}><span>${escapeHtml(label)}</span><b>${escapeHtml(value || "—")}</b></div>`;
 }
+
+function sourceLabel(it) { return it?.source === "praha" ? "Praha" : "Středočeský kraj"; }
+function sourceBadgeHtml(it) { return `<span class="sourceBadge source-${escapeHtml(it?.source || 'stredocesky')}">${escapeHtml(sourceLabel(it))}</span>`; }
 
 function tableEditButtonHtml(it) {
   if (!isCurrentUserAdmin || !isCurrentUserAdmin()) return "";
@@ -1099,9 +1120,9 @@ function eventMobileCardHtml(it) {
         <span class="eventMobileType" title="${escapeHtml(meta.label || it.event_type || "")}">${escapeHtml(meta.emoji || "•")}</span>
         <div class="eventMobileTitleBlock">
           <h3>${escapeHtml(title)}</h3>
-          <p>${escapeHtml(city || "Místo neurčeno")}</p>
+          <p>${escapeHtml(city || "Místo neurčeno")} ${sourceBadgeHtml(it)}</p>
         </div>
-        <span class="eventMobileState">${statusEmoji(it.is_closed)} ${escapeHtml(statusText)}</span>
+        <span class="eventMobileState">${statusEmoji(it)} ${escapeHtml(statusText)}</span>
       </div>
       <div class="eventMobileMeta">
         <span>🕒 ${escapeHtml(it.time_label || "Čas události")}: ${escapeHtml(formatDate(timeValue))}</span>
@@ -1162,9 +1183,9 @@ function renderTable(items) {
     tr.innerHTML = `
       <td>${escapeHtml(formatDate(timeValue))}</td>
       <td title="${escapeHtml(meta.label || it.event_type || "")}">${escapeHtml(meta.emoji || "")}</td>
-      <td>${escapeHtml(title)}</td>
+      <td>${escapeHtml(title)} ${sourceBadgeHtml(it)}</td>
       <td>${escapeHtml(city)}</td>
-      <td>${statusEmoji(it.is_closed)} ${escapeHtml(statusText)} ${carryHtml}</td>
+      <td>${statusEmoji(it)} ${escapeHtml(statusText)} ${carryHtml}</td>
       <td>${alarmHtml}</td>
       <td>${durationHtml(it)}</td>
       <td>${eventDetailButtonHtml(it)}</td>
@@ -1189,7 +1210,7 @@ function renderTable(items) {
 function makeEventIcon(eventType, it = null) {
   const meta = typeMeta(eventType);
   return L.divIcon({
-    className: `fw-emoji-wrap ${meta.cls} ${isMajorEventItem(it) ? "fw-major-marker" : ""}`,
+    className: `fw-emoji-wrap ${meta.cls} ${it?.source === 'praha' ? 'fw-source-praha' : 'fw-source-stredocesky'} ${isMajorEventItem(it) ? "fw-major-marker" : ""}`,
     html: `<div class="fw-emoji">${isMajorEventItem(it) ? "🚨" : meta.emoji}</div>`,
     iconSize: [24, 24],
     iconAnchor: [12, 12]
@@ -1215,7 +1236,7 @@ function renderMap(items) {
     const it=group.find(row=>!row.is_closed)||group[0];mapped+=group.length;
     const icon=group.length>1?L.divIcon({className:'fw-shared-marker',html:'<span class="'+(group.some(row=>!row.is_closed)?'active':'closed')+'">'+group.length+'</span>',iconSize:[36,36]}):makeEventIcon(it.event_type,it);
     const marker=L.marker([it.lat,it.lon],{icon,zIndexOffset:1000,opacity:group.every(row=>row.is_closed)?0.8:1});
-    const popup=group.map(ev=>'<article class="fw-map-event"><b>'+escapeHtml(ev.title)+'</b><br>'+escapeHtml(ev.geo_municipality||ev.city_text||ev.place_text||'')+(ev.district_text?' · okres '+escapeHtml(ev.district_text):'')+'<br><span class="fw-map-status '+(ev.is_closed?'closed':'active')+'">'+escapeHtml(statusLabelForEvent(ev))+'</span><br>'+escapeHtml(ev.time_label||'Čas události')+': '+escapeHtml(formatDate(ev.source_updated_at||ev.pub_date))+'<br>Začátek: '+escapeHtml(formatDate(ev.start_time_iso))+'<br>Délka: <span title="'+escapeHtml(FireWatchData.durationInfo(ev).tooltip)+'">'+escapeHtml(FireWatchData.durationText(ev))+'</span>'+(ev.is_closed && ev.end_time_iso?'<br>Konec: '+escapeHtml(formatDate(ev.end_time_iso)):'')+'<br><strong class="fw-map-precision">'+escapeHtml(ev.geo_label||'Přibližná poloha')+'</strong><br><button type="button" class="eventDetailBtn" data-event-id="'+escapeHtml(ev.id)+'">Detail události</button></article>').join('');
+    const popup=group.map(ev=>'<article class="fw-map-event"><b>'+escapeHtml(ev.title)+'</b> <span class="sourceBadge source-'+escapeHtml(ev.source||'stredocesky')+'">'+escapeHtml(ev.source==='praha'?'Praha':'Středočeský kraj')+'</span><br>'+escapeHtml(ev.geo_municipality||ev.city_text||ev.place_text||'')+(ev.district_text?' · '+escapeHtml(ev.district_text):'')+'<br><span class="fw-map-status '+(ev.is_closed?'closed':'active')+'">'+escapeHtml(statusLabelForEvent(ev))+'</span><br>'+escapeHtml(ev.time_label||'Čas události')+': '+escapeHtml(formatDate(ev.source_updated_at||ev.pub_date))+'<br>Začátek: '+escapeHtml(formatDate(ev.start_time_iso))+'<br>Délka: <span title="'+escapeHtml(FireWatchData.durationInfo(ev).tooltip)+'">'+escapeHtml(FireWatchData.durationText(ev))+'</span>'+(ev.is_closed && ev.end_time_iso?'<br>Konec: '+escapeHtml(formatDate(ev.end_time_iso)):'')+'<br><strong class="fw-map-precision">'+escapeHtml(ev.geo_label||'Přibližná poloha')+'</strong><br><button type="button" class="eventDetailBtn" data-event-id="'+escapeHtml(ev.id)+'">Detail události</button></article>').join('');
     marker.bindPopup('<div class="fw-map-popup">'+(group.length>1?'<p>'+group.length+' událostí na stejném místě</p>':'')+popup+'</div>',{maxWidth:340,keepInView:true,autoPanPadding:[16,16]});
     marker.addTo(markersLayer);mapEventPoints.push([it.lat,it.lon]);
     if(popupPoint===it.lat+'|'+it.lon){
@@ -1267,9 +1288,10 @@ function renderChart(byDay) {
   });
 }
 
-function renderCounts(openCount, closedCount) {
+function renderCounts(openCount, closedCount, categorySplit = null) {
   document.getElementById("openCount").textContent = String(openCount ?? "—");
   document.getElementById("closedCount").textContent = String(closedCount ?? "—");
+  const split=document.getElementById('categorySplitInfo');if(split&&categorySplit)split.textContent=`JPO / HZS: ${Number(categorySplit.jpo_count||0)} · ostatní krizové události: ${Number(categorySplit.other_crisis_count||0)}`;
 }
 
 function renderTopCities(list) {
@@ -1660,7 +1682,7 @@ async function loadAll(options = {}) {
     updateSimsFromItems(items);
 
     renderChart(statsJson.byDay || []);
-    renderCounts(statsJson.openCount, statsJson.closedCount);
+    renderCounts(statsJson.openCount, statsJson.closedCount, statsJson.categorySplit);
     if (typeof renderActiveClosedTypeBreakdown === "function") {
       renderActiveClosedTypeBreakdown(items);
     }
@@ -1692,6 +1714,7 @@ function resetFilters() {
   document.getElementById("typeSelect").value = "";
   document.getElementById("cityInput").value = "";
   document.getElementById("statusSelect").value = "all";
+  const sourceEl=document.getElementById("sourceSelect");if(sourceEl)sourceEl.value="all";
   const monthEl = document.getElementById("monthInput");
   if (monthEl) monthEl.value = "";
 }
@@ -1799,6 +1822,8 @@ function renderReportDetail(rep) {
       <div><span>Aktivní</span><b>${Number(rep.open_count || 0)}</b></div>
       <div><span>Ukončené</span><b>${Number(rep.closed_count || 0)}</b></div>
       <div><span>Bez GPS</span><b>${Number(rep.missing_coords_count || 0)}</b></div>
+      <div><span>JPO / HZS</span><b>${Number(d.jpo_events ?? rep.total_events ?? 0)}</b></div>
+      <div><span>Ostatní krizové</span><b>${Number(d.other_crisis_events || 0)}</b></div>
       <div><span>Průměr / den</span><b>${Number(d.avg_per_day || 0)}</b></div>
     </div>
 
@@ -3273,7 +3298,7 @@ function renderManualQuickListTarget(listId, statusId, searchId, items = __manua
       <div class="manualQuickItem ${isMajorEventItem(it) ? "is-major" : ""}">
         <div>
           <b>${meta.emoji} ${escapeHtml(it.title || "")}</b>
-          <span>${escapeHtml(it.city_text || it.place_text || "")} • ${statusEmoji(it.is_closed)} ${escapeHtml(statusLabelForEvent(it))}</span>
+          <span>${escapeHtml(it.city_text || it.place_text || "")} • ${statusEmoji(it)} ${escapeHtml(statusLabelForEvent(it))}</span>
           <small>${escapeHtml(formatDate(it.pub_date))} ${alarm ? " • " : ""}${alarm}</small>
         </div>
         <button type="button" class="btn primary miniBtn manualQuickEditBtn" data-event-id="${escapeHtml(it.id || "")}">Upravit stav / stupeň</button>
@@ -3389,7 +3414,7 @@ async function openEventDetailModal(id) {
       header.innerHTML = `
         <div>
           <h3>${meta.emoji} ${escapeHtml(ev.title || "")}</h3>
-          <p>${escapeHtml(ev.geo_municipality || ev.city_text || ev.place_text || "")} • ${statusEmoji(ev.is_closed)} ${escapeHtml(statusLabelForEvent(ev))}</p>
+          <p>${escapeHtml(ev.geo_municipality || ev.city_text || ev.place_text || "")} • ${statusEmoji(ev)} ${escapeHtml(statusLabelForEvent(ev))}</p>
         </div>
         <div>${alarmLevelBadge(ev)}</div>
       `;
@@ -3406,6 +3431,8 @@ async function openEventDetailModal(id) {
         ${eventDetailLine("Poloha", ev.geo_label || "Poloha na mapě nebyla spolehlivě určena.")}
         ${eventDetailLine("Typ", `${meta.emoji} ${meta.label || ev.event_type || ""}`)}
         ${eventDetailLine("Stav", statusLabelForEvent(ev))}
+        ${eventDetailLine("Zdroj / oblast", `${sourceLabel(ev)}${ev.region ? ` · ${ev.region}` : ""}`)}
+        ${eventDetailLine("Kategorie", `${typeMeta(ev.event_type).label}${ev.is_jpo_event === false ? " · ostatní krizová událost" : " · JPO / HZS"}`)}
         <div class="eventDetailLine"><span>Délka</span><b>${durationHtml(ev)}</b></div>
         ${eventDetailLine("Stupeň", ev.alarm_level_text || "")}
         ${eventDetailLine("Význam", ev.major_reason || (ev.is_major_event ? "významná událost" : ""))}
