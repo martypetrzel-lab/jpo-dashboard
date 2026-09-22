@@ -26,9 +26,25 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
-      - name: Import RSS into FireWatch
+      - name: Import Středočeský RSS into FireWatch
+        id: stredocesky
+        continue-on-error: true
         run: node scripts/rss-push.js
         env:
           FIREWATCH_INGEST_URL: ${{ secrets.FIREWATCH_INGEST_URL }}
           FIREWATCH_API_KEY: ${{ secrets.FIREWATCH_API_KEY }}
           RSS2JSON_API_KEY: ${{ secrets.RSS2JSON_API_KEY }}
+      - name: Import Praha Atom into FireWatch
+        id: praha
+        continue-on-error: true
+        run: node scripts/praha-push.js
+        env:
+          FIREWATCH_INGEST_URL: ${{ secrets.FIREWATCH_INGEST_URL }}
+          FIREWATCH_API_KEY: ${{ secrets.FIREWATCH_API_KEY }}
+          PRAHA_MAX_AGE_HOURS: '24'
+      - name: Check independent source imports
+        if: always()
+        shell: bash
+        run: |
+          echo "stredocesky=${{ steps.stredocesky.outcome }} praha=${{ steps.praha.outcome }}"
+          test "${{ steps.stredocesky.outcome }}" = success -a "${{ steps.praha.outcome }}" = success

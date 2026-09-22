@@ -1,10 +1,12 @@
 import {eventLocation, normalizeName, normalizeDistrict} from './location.js';
 export {eventLocation};
-const ranks = {failed:0,region:0,district:0,municipality:2,locality:3,exact:4,manual:5};
+const ranks = {failed:0,region:0,district:1,municipality:2,locality:3,exact:4,manual:5};
 export const insideCz = (lat,lon) => lat != null && lon != null && Number.isFinite(Number(lat)) && Number.isFinite(Number(lon)) && lat>=48.5 && lat<=51.1 && lon>=12 && lon<=18.9;
 export const insideStc = (lat,lon) => insideCz(lat,lon) && lat>=49.3 && lat<=50.71 && lon>=13.25 && lon<=15.65;
+export const insidePraha = (lat,lon) => insideCz(lat,lon) && lat>=49.94 && lat<=50.18 && lon>=14.22 && lon<=14.71;
 export function cacheKey(context) {return ['v2',context.municipality,context.locality,context.district,context.state,context.country,context.detail].map(normalizeName).join('|');}
 export function buildQueries(context) {
+  if (context.source === 'praha') return buildPrahaQueries(context);
   if (!context.municipality || /^(okres|kraj)\b/i.test(context.municipality)) return [];
   const district = context.district ? 'okres '+normalizeDistrict(context.district) : '';
   const make = (...parts)=>parts.filter(Boolean).join(', ');
@@ -14,6 +16,16 @@ export function buildQueries(context) {
     make(context.municipality,district,context.state,context.country),
     make(context.municipality,district,context.country)
   ])]; // A known district is never discarded by a fallback.
+}
+export function buildPrahaQueries(context) {
+  const make=(...parts)=>parts.filter(Boolean).join(', ');
+  const district=/^praha\s+(2[0-2]|1\d|[1-9])$/i.test(context.municipality || '') ? context.municipality : (context.district || 'Praha');
+  return [...new Set([
+    make(context.detail, district, context.state, context.country),
+    make(context.detail, context.locality, 'Praha', context.country),
+    make(context.locality, 'Praha', context.country),
+    make(district, context.state, context.country)
+  ].filter(query=>query && query!==make(context.state,context.country)))];
 }
 const centers = [
   ['Kladno','Kladno',50.1431,14.1052],['Mladá Boleslav','Mladá Boleslav',50.4114,14.9032],
@@ -29,6 +41,7 @@ export function localCenter(context) {
   return row ? {lat:row[2],lon:row[3],precision:'municipality',confidence:70,source:'local-municipality',display_name:row[0]+', okres '+row[1],query:buildQueries(context).at(-1),context_key:cacheKey(context)} : null;
 }
 export function evaluateCandidate(candidate, context) {
+  if (context.source === 'praha') return evaluatePrahaCandidate(candidate, context);
   const address=candidate.address || {}, lat=Number(candidate.lat),lon=Number(candidate.lon);
   const reject=reason=>({accepted:false,reason});
   if(String(address.country_code || '').toLowerCase() !== 'cz')return reject('country_mismatch');
@@ -49,6 +62,27 @@ export function evaluateCandidate(candidate, context) {
   else if(!['city','town','village','municipality'].includes(type))return reject('detail_not_matched');
   return {accepted:true,lat,lon,precision,confidence,source:'nominatim',display_name:String(candidate.display_name || ''),context_key:cacheKey(context)};
 }
+export function evaluatePrahaCandidate(candidate, context) {
+  const address=candidate.address || {},lat=Number(candidate.lat),lon=Number(candidate.lon),reject=reason=>({accepted:false,reason});
+  if(String(address.country_code || '').toLowerCase()!=='cz')return reject('country_mismatch');
+  if(!insidePraha(lat,lon))return reject('outside_expected_area');
+  const pragueState=/^(hlavni mesto praha|prague|praha)$/.test(normalizeName(address.state || address.region || address.city));
+  if(!pragueState)return reject('state_mismatch');
+  const type=candidate.addresstype || candidate.type;
+  if(['county','state','region','country','state_district'].includes(type))return reject('administrative_result');
+  const expectedDistrict=normalizeName(context.municipality || context.district);
+  const actualDistrict=[address.city_district,address.suburb,address.borough,address.quarter].map(normalizeName).find(value=>/^praha \d+$/.test(value));
+  if(/^praha \d+$/.test(expectedDistrict) && actualDistrict && actualDistrict!==expectedDistrict)return reject('district_mismatch');
+  const road=normalizeName(address.road || address.pedestrian || candidate.name), detail=normalizeName(context.detail);
+  if(detail && road && (detail.includes(road) || road.includes(detail.replace(/\s+\d+[a-z/\d-]*$/,'')))) {
+    return {accepted:true,lat,lon,precision:address.house_number?'exact':'locality',confidence:address.house_number?95:85,source:'nominatim',display_name:String(candidate.display_name||''),context_key:cacheKey(context)};
+  }
+  const locality=normalizeName(context.locality);
+  if(locality && [address.suburb,address.neighbourhood,address.quarter,candidate.name].some(value=>normalizeName(value)===locality))return {accepted:true,lat,lon,precision:'locality',confidence:82,source:'nominatim',display_name:String(candidate.display_name||''),context_key:cacheKey(context)};
+  if(/^praha \d+$/.test(expectedDistrict) && actualDistrict===expectedDistrict)return {accepted:true,lat,lon,precision:'district',confidence:60,source:'nominatim',display_name:String(candidate.display_name||''),context_key:cacheKey(context)};
+  if(expectedDistrict==='praha' && ['city','municipality'].includes(type))return {accepted:true,lat,lon,precision:'municipality',confidence:55,source:'nominatim',display_name:String(candidate.display_name||''),context_key:cacheKey(context)};
+  return reject(detail?'detail_not_matched':'district_mismatch');
+}
 export function selectCandidate(candidates,context) {
   const results=candidates.map(c=>evaluateCandidate(c,context)), accepted=results.filter(c=>c.accepted).sort((a,b)=>b.confidence-a.confidence);
   if(!accepted.length)return {precision:'failed',failure_reason:results[0]?.reason || 'not_found',lat:null,lon:null};
@@ -57,26 +91,28 @@ export function selectCandidate(candidates,context) {
 }
 export function protectedCoordinates(event) {return event.geo_verified===true || /manual|admin/i.test(event.geo_source || '');}
 export function canImprove(event, proposal, repair=false) {
-  if(protectedCoordinates(event) || !insideStc(proposal?.lat,proposal?.lon) || !ranks[proposal?.precision])return false;
-  if(proposal.context_key && proposal.context_key!==cacheKey(eventLocation(event)))return false;
+  const context=eventLocation(event),inside=context.source==='praha'?insidePraha:insideStc;
+  if(protectedCoordinates(event) || !inside(proposal?.lat,proposal?.lon) || !ranks[proposal?.precision])return false;
+  if(proposal.context_key && proposal.context_key!==cacheKey(context))return false;
   if(event.lat==null || event.lon==null)return true;
   if(repair && ['district_fallback','outside_expected_area'].includes(annotateEventGeo(event).geo_failure_reason))return true;
   return !!event.geo_precision && (ranks[proposal.precision] || 0)>(ranks[event.geo_precision] || 0);
 }
 export function annotateEventGeo(event) {
   const context=eventLocation(event), center=localCenter(context);
+  const inside=context.source==='praha'?insidePraha:insideStc;
   let precision=event.geo_precision, reason=event.geo_failure_reason || '';
   const fallback=(Number(event.lat)===50.1073 && Number(event.lon)===14.725) || (Number(event.lat)===49.9833 && Number(event.lon)===14.3333);
-  if(!insideStc(event.lat,event.lon))reason=event.lat==null || event.lon==null ? (reason || 'missing_coordinates') : 'outside_expected_area';
+  if(!inside(event.lat,event.lon))reason=event.lat==null || event.lon==null ? (reason || 'missing_coordinates') : 'outside_expected_area';
   else if(fallback && !event.geo_verified)reason='district_fallback';
   else if(precision && precision!=='manual' && event.geo_context_key && event.geo_context_key!==cacheKey(context))reason='context_mismatch';
   else if(precision && precision!=='manual' && event.geo_confidence!=null && Number(event.geo_confidence)<60)reason='low_confidence';
   else if(!precision && /^manual_event_(create|edit)$/.test(event.geo_source || '')){precision='manual';reason='';}
   else if(!precision && center && Number(event.lat)===center.lat && Number(event.lon)===center.lon){precision='municipality';reason='';}
   else if(!precision)reason='unverified_legacy';
-  const reliable=insideStc(event.lat,event.lon) && !reason && !!ranks[precision];
+  const reliable=inside(event.lat,event.lon) && !reason && !!ranks[precision];
   return {...event,district_text:context.district,geo_municipality:context.municipality,geo_locality:context.locality,geo_detail:context.detail,geo_precision:precision || 'failed',geo_reliable:reliable,geo_failure_reason:reason,
-    geo_label:reliable ? (precision==='municipality'?'Přibližná poloha – střed obce':precision==='locality'?'Přibližná poloha – část obce':precision==='manual'?'Ručně určená poloha':'Přesná poloha') : 'Poloha na mapě nebyla spolehlivě určena.'};
+    geo_label:reliable ? (precision==='district'?'Přibližná poloha – městská část':precision==='municipality'?'Přibližná poloha – střed obce':precision==='locality'?'Přibližná poloha – část obce':precision==='manual'?'Ručně určená poloha':'Přesná poloha') : 'Poloha na mapě nebyla spolehlivě určena.'};
 }
 export function diagnoseCoordinates(events) {
   const groups=new Map();
@@ -92,8 +128,9 @@ export function createGeocoder({fetchImpl=fetch,getCache=async()=>null,setCache=
   async function lookup(event,{remote=false,refresh=false}={}) {
     const context=eventLocation(event),key=cacheKey(context),queries=buildQueries(context);
     if(!queries.length)return {lat:null,lon:null,precision:'failed',failure_reason:'missing_municipality',query:'',context_key:key};
-    if(!refresh){const cached=await getCache(key);if(cached && cached.context_key===key && (cached.precision==='failed' || insideStc(cached.lat,cached.lon)))return cached;}
-    const local=localCenter(context);if(!remote)return local || {lat:null,lon:null,precision:'failed',failure_reason:'lookup_required',query:queries[0],context_key:key};
+    const inside=context.source==='praha'?insidePraha:insideStc;
+    if(!refresh){const cached=await getCache(key);if(cached && cached.context_key===key && (cached.precision==='failed' || inside(cached.lat,cached.lon)))return cached;}
+    const local=context.source==='praha'?null:localCenter(context);if(!remote)return local || {lat:null,lon:null,precision:'failed',failure_reason:'lookup_required',query:queries[0],context_key:key};
     if(inFlight.has(key))return inFlight.get(key);
     const task=queue.then(async()=>{
       let result={lat:null,lon:null,precision:'failed',failure_reason:'not_found'};
@@ -101,7 +138,7 @@ export function createGeocoder({fetchImpl=fetch,getCache=async()=>null,setCache=
         for(let attempt=0;attempt<2;attempt++){
           await reserve();const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),9000);
           try{
-            const url=new URL(endpoint);Object.entries({q:query,format:'jsonv2',limit:'10',countrycodes:'cz',addressdetails:'1',bounded:'1',viewbox:'13.25,50.71,15.65,49.30'}).forEach(([k,v])=>url.searchParams.set(k,v));
+            const url=new URL(endpoint);Object.entries({q:query,format:'jsonv2',limit:'10',countrycodes:'cz',addressdetails:'1',bounded:'1',viewbox:context.source==='praha'?'14.22,50.18,14.71,49.94':'13.25,50.71,15.65,49.30'}).forEach(([k,v])=>url.searchParams.set(k,v));
             const response=await fetchImpl(url,{signal:controller.signal,headers:{'User-Agent':userAgent,'Accept-Language':'cs,en;q=0.8'}});
             if(!response.ok){result={lat:null,lon:null,precision:'failed',failure_reason:response.status===429?'rate_limited':response.status>=500?'provider_unavailable':'provider_rejected'};if(attempt===0 && (response.status===429 || response.status>=500))continue;break;}
             const data=await response.json();result={...selectCandidate(Array.isArray(data)?data:[],context),query};break;

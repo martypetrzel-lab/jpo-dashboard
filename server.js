@@ -12,6 +12,7 @@ import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import { attachOpsRadio } from "./radio-server.js";
 import { createRssWorker, readRssConfig, shouldIngestRssItemForToday, testRssConnection } from "./rss-worker.js";
+import { shouldIngestPrahaItem } from "./prague-atom.js";
 
 
 // ======================
@@ -43,6 +44,8 @@ import {
   clearEventCoords,
   getEventFirstSeen,
   getEventMeta,
+  getEventMetaBySourceExternal,
+  touchEventLastSeen,
   updateEventDuration,
   getDurationCutoffIso,
   getLongestCutoffIso,
@@ -285,9 +288,18 @@ function typeLabel(t) {
     tech: "Technická pomoc",
     rescue: "Záchrana",
     false_alarm: "Planý poplach",
+    hzs: "Událost HZS",
+    water: "Voda",
+    electricity: "Elektřina",
+    transport: "Veřejná doprava",
+    crisis_other: "Jiná krizová událost",
     other: "Ostatní"
   };
   return m[t] || "Ostatní";
+}
+
+function eventSourceLabel(event) {
+  return event?.source === "praha" ? "Praha" : "Středočeský kraj";
 }
 
 function classifyType(title) {
@@ -476,8 +488,9 @@ function parseFilters(req) {
   const status = String(req.query.status || "all").trim();
   const day = String(req.query.day || "all").trim();
   const month = String(req.query.month || "").trim();
-  if(types.length>10||types.some(value=>value.length>64)||city.length>120||!['all','open','closed'].includes(status)||!['all','today','yesterday'].includes(day)|| (month && (!/^\d{4}-\d{2}$/.test(month)||Number(month.slice(5))<1||Number(month.slice(5))>12))) {const error=new Error('bad_filters');error.status=400;throw error;}
-  return { types, city, status, day, month };
+  const source = String(req.query.source || "all").trim();
+  if(types.length>10||types.some(value=>value.length>64)||city.length>120||!['all','open','closed'].includes(status)||!['all','today','yesterday'].includes(day)||!['all','stredocesky','praha'].includes(source)|| (month && (!/^\d{4}-\d{2}$/.test(month)||Number(month.slice(5))<1||Number(month.slice(5))>12))) {const error=new Error('bad_filters');error.status=400;throw error;}
+  return { types, city, status, day, month, source };
 }
 
 function exportFiltersLabel(filters) {
@@ -499,7 +512,8 @@ function exportFiltersLabel(filters) {
 
   const cityLabel = filters.city || "vše";
 
-  return `Den: ${dayLabel} | Typ: ${typeLabelText} | Město: ${cityLabel} | Stav: ${statusLabel}`;
+  const sourceLabel = filters.source === 'praha' ? 'Praha' : filters.source === 'stredocesky' ? 'Středočeský kraj' : 'vše';
+  return `Den: ${dayLabel} | Typ: ${typeLabelText} | Město: ${cityLabel} | Stav: ${statusLabel} | Zdroj: ${sourceLabel}`;
 }
 
 
@@ -639,6 +653,8 @@ function buildAnalyticalReport(type, key, rows) {
   const open = rows.filter(r => !r.is_closed).length;
   const closed = rows.filter(r => !!r.is_closed).length;
   const missingCoords = rows.filter(r => !annotateEventGeo(r).geo_reliable).length;
+  const jpoEvents = rows.filter(r => r.is_jpo_event !== false).length;
+  const otherCrisisEvents = rows.filter(r => r.is_jpo_event === false).length;
 
   const byType = new Map();
   const byCity = new Map();
@@ -744,6 +760,8 @@ function buildAnalyticalReport(type, key, rows) {
       open_count: open,
       closed_count: closed,
       missing_coords_count: missingCoords,
+      jpo_events: jpoEvents,
+      other_crisis_events: otherCrisisEvents,
       avg_per_day: avgPerDay,
       type_stats: typeStats,
       top_cities: topCities,
@@ -917,6 +935,8 @@ function drawReportPdf(doc, row) {
     width: usableW,
     lineGap: 2
   });
+  doc.moveDown(0.25);
+  doc.fontSize(9).fillColor("#444").text(`JPO / HZS: ${Number(data.jpo_events ?? report.total_events)} · ostatní krizové události: ${Number(data.other_crisis_events || 0)}`, left, doc.y, { width: usableW });
   doc.moveDown(0.9);
 
   // KPI cards - fixed width, no overflow
@@ -2496,7 +2516,8 @@ async function handleIngest(req, res) {
     }
 
     if (items.length > 200) return res.status(400).json({ ok: false, error: "too_many_items", maxItems: 200 });
-    const rssSource = ["github_actions_rss", "github_actions_rss2json", "server_rss_worker"].includes(source);
+    const prahaSource = source === "github_actions_praha_atom";
+    const rssSource = prahaSource || ["github_actions_rss", "github_actions_rss2json", "server_rss_worker"].includes(source);
     let skippedOlder = 0;
     let skippedInvalid = 0;
     const uniqueItems = new Map();
@@ -2513,27 +2534,39 @@ async function handleIngest(req, res) {
     let geocoded = 0;
     let inserted = 0;
     let updated = 0;
+    let unchanged = 0;
 
     for (const it of uniqueItems.values()) {
 
-      const prev = await getEventMeta(it.id);
-      if (rssSource && !shouldIngestRssItemForToday(it, { previouslyKnown: !!prev, previouslyKnownOpen: prev?.is_closed === false })) { skippedOlder++; continue; }
+      if (prahaSource && (it.source !== "praha" || !/^urn:uuid:[0-9a-f-]{36}$/i.test(String(it.externalId || "")))) { skippedInvalid++; continue; }
+      const eventId = prahaSource ? `praha:${it.externalId}` : it.id;
+      const prev = prahaSource
+        ? await getEventMetaBySourceExternal("praha", it.externalId)
+        : await getEventMeta(eventId);
+      if (prahaSource) {
+        if (!shouldIngestPrahaItem(it, { previouslyKnown: !!prev, maxAgeHours: process.env.PRAHA_MAX_AGE_HOURS })) { skippedOlder++; continue; }
+      } else if (rssSource && !shouldIngestRssItemForToday(it, { previouslyKnown: !!prev, previouslyKnownOpen: prev?.is_closed === false })) { skippedOlder++; continue; }
 
       const eventType = it.eventType || classifyType(it.title);
       const desc = it.descriptionRaw || it.descRaw || it.description || "";
-      const times = parseTimesFromDescription(desc);
+      const times = prahaSource ? { startIso: null, endIso: null, isClosed: false } : parseTimesFromDescription(desc);
 
 // --- Server-side status intelligence ---
 // ESP zůstává jen zdroj dat; server umí opravit stav podle textu/detailu.
 // Explicitní "probíhá zásah" má prioritu a dokáže znovu otevřít dříve mylně ukončenou událost.
-const statusAnalysis = analyzeStatusFromText({
+const statusAnalysis = prahaSource ? {
+  source: ["source_estimated_open","source_estimated_closed","source_estimated_unknown"].includes(it.statusSource) ? it.statusSource : "source_estimated_unknown",
+  label: String(it.statusText || "stav neupřesněn").slice(0, 200)
+} : analyzeStatusFromText({
   statusText: it.statusText || it.status_text || "",
   description: desc,
   title: it.title || ""
 });
 
 let isClosed = false;
-if (statusAnalysis.source === "explicit_open") {
+if (prahaSource) {
+  isClosed = statusAnalysis.source === "source_estimated_closed" && it.isClosed === true;
+} else if (statusAnalysis.source === "explicit_open") {
   isClosed = false;
 } else if (statusAnalysis.source === "explicit_closed") {
   isClosed = true;
@@ -2550,8 +2583,8 @@ if (statusAnalysis.source === "explicit_open") {
 }
 
 // Source updates and verified starts are separate instants.
-const sourceUpdatedAt=normalizeFeedTimestamp(it.pubDate || it.pub_date);
-const startIso=(hasTrustedStart(prev || {}) ? normalizeFeedTimestamp(prev.start_time_iso) : null) || normalizeFeedTimestamp(it.startTimeIso || it.start_time_iso) || times.startIso || (rssSource ? null : eventStartIsoFromEspRss(it,times));
+const sourceUpdatedAt=normalizeFeedTimestamp(it.sourceUpdatedAt || it.pubDate || it.pub_date);
+const startIso=prahaSource ? null : ((hasTrustedStart(prev || {}) ? normalizeFeedTimestamp(prev.start_time_iso) : null) || normalizeFeedTimestamp(it.startTimeIso || it.start_time_iso) || times.startIso || (rssSource ? null : eventStartIsoFromEspRss(it,times)));
 const startTimeSource=(hasTrustedStart(prev || {}) ? (prev.start_time_source || (prev.status_source==='manual' || prev.source_kind==='manual' ? 'manual' : 'explicit')) : null) || (times.startIso ? 'rss_description' : startIso ? (rssSource ? 'explicit' : 'esp') : null);
 
 let endIso =
@@ -2564,11 +2597,11 @@ let endIso =
 let durationMin = null;
 let durationSource = null;
 let durationIsEstimate = false;
-const firstSeenWasOpen = prev ? prev.first_seen_was_open : statusAnalysis.source === "explicit_open";
-const firstSeenStatus = prev ? prev.first_seen_status : (statusAnalysis.source === "unknown" ? null : statusAnalysis.label);
+const firstSeenWasOpen = prev ? prev.first_seen_was_open : (prahaSource ? null : statusAnalysis.source === "explicit_open");
+const firstSeenStatus = prev ? prev.first_seen_status : (prahaSource || statusAnalysis.source === "unknown" ? null : statusAnalysis.label);
 
 // 1) Pokud ESP někdy pošle délku explicitně, přijmeme ji.
-if (Number.isFinite(it.durationMin)) {
+if (!prahaSource && Number.isFinite(it.durationMin)) {
   const candidate = Math.round(it.durationMin);
   durationMin = (candidate > 0 && candidate <= MAX_DURATION_MINUTES) ? candidate : null;
   if (durationMin != null) durationSource = "esp_duration";
@@ -2615,14 +2648,14 @@ if (!isClosed) {
       const major = analyzeMajorEvent(it, desc);
 
       const cityText =
-        (rssSource ? cityFromDesc : it.cityText) ||
+        (prahaSource ? it.cityText : (rssSource ? cityFromDesc : it.cityText)) ||
         it.cityText ||
         cityFromDesc ||
         (!placeText ? cityFromTitle : (isDistrictPlace(placeText) ? cityFromTitle : placeText)) ||
         null;
 
       const ev = {
-        id: it.id,
+        id: eventId,
         title: it.title,
         link: it.link,
         pubDate: sourceUpdatedAt || it.pubDate || null,
@@ -2647,8 +2680,22 @@ if (!isClosed) {
         isMajorEvent: major.isMajorEvent,
         majorReason: major.majorReason,
         statusSource: statusAnalysis.source,
-        sourceKind: rssSource ? "rss" : "esp"
+        sourceKind: rssSource ? "rss" : "esp",
+        source: prahaSource ? "praha" : "stredocesky",
+        externalId: prahaSource ? it.externalId : eventId,
+        sourceUrl: prahaSource ? it.sourceUrl : it.link,
+        region: prahaSource ? "Hlavní město Praha" : "Středočeský kraj",
+        contentHash: prahaSource ? it.contentHash : null,
+        rawPayload: prahaSource ? it.rawPayload : null,
+        isJpoEvent: prahaSource ? it.isJpoEvent === true : true
       };
+
+      if (prahaSource && prev && prev.content_hash && prev.content_hash === it.contentHash) {
+        await touchEventLastSeen(prev.id);
+        accepted++;
+        unchanged++;
+        continue;
+      }
 
       await upsertEvent(ev);
       accepted++;
@@ -2673,6 +2720,7 @@ if (!isClosed) {
       acceptedCount: accepted,
       newCount: inserted,
       updatedCount: updated,
+      unchangedCount: unchanged,
       closedCount: updatedClosed,
       geocodedCount: geocoded,
       ip: getClientIp(req),
@@ -2685,6 +2733,7 @@ if (!isClosed) {
       accepted,
       inserted,
       updated,
+      unchanged,
       closed_seen_in_batch: updatedClosed,
       geocoded,
       skipped: skippedOlder + skippedInvalid + skippedDuplicates,
@@ -2695,7 +2744,7 @@ if (!isClosed) {
     try {
       await insertIngestLog({
         source: String(req.body?.source || "unknown").slice(0,80),
-        sourceKind: ["server_rss_worker", "github_actions_rss", "github_actions_rss2json"].includes(req.body?.source) ? "rss" : "esp",
+        sourceKind: ["server_rss_worker", "github_actions_rss", "github_actions_rss2json", "github_actions_praha_atom"].includes(req.body?.source) ? "rss" : "esp",
         receivedCount: Array.isArray(req.body?.items) ? req.body.items.length : 0,
         errorText: "ingest_failed",
         ip: getClientIp(req),
@@ -3389,18 +3438,20 @@ app.get("/api/export.csv", safeRoute(async (req, res) => {
   out.push("filtry;" + csvEscape(exportFiltersLabel(filters)));
   out.push("pocet;" + csvEscape(String(rows.length)));
   out.push("");
-  out.push("cas;stav;typ;mesto;delka;nazev;link");
+  out.push("cas;stav;zdroj;typ;kategorie;mesto;delka;nazev;link");
 
   for (const r of rows) {
     const cas = csvEscape(fmtDate(r.source_updated_at || r.pub_date || r.created_at));
-    const stav = csvEscape(r.is_closed ? "ukoncena" : "aktivni");
+    const stav = csvEscape(r.status_text || (r.is_closed ? "ukoncena" : "aktivni"));
+    const zdroj = csvEscape(eventSourceLabel(r));
     const typ = csvEscape(typeLabel(r.event_type || "other"));
     const mesto = csvEscape(r.city_text || r.place_text || "");
     const exportDuration=exportEventDuration(r);
     const delka = csvEscape((r.duration_is_estimate&&exportDuration!=null?'≈ ':'')+fmtDuration(exportDuration));
     const nazev = csvEscape(r.title || "");
     const link = csvEscape(r.link || "");
-    out.push([cas, stav, typ, mesto, delka, nazev, link].join(";"));
+    const kategorie = csvEscape(r.is_jpo_event === false ? "ostatni krizova udalost" : "JPO/HZS");
+    out.push([cas, stav, zdroj, typ, kategorie, mesto, delka, nazev, link].join(";"));
   }
 
   res.send(out.join("\n"));
@@ -3483,8 +3534,8 @@ app.get("/api/export.pdf", safeRoute(async (req, res) => {
     const y = doc.y;
 
     const time = fmtDate(r.source_updated_at || r.pub_date || r.created_at);
-    const state = r.is_closed ? "UKONČENO" : "AKTIVNÍ";
-    const typ = typeLabel(r.event_type || "other");
+    const state = r.status_text || (r.is_closed ? "UKONČENO" : "AKTIVNÍ");
+    const typ = `${typeLabel(r.event_type || "other")} · ${eventSourceLabel(r)} · ${r.is_jpo_event === false ? "ostatní krizová" : "JPO/HZS"}`;
     const city = r.city_text || r.place_text || "";
     const exportDuration=exportEventDuration(r);
     const dur = (r.duration_is_estimate&&exportDuration!=null?'≈ ':'')+fmtDuration(exportDuration);

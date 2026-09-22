@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {eventLocation,normalizeName,normalizeDistrict} from '../location.js';
-import {buildQueries,cacheKey,evaluateCandidate,selectCandidate,localCenter,annotateEventGeo,canImprove,diagnoseCoordinates,createGeocoder,createGeocodeJobs} from '../geocoding.js';
+import {buildQueries,buildPrahaQueries,cacheKey,evaluateCandidate,evaluatePrahaCandidate,selectCandidate,localCenter,annotateEventGeo,canImprove,diagnoseCoordinates,createGeocoder,createGeocodeJobs,insidePraha} from '../geocoding.js';
 import {rssItemToEvent} from '../rss-worker.js';
 import '../public/event-utils.js';
 const event={city_text:'Dobřejovice',description_raw:'stav: probíhá zásah<br>Dobřejovice<br>okres Praha Východ'};
@@ -115,4 +115,17 @@ test('context mismatch and low confidence hide points without changing stored co
  const row={...event,lat:49.981,lon:14.581,geo_precision:'exact',geo_confidence:95,geo_context_key:'different'};
  assert.equal(annotateEventGeo(row).geo_failure_reason,'context_mismatch');
  assert.equal(annotateEventGeo({...row,geo_context_key:cacheKey(context),geo_confidence:30}).geo_failure_reason,'low_confidence');
+});
+test('Praha queries fall back from full address to district and remain bounded to Prague',()=>{
+ const c=eventLocation({source:'praha',region:'Hlavní město Praha',city_text:'Praha 11',place_text:'Tererova 1356/6a'});
+ const queries=buildPrahaQueries(c);assert.match(queries[0],/^Tererova 1356\/6a, Praha 11/);assert.match(queries.at(-1),/^Praha 11,/);
+ assert.ok(queries.every(q=>q.includes('Praha') && q.includes('Česko')));assert.notEqual(cacheKey(c),cacheKey(context));
+});
+test('Praha geocoding accepts matching address and rejects outside or wrong district coordinates',()=>{
+ const c=eventLocation({source:'praha',city_text:'Praha 11',place_text:'Tererova 1356/6a'});
+ const valid={lat:'50.0301',lon:'14.4921',addresstype:'house',name:'Tererova',display_name:'Tererova 1356/6a, Praha 11',address:{country_code:'cz',state:'Hlavní město Praha',city:'Praha',city_district:'Praha 11',road:'Tererova',house_number:'1356/6a'}};
+ assert.equal(evaluatePrahaCandidate(valid,c).precision,'exact');assert.equal(insidePraha(valid.lat,valid.lon),true);
+ assert.equal(evaluatePrahaCandidate({...valid,lat:'50.2'},c).reason,'outside_expected_area');
+ assert.equal(evaluatePrahaCandidate({...valid,address:{...valid.address,city_district:'Praha 10'}},c).reason,'district_mismatch');
+ assert.equal(annotateEventGeo({source:'praha',city_text:'Praha 11',place_text:'Tererova 1356/6a',lat:50.2,lon:14.49,geo_precision:'exact'}).geo_reliable,false);
 });

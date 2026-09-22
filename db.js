@@ -168,6 +168,7 @@ export async function initDb() {
   `);
   await pool.query(`ALTER TABLE ingest_log ADD COLUMN IF NOT EXISTS skipped_count INTEGER NOT NULL DEFAULT 0;`);
   await pool.query(`ALTER TABLE ingest_log ADD COLUMN IF NOT EXISTS skipped_older_count INTEGER NOT NULL DEFAULT 0;`);
+  await pool.query(`ALTER TABLE ingest_log ADD COLUMN IF NOT EXISTS unchanged_count INTEGER NOT NULL DEFAULT 0;`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_ingest_log_created_at ON ingest_log(created_at DESC);`);
 
 
@@ -227,9 +228,12 @@ export async function initDb() {
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_log_ts ON audit_log(ts DESC);`);
   for(const [name,type] of Object.entries({source_updated_at:'TEXT',start_time_source:'TEXT',end_time_source:'TEXT',first_seen_status:'TEXT',first_seen_was_open:'BOOLEAN',duration_is_estimate:'BOOLEAN NOT NULL DEFAULT FALSE',time_model_version:'INTEGER NOT NULL DEFAULT 0',time_original_values:'JSONB'})) await pool.query(`ALTER TABLE events ADD COLUMN IF NOT EXISTS ${name} ${type}`);
+  for (const [name,type] of Object.entries({source:'TEXT',external_id:'TEXT',source_url:'TEXT',region:'TEXT',content_hash:'TEXT',raw_payload:'JSONB',is_jpo_event:'BOOLEAN NOT NULL DEFAULT TRUE'})) await pool.query(`ALTER TABLE events ADD COLUMN IF NOT EXISTS ${name} ${type}`);
   for (const [name,type] of Object.entries({geo_precision:'TEXT',geo_confidence:'DOUBLE PRECISION',geo_query:'TEXT',geo_display_name:'TEXT',geo_verified:'BOOLEAN NOT NULL DEFAULT FALSE',geo_failure_reason:'TEXT',geo_context_key:'TEXT'})) await pool.query(`ALTER TABLE events ADD COLUMN IF NOT EXISTS ${name} ${type}`);
   await pool.query(`CREATE TABLE IF NOT EXISTS geocode_cache_v2 (context_key TEXT PRIMARY KEY, result JSONB NOT NULL, expires_at TIMESTAMPTZ NOT NULL)`);
   await pool.query(`CREATE TABLE IF NOT EXISTS geocode_provider_limits (provider TEXT PRIMARY KEY, next_request_at TIMESTAMPTZ NOT NULL)`);
+  await pool.query(`UPDATE events SET source=COALESCE(source,'stredocesky'), external_id=COALESCE(external_id,id), source_url=COALESCE(source_url,link), region=COALESCE(region,'Středočeský kraj'), is_jpo_event=COALESCE(is_jpo_event,TRUE) WHERE source IS NULL OR external_id IS NULL OR source_url IS NULL OR region IS NULL OR is_jpo_event IS NULL`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_events_source_external_id ON events(source, external_id) WHERE external_id IS NOT NULL`);
 
 
   
@@ -476,10 +480,22 @@ export async function getLongestCutoffIso() {
 
 export async function getEventMeta(id) {
   const res = await pool.query(
-    `SELECT source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, is_closed, first_seen_at, pub_date, start_time_iso, end_time_iso, duration_min, duration_source, alarm_level, is_major_event, status_text, status_source, source_note, lat, lon, geo_source FROM events WHERE id=$1`,
+    `SELECT source, external_id, source_url, region, content_hash, raw_payload, is_jpo_event, source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, description_raw, event_type, is_closed, first_seen_at, pub_date, start_time_iso, end_time_iso, duration_min, duration_source, alarm_level, is_major_event, status_text, status_source, source_note, lat, lon, geo_source FROM events WHERE id=$1`,
     [id]
   );
   return res.rows[0] || null;
+}
+
+export async function getEventMetaBySourceExternal(source, externalId) {
+  const res = await pool.query(
+    `SELECT source, external_id, source_url, region, content_hash, raw_payload, is_jpo_event, source_kind, source_updated_at, first_seen_status, first_seen_was_open, id, title, link, description_raw, event_type, is_closed, first_seen_at, status_text, status_source, lat, lon, geo_source FROM events WHERE source=$1 AND external_id=$2 LIMIT 1`,
+    [source, externalId]
+  );
+  return res.rows[0] || null;
+}
+
+export async function touchEventLastSeen(id) {
+  await pool.query(`UPDATE events SET last_seen_at=NOW() WHERE id=$1`, [id]);
 }
 
 export async function upsertEvent(ev) {
@@ -514,9 +530,10 @@ export async function upsertEvent(ev) {
       alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
       source_kind, source_note,
       first_seen_at, last_seen_at, source_updated_at, start_time_source, end_time_source,
-      first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version
+      first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version,
+      source, external_id, source_url, region, content_hash, raw_payload, is_jpo_event
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,CASE WHEN $12::integer <= $19::integer THEN $12 ELSE NULL END,COALESCE($22::text, CASE WHEN $12::integer IS NOT NULL AND NULLIF($11::text,'' ) IS NOT NULL THEN 'rss_end_time' ELSE NULL END),$13,$14,$15,$16,$17,$18,$20,$21, NOW(), NOW(), $23, $24, $25, $26, $27, $28, 1)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,CASE WHEN $12::integer <= $19::integer THEN $12 ELSE NULL END,COALESCE($22::text, CASE WHEN $12::integer IS NOT NULL AND NULLIF($11::text,'' ) IS NOT NULL THEN 'rss_end_time' ELSE NULL END),$13,$14,$15,$16,$17,$18,$20,$21, NOW(), NOW(), $23, $24, $25, $26, $27, $28, 1,$29,$30,$31,$32,$33,$34::jsonb,$35)
     ON CONFLICT (id) DO UPDATE SET
       title = EXCLUDED.title,
       link = EXCLUDED.link,
@@ -547,8 +564,8 @@ export async function upsertEvent(ev) {
       duration_is_estimate=CASE WHEN events.duration_source='manual' THEN FALSE WHEN EXCLUDED.duration_source IS NOT NULL THEN EXCLUDED.duration_is_estimate WHEN EXCLUDED.source_kind='rss' THEN FALSE ELSE events.duration_is_estimate END,
 
       is_closed = CASE
-        WHEN EXCLUDED.status_source = 'explicit_open' THEN FALSE
-        WHEN EXCLUDED.status_source = 'explicit_closed' THEN TRUE
+        WHEN EXCLUDED.status_source IN ('explicit_open','source_estimated_open','source_estimated_unknown') THEN FALSE
+        WHEN EXCLUDED.status_source IN ('explicit_closed','source_estimated_closed') THEN TRUE
         WHEN EXCLUDED.is_closed = TRUE THEN TRUE
         ELSE events.is_closed
       END,
@@ -560,6 +577,13 @@ export async function upsertEvent(ev) {
       status_source = COALESCE(EXCLUDED.status_source, events.status_source),
       source_kind = COALESCE(EXCLUDED.source_kind, events.source_kind),
       source_note = COALESCE(EXCLUDED.source_note, events.source_note),
+      source = COALESCE(events.source, EXCLUDED.source),
+      external_id = COALESCE(events.external_id, EXCLUDED.external_id),
+      source_url = COALESCE(EXCLUDED.source_url, events.source_url),
+      region = COALESCE(EXCLUDED.region, events.region),
+      content_hash = COALESCE(EXCLUDED.content_hash, events.content_hash),
+      raw_payload = COALESCE(EXCLUDED.raw_payload, events.raw_payload),
+      is_jpo_event = COALESCE(EXCLUDED.is_jpo_event, events.is_jpo_event),
 
       last_seen_at = NOW()
     `,
@@ -591,7 +615,14 @@ export async function upsertEvent(ev) {
       ev.endTimeSource || null,
       ev.firstSeenStatus || null,
       typeof ev.firstSeenWasOpen === "boolean" ? ev.firstSeenWasOpen : null,
-      !!ev.durationIsEstimate
+      !!ev.durationIsEstimate,
+      ev.source || "stredocesky",
+      ev.externalId || ev.id,
+      ev.sourceUrl || ev.link || null,
+      ev.region || "Středočeský kraj",
+      ev.contentHash || null,
+      ev.rawPayload == null ? null : JSON.stringify(ev.rawPayload),
+      ev.isJpoEvent !== false
     ]
   );
 }
@@ -807,6 +838,7 @@ export async function insertIngestLog({
   acceptedCount = 0,
   newCount = 0,
   updatedCount = 0,
+  unchangedCount = 0,
   closedCount = 0,
   geocodedCount = 0,
   skippedCount = 0,
@@ -819,9 +851,9 @@ export async function insertIngestLog({
     `
     INSERT INTO ingest_log (
       source, source_kind, received_count, accepted_count, new_count, updated_count,
-      closed_count, geocoded_count, error_text, ip, user_agent, skipped_count, skipped_older_count
+      closed_count, geocoded_count, error_text, ip, user_agent, skipped_count, skipped_older_count, unchanged_count
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
     RETURNING id
     `,
     [
@@ -837,7 +869,8 @@ export async function insertIngestLog({
       ip || null,
       userAgent || null,
       Number(skippedCount || 0),
-      Number(skippedOlderCount || 0)
+      Number(skippedOlderCount || 0),
+      Number(unchangedCount || 0)
     ]
   );
   return r.rows?.[0]?.id || null;
@@ -923,7 +956,7 @@ export async function searchEventsAdmin({ q = "", limit = 50 } = {}) {
   const r = await pool.query(
     `
     SELECT
-      source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, pub_date, city_text, place_text, status_text, event_type,
+      source, external_id, source_url, region, content_hash, is_jpo_event, source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, pub_date, city_text, place_text, status_text, event_type,
       start_time_iso, end_time_iso, duration_min, duration_source, is_closed,
       alarm_level, alarm_level_text, is_major_event, major_reason,
       source_kind, source_note, lat, lon, created_at, last_seen_at
@@ -1102,6 +1135,7 @@ export async function getEventsFiltered(filters, limit = 400) {
   const status = String(filters?.status || "all").toLowerCase();
   const day = String(filters?.day || "all").toLowerCase();
   const month = String(filters?.month || "").trim();
+  const source = String(filters?.source || "all").trim();
 
   const where = [];
   const params = [];
@@ -1118,6 +1152,7 @@ export async function getEventsFiltered(filters, limit = 400) {
     params.push(`%${city}%`);
     i++;
   }
+  if (source !== "all") { where.push(`source = $${i}`); params.push(source); i++; }
 
   if (status === "open") where.push(`is_closed = FALSE`);
   if (status === "closed") where.push(`is_closed = TRUE`);
@@ -1133,7 +1168,7 @@ export async function getEventsFiltered(filters, limit = 400) {
   const sql =
     `
     SELECT
-      source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, pub_date,
+      source, external_id, source_url, region, content_hash, is_jpo_event, source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, pub_date,
       place_text, city_text,
       status_text, event_type,
       description_raw,
@@ -1184,6 +1219,7 @@ export async function countEventsFiltered(filters = {}) {
   const status = String(filters?.status || "all").toLowerCase();
   const day = String(filters?.day || "all").toLowerCase();
   const month = String(filters?.month || "").trim();
+  const source = String(filters?.source || "all").trim();
 
   const where = [];
   const params = [];
@@ -1200,6 +1236,7 @@ export async function countEventsFiltered(filters = {}) {
     params.push(`%${city}%`);
     i++;
   }
+  if (source !== "all") { where.push(`source = $${i}`); params.push(source); i++; }
 
   if (status === "open") where.push(`is_closed = FALSE`);
   if (status === "closed") where.push(`is_closed = TRUE`);
@@ -1226,6 +1263,7 @@ export async function getStatsFiltered(filters) {
   const status = String(filters?.status || "all").toLowerCase();
   const day = String(filters?.day || "all").toLowerCase();
   const month = String(filters?.month || "").trim();
+  const source = String(filters?.source || "all").trim();
 
   const cutoffIso = await getLongestCutoffIso();
 
@@ -1244,6 +1282,7 @@ export async function getStatsFiltered(filters) {
     params30.push(`%${city}%`);
     i30++;
   }
+  if (source !== "all") { where30.push(`source = $${i30}`); params30.push(source); i30++; }
 
   if (status === "open") where30.push(`is_closed = FALSE`);
   if (status === "closed") where30.push(`is_closed = TRUE`);
@@ -1256,6 +1295,8 @@ export async function getStatsFiltered(filters) {
   where30.push(...mWin30.clauses);
   i30 = mWin30.nextI;
 
+  const crisisWhere30Sql = `WHERE ${where30.join(" AND ")}`;
+  where30.push(`is_jpo_event IS DISTINCT FROM FALSE`);
   const where30Sql = `WHERE ${where30.join(" AND ")}`;
 
   const byDay = await pool.query(
@@ -1307,6 +1348,7 @@ export async function getStatsFiltered(filters) {
     paramsAll.push(`%${city}%`);
     iAll++;
   }
+  if (source !== "all") { whereAll.push(`source = $${iAll}`); paramsAll.push(source); iAll++; }
   if (status === "open") whereAll.push(`is_closed = FALSE`);
   if (status === "closed") whereAll.push(`is_closed = TRUE`);
 
@@ -1314,7 +1356,8 @@ export async function getStatsFiltered(filters) {
   whereAll.push(...mWinAll.clauses);
   iAll = mWinAll.nextI;
 
-  const whereAllSql = whereAll.length ? `WHERE ${whereAll.join(" AND ")}` : "";
+  whereAll.push(`is_jpo_event IS DISTINCT FROM FALSE`);
+  const whereAllSql = `WHERE ${whereAll.join(" AND ")}`;
 
   const topCities = await pool.query(
     `
@@ -1354,6 +1397,8 @@ export async function getStatsFiltered(filters) {
       paramsLongest.push(`%${city}%`);
       iL++;
     }
+    if (source !== "all") { whereLongest.push(`source = $${iL}`); paramsLongest.push(source); iL++; }
+    whereLongest.push(`is_jpo_event IS DISTINCT FROM FALSE`);
 
     whereLongest.push(`(COALESCE(duration_is_estimate,FALSE)=FALSE AND duration_source IN ('rss_start_and_end','manual_start_rss_end','trusted_start_rss_end','rss_end_time','esp_duration','explicit','manual') AND (source_kind IS DISTINCT FROM 'rss' OR duration_source IN ('esp_duration','explicit','manual') OR start_time_source IN ('manual','rss_description','explicit','esp') OR status_source='manual'))`);
     // TOP za měsíc dává smysl jen pro uzavřené s uloženou délkou
@@ -1413,6 +1458,8 @@ export async function getStatsFiltered(filters) {
       paramsLongest.push(`%${city}%`);
       iL++;
     }
+    if (source !== "all") { whereLongest.push(`source = $${iL}`); paramsLongest.push(source); iL++; }
+    whereLongest.push(`is_jpo_event IS DISTINCT FROM FALSE`);
     if (status === "open") whereLongest.push(`is_closed = FALSE`);
     if (status === "closed") whereLongest.push(`is_closed = TRUE`);
 
@@ -1479,6 +1526,13 @@ export async function getStatsFiltered(filters) {
     params30
   );
 
+  const categorySplit = await pool.query(
+    `SELECT COUNT(*) FILTER (WHERE is_jpo_event IS DISTINCT FROM FALSE)::int AS jpo_count,
+            COUNT(*) FILTER (WHERE is_jpo_event = FALSE)::int AS other_crisis_count
+     FROM events ${crisisWhere30Sql}`,
+    params30
+  );
+
   return {
     byDay: byDay.rows,
     byType: byType.rows,
@@ -1486,6 +1540,7 @@ export async function getStatsFiltered(filters) {
     openVsClosed: openVsClosed.rows[0] || { open: 0, closed: 0 },
     longest: longestRows,
     majorSummary: majorSummary.rows[0] || { major_count: 0, alarm_level_3_plus: 0, special_alarm_level: 0 },
+    categorySplit: categorySplit.rows[0] || { jpo_count: 0, other_crisis_count: 0 },
     durationCutoffIso: cutoffIso
   };
 }
@@ -1723,7 +1778,7 @@ export async function getEventsForPeriod(startIso, endExclusiveIso) {
   const r = await pool.query(
     `
     SELECT
-      source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, pub_date,
+      source, external_id, source_url, region, content_hash, is_jpo_event, source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, pub_date,
       place_text, city_text,
       status_text, event_type,
       description_raw,
@@ -1760,7 +1815,7 @@ export async function getEventsForPeriod(startIso, endExclusiveIso) {
 
 export async function getEventById(id) {
   const r = await pool.query(
-    `SELECT source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, pub_date, place_text, city_text, status_text, event_type,
+    `SELECT source, external_id, source_url, region, content_hash, is_jpo_event, source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, pub_date, place_text, city_text, status_text, event_type,
             description_raw, start_time_iso, end_time_iso, duration_min, duration_source, is_closed,
             alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
             manual_detail_text, manual_detail_source, manual_detail_updated_at,
@@ -1795,7 +1850,7 @@ export async function listEventsForMajorBackfill(limit = 5000) {
   const r = await pool.query(
     `
     SELECT
-      source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, pub_date,
+      source, external_id, source_url, region, content_hash, is_jpo_event, source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, pub_date,
       place_text, city_text, status_text, event_type,
       description_raw,
       start_time_iso, end_time_iso, duration_min, duration_source, is_closed,
@@ -1852,7 +1907,7 @@ export async function getMajorEventsSummary(limit = 20) {
   const r = await pool.query(
     `
     SELECT
-      source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, pub_date,
+      source, external_id, source_url, region, content_hash, is_jpo_event, source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, pub_date,
       city_text, place_text, status_text, event_type,
       is_closed,
       alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
@@ -1874,7 +1929,7 @@ export async function getEventForManualEdit(id) {
   const r = await pool.query(
     `
     SELECT
-      source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, pub_date,
+      source, external_id, source_url, region, content_hash, is_jpo_event, source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, pub_date,
       place_text, city_text, status_text, event_type,
       description_raw,
       start_time_iso, end_time_iso, duration_min, duration_source, is_closed,
@@ -1975,7 +2030,7 @@ export async function getEventDetailById(id) {
   const r = await pool.query(
     `
     SELECT
-      source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, pub_date,
+      source, external_id, source_url, region, content_hash, is_jpo_event, source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, pub_date,
       place_text, city_text, status_text, event_type,
       description_raw,
       start_time_iso, end_time_iso, duration_min, duration_source, is_closed,

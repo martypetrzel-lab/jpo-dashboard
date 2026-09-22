@@ -4,6 +4,9 @@ import crypto from "node:crypto";
 import { once } from "node:events";
 import { createTestDatabase } from "../test-support/database.js";
 import { pool, getEventMeta, autoCloseStaleOpenEvents, setCachedGeocode, initDb, getStatsFiltered, setSetting } from "../db.js";
+import { parsePrahaAtomXml } from "../prague-atom.js";
+import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 
 process.env.API_KEY = crypto.randomUUID();
 const { app, normalizeFeedTimestamp, pragueLocalToUtcIso, parseTimesFromDescription, safeDurationFromStartEnd } = await import("../server.js");
@@ -24,6 +27,7 @@ const jsonRequest = async (route, body, cookie = "") => {
 const dateKey = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Prague", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
 const event = (id, pubDate = dateKey() + " 00:00:13") => ({ id, title: "Technická pomoc - Kladno", link: "https://example.test/" + id, pubDate, cityText: "Kladno", statusText: "probíhá zásah", descriptionRaw: "stav: probíhá zásah<br>ukončení: <br>Kladno" });
 const ingest = items => jsonRequest("/api/ingest", { source: "github_actions_rss", items });
+const ingestPraha = items => jsonRequest("/api/ingest", { source: "github_actions_praha_atom", items });
 
 test("isolated health/static/API smoke and protected diagnostics", async () => {
   assert.equal((await fetch(base + "/health")).status, 200);
@@ -145,7 +149,22 @@ test("repeatable additive migration preserves rows and report unique constraint"
   const before = (await pool.query("SELECT COUNT(*)::int AS count FROM events")).rows[0].count;
   await initDb();
   assert.equal((await pool.query("SELECT COUNT(*)::int AS count FROM events")).rows[0].count, before);
-  assert.ok((await pool.query("SELECT skipped_count, skipped_older_count FROM ingest_log LIMIT 1")).rows.length);
+  assert.ok((await pool.query("SELECT skipped_count, skipped_older_count, unchanged_count FROM ingest_log LIMIT 1")).rows.length);
+  const migrated=await pool.query("SELECT source,external_id,source_url,region,is_jpo_event FROM events WHERE id='audit-stable'");
+  assert.equal(migrated.rows[0].source,'stredocesky');assert.equal(migrated.rows[0].external_id,'audit-stable');assert.equal(migrated.rows[0].is_jpo_event,true);
+});
+test("Praha Atom ingest uses source identity, skips old history and updates changed summaries only",async()=>{
+ const xml=fs.readFileSync(fileURLToPath(new URL('./fixtures/praha-atom.xml',import.meta.url)),'utf8');
+ const parsed=parsePrahaAtomXml(xml),fresh={...parsed[0],sourceUpdatedAt:new Date().toISOString(),pubDate:new Date().toISOString(),contentHash:'a'.repeat(64)};
+ let result=await ingestPraha([fresh]);assert.equal(result.data.inserted,1);assert.equal(result.data.updated,0);assert.equal(result.data.unchanged,0);
+ let row=await getEventMeta(fresh.id);assert.equal(row.source,'praha');assert.equal(row.external_id,fresh.externalId);assert.equal(row.duration_min,null);assert.equal(row.first_seen_was_open,null);const firstSeen=new Date(row.first_seen_at).toISOString();
+ result=await ingestPraha([fresh]);assert.equal(result.data.inserted,0);assert.equal(result.data.updated,0);assert.equal(result.data.unchanged,1);row=await getEventMeta(fresh.id);assert.equal(new Date(row.first_seen_at).toISOString(),firstSeen);
+ const changed={...fresh,description:'Aktualizovaný popis s diakritikou.',rawPayload:{...fresh.rawPayload,summary:'Aktualizovaný popis s diakritikou.'},contentHash:'b'.repeat(64)};
+ result=await ingestPraha([changed]);assert.equal(result.data.updated,1);row=await getEventMeta(fresh.id);assert.match(row.description_raw,/Aktualizovaný/);assert.equal(new Date(row.first_seen_at).toISOString(),firstSeen);
+ result=await ingestPraha([parsed[1]]);assert.equal(result.data.accepted,0);assert.equal(result.data.skipped_older,1);assert.equal(await getEventMeta(parsed[1].id),null);
+ assert.equal((await pool.query("SELECT COUNT(*)::int AS count FROM events WHERE source='praha' AND external_id=$1",[fresh.externalId])).rows[0].count,1);
+ const filtered=await fetch(base+'/api/events?day=all&source=praha&limit=100').then(r=>r.json());assert.ok(filtered.items.some(item=>item.id===fresh.id));assert.ok(filtered.items.every(item=>item.source==='praha'));
+ const stats=await fetch(base+'/api/stats?day=all&source=praha').then(r=>r.json());assert.equal(stats.categorySplit.other_crisis_count,1);assert.equal(stats.categorySplit.jpo_count,0);
 });
 // Failure paths use the isolated database and never production credentials.
 test('API validates limits/filters, handles malformed cookies and rejects foreign origins',async()=>{
