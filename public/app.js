@@ -1,4 +1,5 @@
 let map, markersLayer, chart;
+let eventSourceLayers = {};
 let hzsLayer, hzsStationsToggleEl;
 let routesLayer, vehiclesLayer;
 
@@ -576,6 +577,7 @@ const TYPE = {
   traffic: { emoji: "🚗", label: "nehoda", cls: "marker-traffic" },
   tech: { emoji: "🛠️", label: "technická", cls: "marker-tech" },
   rescue: { emoji: "🚑", label: "záchrana", cls: "marker-rescue" },
+  hazmat: { emoji: "☣", label: "únik nebezpečných látek", cls: "marker-other" },
   false_alarm: { emoji: "🚫", label: "planý poplach", cls: "marker-false" },
   hzs: { emoji: "🚒", label: "událost HZS", cls: "marker-rescue" },
   water: { emoji: "💧", label: "voda", cls: "marker-water" },
@@ -618,7 +620,17 @@ function initMap() {
     attribution: "&copy; OpenStreetMap"
   }).addTo(map);
 
-  markersLayer = L.layerGroup().addTo(map);
+  eventSourceLayers = {
+    stredocesky: L.layerGroup(),
+    praha: L.layerGroup(),
+    pardubicky: L.layerGroup()
+  };
+  markersLayer = L.layerGroup(Object.values(eventSourceLayers)).addTo(map);
+  L.control.layers(null, {
+    "Události · Středočeský kraj": eventSourceLayers.stredocesky,
+    "Události · Praha": eventSourceLayers.praha,
+    "Události · Pardubický kraj": eventSourceLayers.pardubicky
+  }, {collapsed:true}).addTo(map);
 
   // vrstvy: HZS stanice (statické), trasy a vozidla (simulace)
   hzsLayer = L.layerGroup();
@@ -704,6 +716,9 @@ const HZS_STATIONS_SRC = [
   { name: "Hasičská stanice Sedlčany", address: "Kňovická 330, Sedlčany" }
 ];
 
+const STREDOCESKY_REGION = "Středočeský kraj";
+for (const station of HZS_STATIONS_SRC) station.region = STREDOCESKY_REGION;
+
 const STATIONS_CACHE_KEY = "fwcz_hzs_stations_v1";
 
 function makeStationIcon() {
@@ -718,7 +733,12 @@ function makeStationIcon() {
 function renderHzsStations() {
   if (!hzsLayer) return;
   hzsLayer.clearLayers();
+  const selectedSource = document.getElementById("sourceSelect")?.value || "all";
+  const visibleRegion = selectedSource === "praha" ? "Hlavní město Praha"
+    : selectedSource === "pardubicky" ? "Pardubický kraj"
+    : selectedSource === "stredocesky" ? STREDOCESKY_REGION : null;
   for (const s of hzsStations) {
+    if (visibleRegion && s.region !== visibleRegion) continue;
     if (!Number.isFinite(s.lat) || !Number.isFinite(s.lon)) continue;
     const m = L.marker([s.lat, s.lon], { icon: makeStationIcon() });
     m.bindPopup(`<b>${escapeHtml(s.name)}</b><br><span style="opacity:.8">${escapeHtml(s.address || "")}</span>`);
@@ -762,6 +782,7 @@ async function loadStations() {
     hzsStations = HZS_STATIONS_SRC.map(s => ({
       name: s.name,
       address: s.address,
+      region: s.region,
       lat: byName.get(s.name)?.lat,
       lon: byName.get(s.name)?.lon
     }));
@@ -803,6 +824,68 @@ function formatDuration(min) {
   const m = Math.round(min % 60);
   if (h <= 0) return `${m} min`;
   return `${h} h ${m} min`;
+}
+
+let regionComparisonBarChart = null;
+let regionComparisonTrendChart = null;
+const REGION_COLORS = {stredocesky:"#3b82f6",praha:"#f59e0b",pardubicky:"#22c55e"};
+
+function regionComparisonDates(preset) {
+  const todayKey = new Intl.DateTimeFormat("en-CA",{timeZone:"Europe/Prague",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
+  const today = new Date(`${todayKey}T00:00:00Z`);
+  const key = date => date.toISOString().slice(0,10);
+  if (preset === "yesterday") { const d=new Date(today.getTime()-86400000); return {from:key(d),to:key(d)}; }
+  if (preset === "today") return {from:todayKey,to:todayKey};
+  if (preset === "month") return {from:`${todayKey.slice(0,7)}-01`,to:todayKey};
+  const days = preset === "30" ? 30 : 7;
+  return {from:key(new Date(today.getTime()-(days-1)*86400000)),to:todayKey};
+}
+
+function selectedComparisonSources() {
+  return [...document.querySelectorAll("[data-region-source]:checked")].map(el=>el.dataset.regionSource);
+}
+
+function renderRegionComparison(data) {
+  const mode=document.getElementById("regionCompareMode")?.value || "jpo";
+  const allowed=new Set(selectedComparisonSources());
+  const regions=(data.regions||[]).filter(r=>allowed.has(r.source));
+  const metrics=regions.map(r=>({...r,m:r[mode]||r.all}));
+  const kpis=document.getElementById("regionComparisonKpis");
+  if(kpis) kpis.innerHTML=metrics.map(({name,source,m,station_data_available})=>`<article class="regionKpi" style="border-left-color:${REGION_COLORS[source]}"><h3>${escapeHtml(name)}</h3><strong>${m.total}</strong> událostí<dl><dt>HZS/JPO</dt><dd>${m.jpo}</dd><dt>Aktivní</dt><dd>${m.open}</dd><dt>Bez GPS</dt><dd>${m.missing_gps}</dd></dl><p class="hint">${station_data_available?"Stanice dostupné pouze pro bezpečné regionální zobrazení.":"Data stanic nejsou zatím k dispozici."}</p></article>`).join("") || `<p>Vyberte alespoň jeden kraj.</p>`;
+  const table=document.getElementById("regionComparisonTable");
+  if(table) table.innerHTML=metrics.map(({name,m,last_successful_import,station_data_available})=>`<tr><td><b>${escapeHtml(name)}</b><br><span class="hint">${station_data_available?"stanice: dostupné":"stanice: data nejsou k dispozici"}</span></td><td>${m.total}</td><td>${m.avg_per_day.toLocaleString("cs-CZ")}</td><td>${m.open}</td><td>${m.closed}</td><td>${m.unknown}</td><td>${m.verified_gps_percent} %</td><td>${escapeHtml(m.top_type?.name||"—")}</td><td>${m.change_percent==null?"bez srovnávací základny":`${m.change_percent>0?"+":""}${m.change_percent} %`}</td><td class="regionSourceStatus">${last_successful_import?`poslední import<br>${escapeHtml(formatDate(last_successful_import))}`:"zatím bez úspěšného importu"}</td></tr>`).join("");
+  const typeBox=document.getElementById("regionComparisonTypes");
+  if(typeBox) typeBox.innerHTML=metrics.map(({name,m})=>`<div><h3>${escapeHtml(name)} – typy</h3>${(m.types||[]).slice(0,6).map(t=>`<div><span>${escapeHtml(t.name)} (${t.count})</span><div class="regionTypeBar"><span style="width:${m.total?Math.round(t.count/m.total*100):0}%"></span></div></div>`).join("")||'<p class="hint">Bez událostí v období.</p>'}</div>`).join("");
+  document.getElementById("regionComparisonDisclaimer").textContent=data.disclaimer||"";
+  document.getElementById("regionComparisonPeriod").textContent=`${data.period?.start||""} až ${String(data.period?.end||"").slice(0,10)} · ${mode==="jpo"?"Zásahy HZS/JPO":"Všechny evidované krizové události"}`;
+  if(typeof Chart!=="undefined"){
+    regionComparisonBarChart?.destroy(); regionComparisonTrendChart?.destroy();
+    const bar=document.getElementById("regionComparisonBar");
+    if(bar) regionComparisonBarChart=new Chart(bar,{type:"bar",data:{labels:metrics.map(r=>r.name),datasets:[{label:"Události",data:metrics.map(r=>r.m.total),backgroundColor:metrics.map(r=>REGION_COLORS[r.source])}]},options:{responsive:true,plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:{precision:0}}}}});
+    const days=[...new Set(metrics.flatMap(r=>(r.m.days||[]).map(d=>d.day)))].sort();
+    const trend=document.getElementById("regionComparisonTrend");
+    if(trend) regionComparisonTrendChart=new Chart(trend,{type:"line",data:{labels:days,datasets:metrics.map(r=>({label:r.name,data:days.map(day=>r.m.days.find(d=>d.day===day)?.count||0),borderColor:REGION_COLORS[r.source],backgroundColor:REGION_COLORS[r.source],tension:.25}))},options:{responsive:true,scales:{y:{beginAtZero:true,ticks:{precision:0}}}}});
+  }
+}
+
+async function loadRegionComparison() {
+  const preset=document.getElementById("regionComparePreset")?.value||"7";
+  let {from,to}=regionComparisonDates(preset);
+  if(preset==="custom"){from=document.getElementById("regionCompareFrom")?.value;to=document.getElementById("regionCompareTo")?.value;}
+  if(!from||!to)return;
+  const response=await fetch(`/api/analytics/regions?start=${encodeURIComponent(from)}&end=${encodeURIComponent(to)}`,{cache:"no-store"});
+  const data=await response.json(); if(!response.ok||!data.ok)throw new Error(data.error||"comparison_failed");
+  renderRegionComparison(data);
+}
+
+function wireRegionComparison(){
+  const preset=document.getElementById("regionComparePreset");
+  const sync=()=>{const d=regionComparisonDates(preset?.value||"7");const from=document.getElementById("regionCompareFrom"),to=document.getElementById("regionCompareTo");if(preset?.value!=="custom"){if(from)from.value=d.from;if(to)to.value=d.to;}if(from)from.disabled=preset?.value!=="custom";if(to)to.disabled=preset?.value!=="custom";};
+  preset?.addEventListener("change",sync); sync();
+  document.getElementById("loadRegionComparisonBtn")?.addEventListener("click",()=>loadRegionComparison().catch(()=>{document.getElementById("regionComparisonPeriod").textContent="Porovnání se nepodařilo načíst.";}));
+  document.getElementById("regionCompareMode")?.addEventListener("change",()=>loadRegionComparison().catch(()=>{}));
+  document.querySelectorAll("[data-region-source]").forEach(el=>el.addEventListener("change",()=>loadRegionComparison().catch(()=>{})));
+  loadRegionComparison().catch(()=>{});
 }
 
 function durationPresentation(it) {
@@ -1072,7 +1155,11 @@ function eventDetailLine(label, value, tooltip = "") {
   return `<div class="eventDetailLine"${tooltip?` title="${escapeHtml(tooltip)}"`:''}><span>${escapeHtml(label)}</span><b>${escapeHtml(value || "—")}</b></div>`;
 }
 
-function sourceLabel(it) { return it?.source === "praha" ? "Praha" : "Středočeský kraj"; }
+function sourceLabel(it) {
+  if (it?.source === "praha") return "Praha";
+  if (it?.source === "pardubicky") return "Pardubický kraj";
+  return "Středočeský kraj";
+}
 function sourceBadgeHtml(it) { return `<span class="sourceBadge source-${escapeHtml(it?.source || 'stredocesky')}">${escapeHtml(sourceLabel(it))}</span>`; }
 
 function tableEditButtonHtml(it) {
@@ -1210,7 +1297,7 @@ function renderTable(items) {
 function makeEventIcon(eventType, it = null) {
   const meta = typeMeta(eventType);
   return L.divIcon({
-    className: `fw-emoji-wrap ${meta.cls} ${it?.source === 'praha' ? 'fw-source-praha' : 'fw-source-stredocesky'} ${isMajorEventItem(it) ? "fw-major-marker" : ""}`,
+    className: `fw-emoji-wrap ${meta.cls} ${it?.source === 'praha' ? 'fw-source-praha' : it?.source === 'pardubicky' ? 'fw-source-pardubicky' : 'fw-source-stredocesky'} ${isMajorEventItem(it) ? "fw-major-marker" : ""}`,
     html: `<div class="fw-emoji">${isMajorEventItem(it) ? "🚨" : meta.emoji}</div>`,
     iconSize: [24, 24],
     iconAnchor: [12, 12]
@@ -1223,22 +1310,24 @@ let mapEventPoints=[];
 function fitEventMap() {if(mapEventPoints.length)map.fitBounds(mapEventPoints,{padding:[32,32],maxZoom:12});else map.setView([50.0,14.5],8);}
 function renderMap(items) {
   if(!markersLayer)return;
+  const sourceLayers=typeof eventSourceLayers!=="undefined"&&Object.keys(eventSourceLayers||{}).length?eventSourceLayers:{stredocesky:markersLayer,praha:markersLayer,pardubicky:markersLayer};
+  const distinctLayers=[...new Set(Object.values(sourceLayers))];
   let popupPoint=null,popupScroll=0;
-  markersLayer.eachLayer(marker=>{
+  distinctLayers.forEach(layer=>layer.eachLayer(marker=>{
     if(marker.isPopupOpen?.()){
       const point=marker.getLatLng();popupPoint=point.lat+'|'+point.lng;
       popupScroll=marker.getPopup()?.getElement()?.querySelector('.fw-map-popup')?.scrollTop || 0;
     }
-  });
-  markersLayer.clearLayers();mapEventPoints=[];
+  }));
+  distinctLayers.forEach(layer=>layer.clearLayers());mapEventPoints=[];
   const rows=FireWatchData.normalizeEvents(items);let mapped=0;
   for(const group of FireWatchData.groupMapEvents(rows)){
     const it=group.find(row=>!row.is_closed)||group[0];mapped+=group.length;
     const icon=group.length>1?L.divIcon({className:'fw-shared-marker',html:'<span class="'+(group.some(row=>!row.is_closed)?'active':'closed')+'">'+group.length+'</span>',iconSize:[36,36]}):makeEventIcon(it.event_type,it);
     const marker=L.marker([it.lat,it.lon],{icon,zIndexOffset:1000,opacity:group.every(row=>row.is_closed)?0.8:1});
-    const popup=group.map(ev=>'<article class="fw-map-event"><b>'+escapeHtml(ev.title)+'</b> <span class="sourceBadge source-'+escapeHtml(ev.source||'stredocesky')+'">'+escapeHtml(ev.source==='praha'?'Praha':'Středočeský kraj')+'</span><br>'+escapeHtml(ev.geo_municipality||ev.city_text||ev.place_text||'')+(ev.district_text?' · '+escapeHtml(ev.district_text):'')+'<br><span class="fw-map-status '+(ev.is_closed?'closed':'active')+'">'+escapeHtml(statusLabelForEvent(ev))+'</span><br>'+escapeHtml(ev.time_label||'Čas události')+': '+escapeHtml(formatDate(ev.source_updated_at||ev.pub_date))+'<br>Začátek: '+escapeHtml(formatDate(ev.start_time_iso))+'<br>Délka: <span title="'+escapeHtml(FireWatchData.durationInfo(ev).tooltip)+'">'+escapeHtml(FireWatchData.durationText(ev))+'</span>'+(ev.is_closed && ev.end_time_iso?'<br>Konec: '+escapeHtml(formatDate(ev.end_time_iso)):'')+'<br><strong class="fw-map-precision">'+escapeHtml(ev.geo_label||'Přibližná poloha')+'</strong><br><button type="button" class="eventDetailBtn" data-event-id="'+escapeHtml(ev.id)+'">Detail události</button></article>').join('');
+    const popup=group.map(ev=>'<article class="fw-map-event"><b>'+escapeHtml(ev.title)+'</b> <span class="sourceBadge source-'+escapeHtml(ev.source||'stredocesky')+'">'+escapeHtml(ev.source==='praha'?'Praha':ev.source==='pardubicky'?'Pardubický kraj':'Středočeský kraj')+'</span><br>'+escapeHtml(ev.geo_municipality||ev.city_text||ev.place_text||'')+(ev.district_text?' · '+escapeHtml(ev.district_text):'')+'<br><span class="fw-map-status '+(ev.is_closed?'closed':'active')+'">'+escapeHtml(statusLabelForEvent(ev))+'</span><br>'+escapeHtml(ev.time_label||'Čas události')+': '+escapeHtml(formatDate(ev.source_updated_at||ev.pub_date))+'<br>Začátek: '+escapeHtml(formatDate(ev.start_time_iso))+'<br>Délka: <span title="'+escapeHtml(FireWatchData.durationInfo(ev).tooltip)+'">'+escapeHtml(FireWatchData.durationText(ev))+'</span>'+(ev.is_closed && ev.end_time_iso?'<br>Konec: '+escapeHtml(formatDate(ev.end_time_iso)):'')+'<br><strong class="fw-map-precision">'+escapeHtml(ev.geo_label||'Přibližná poloha')+'</strong><br><button type="button" class="eventDetailBtn" data-event-id="'+escapeHtml(ev.id)+'">Detail události</button></article>').join('');
     marker.bindPopup('<div class="fw-map-popup">'+(group.length>1?'<p>'+group.length+' událostí na stejném místě</p>':'')+popup+'</div>',{maxWidth:340,keepInView:true,autoPanPadding:[16,16]});
-    marker.addTo(markersLayer);mapEventPoints.push([it.lat,it.lon]);
+    marker.addTo(sourceLayers[it.source] || sourceLayers.stredocesky);mapEventPoints.push([it.lat,it.lon]);
     if(popupPoint===it.lat+'|'+it.lon){
       marker.openPopup();
       const popup=marker.getPopup()?.getElement()?.querySelector('.fw-map-popup');if(popup)popup.scrollTop=popupScroll;
@@ -1342,9 +1431,20 @@ async function osrmRoute(from, to) {
   return { coords, duration_s: r.duration, distance_m: r.distance };
 }
 
-function pickStationsWithin20km(eventLat, eventLon) {
+function eventRegionForStationLookup(event) {
+  if (event?.event_region) return event.event_region;
+  if (event?.region) return event.region;
+  if (event?.source === "praha") return "Hlavní město Praha";
+  if (event?.source === "pardubicky") return "Pardubický kraj";
+  return event?.source === "stredocesky" ? STREDOCESKY_REGION : null;
+}
+
+function pickStationsWithin20km(eventLat, eventLon, event = null) {
   const out = [];
+  const eventRegion = eventRegionForStationLookup(event);
+  if (!eventRegion) return out;
   for (const s of hzsStations) {
+    if (s.region !== eventRegion) continue;
     if (!Number.isFinite(s.lat) || !Number.isFinite(s.lon)) continue;
     const km = haversineKm(eventLat, eventLon, s.lat, s.lon);
     if (km <= MAX_STATION_AIR_KM) out.push({ station: s, km });
@@ -1548,7 +1648,7 @@ async function startSimulationForEvent(ev) {
 
   try {
     await stationsReadyPromise; // počkej na stanice (geocoding)
-    const candidates = pickStationsWithin20km(ev.lat, ev.lon);
+    const candidates = pickStationsWithin20km(ev.lat, ev.lon, ev);
     if (candidates.length === 0) return;
 
     // vyber nejrychlejší ETA mezi kandidáty (OSRM)
@@ -3423,15 +3523,21 @@ async function openEventDetailModal(id) {
     if (summary) {
       summary.innerHTML = `
         ${eventDetailLine(ev.time_label || "Čas události", detailDateText(ev.source_updated_at || ev.pub_date || ev.created_at))}
+        ${ev.reported_at ? eventDetailLine("Ohlášeno zdrojem", detailDateText(ev.reported_at)) : ""}
         ${eventDetailLine("Začátek", detailDateText(ev.start_time_iso))}
         ${eventDetailLine("Konec", ev.is_closed && (ev.end_time_source || ["rss_end_time","esp_duration","explicit","manual"].includes(ev.duration_source)) ? detailDateText(ev.end_time_iso) : "—")}
         ${eventDetailLine("Obec", ev.geo_municipality || ev.city_text || "")}
+        ${eventDetailLine("Část obce / ulice", [ev.city_part, ev.street].filter(Boolean).join(" · ") || "—")}
         ${eventDetailLine("Místo / upřesnění", ev.geo_detail || ev.place_text || "—")}
         ${eventDetailLine("Okres", ev.district_text || "—")}
         ${eventDetailLine("Poloha", ev.geo_label || "Poloha na mapě nebyla spolehlivě určena.")}
         ${eventDetailLine("Typ", `${meta.emoji} ${meta.label || ev.event_type || ""}`)}
+        ${eventDetailLine("Podtyp", ev.subtype || "—")}
         ${eventDetailLine("Stav", statusLabelForEvent(ev))}
         ${eventDetailLine("Zdroj / oblast", `${sourceLabel(ev)}${ev.region ? ` · ${ev.region}` : ""}`)}
+        ${eventDetailLine("Stanice", ev.station_id ? (ev.station_name || ev.station_id) : "Stanice není v databázi")}
+        ${eventDetailLine("Jednotky uvedené zdrojem", Array.isArray(ev.responding_units) && ev.responding_units.length ? ev.responding_units.join(", ") : "—")}
+        ${ev.cross_region_assistance ? eventDetailLine("Mezikrajská výpomoc", "Potvrzena zdrojem nebo ručním ověřením") : ""}
         ${eventDetailLine("Kategorie", `${typeMeta(ev.event_type).label}${ev.is_jpo_event === false ? " · ostatní krizová událost" : " · JPO / HZS"}`)}
         <div class="eventDetailLine"><span>Délka</span><b>${durationHtml(ev)}</b></div>
         ${eventDetailLine("Stupeň", ev.alarm_level_text || "")}
@@ -3990,6 +4096,7 @@ document.getElementById("applyBtn").addEventListener("click", loadAll);
 document.getElementById("resetBtn").addEventListener("click", () => { resetFilters(); loadAll(); });
 document.getElementById("exportCsvBtn").addEventListener("click", () => exportWithFilters("csv"));
 document.getElementById("exportPdfBtn").addEventListener("click", () => exportWithFilters("pdf"));
+document.getElementById("sourceSelect")?.addEventListener("change", () => renderHzsStations());
 
 // map resize on responsive changes
 let resizeTimer = null;
@@ -4009,6 +4116,7 @@ wireStatusRecheckAdminButton();
 wireEventDetailModal();
 wireManualQuickEditList();
 wireRegionalWeather();
+wireRegionComparison();
 wireMajorEventsBackfill();
 wireWatchNotifications();
 

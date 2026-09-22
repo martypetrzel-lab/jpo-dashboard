@@ -84,7 +84,7 @@ Spusťte `npm test`. Testy používají vestavěný `node:test` a pokrývají b�
 
 # Záložní RSS import přes GitHub Actions
 
-Workflow `.github/workflows/rss-ingest.yml` zpracuje nezávisle středočeský RSS a pražský Atom feed. Přes existující `POST /api/ingest` posílá nejvýše 100 položek na zdroj. Selhání jednoho kroku neblokuje spuštění druhého; závěrečný krok přesto označí běh jako neúspěšný, pokud některý import selhal. ESP32 není potřeba.
+Workflow `.github/workflows/rss-ingest.yml` zpracuje nezávisle středočeský RSS, pražský Atom feed a RSS HZS Pardubického kraje. Přes existující `POST /api/ingest` posílá nejvýše 100 položek na zdroj. Selhání jednoho kroku neblokuje ostatní; závěrečný krok přesto označí běh jako neúspěšný, pokud některý import selhal. ESP32 není potřeba.
 
 ## Nastavení GitHub Secrets
 
@@ -103,13 +103,25 @@ API klíč zjistíte v Railway u služby FireWatch v **Variables → API_KEY**. 
 
 1. Otevřete **Actions → RSS ingest**. Pokud GitHub nabízí povolení Actions, nejprve je povolte.
 2. Klikněte **Run workflow**, vyberte větev **main** a potvrďte **Run workflow**.
-3. Otevřete kroky **Import Středočeský RSS into FireWatch** a **Import Praha Atom into FireWatch**. Středočeský výstup obsahuje `RSS items=…`, `accepted`, `inserted`, `updated`, `skipped` a `skipped_older`. Pražský výstup obsahuje `found`, HTTP status, `new`, `updated`, `unchanged`, `skipped_old`, `errors` a `duration_ms`. Žádný krok nevypisuje API klíč.
+3. Otevřete kroky **Import Středočeský RSS into FireWatch**, **Import Praha Atom into FireWatch** a **Import Pardubický RSS and details into FireWatch**. Středočeský výstup obsahuje `RSS items=…`, `accepted`, `inserted`, `updated`, `skipped` a `skipped_older`. Pražský výstup obsahuje `found`, HTTP status, `new`, `updated`, `unchanged`, `skipped_old`, `errors` a `duration_ms`. Pardubický krok vypíše `found`, `details`, `new`, `updated_candidates`, `status_changed`, `unchanged`, `skipped_old`, `detail_errors`, `geocode_errors` a `duration_ms`. Žádný krok nevypisuje API klíč ani cílovou URL.
 4. Ověřte události na webu a v admin diagnostice příjmu dat vyhledejte `source: github_actions_rss`. Zelený běh s `RSS items=0` jen bezpečně přeskočil prázdný feed, nepotvrzuje funkčnost ingestu.
 5. Plán `*/5 * * * *` na výchozí větvi automaticky žádá spuštění každých 5 minut. GitHub může plánované běhy zpozdit; nejde o přesnou časovou garanci. Společná concurrency skupina brání souběhu ručního a plánovaného importu.
 
 Skript má pro RSS connect timeout 30000 ms a celkový timeout jednoho pokusu 30000 ms; pro ingest connect timeout 30000 ms a celkový timeout 60000 ms. Každá fáze má maximálně dva pokusy s prodlevou 1500 ms při síťové chybě, timeoutu nebo HTTP 5xx. HTTP 4xx, přesměrování, neplatné XML a neplatná odpověď ingestu se neopakují. Chyba vypíše pouze fázi, bezpečnou kategorii a případný HTTP status a skončí nenulovým návratovým kódem. Klíč, cílová URL ani text chybové odpovědi se nelogují. Timeout při ingestu může nastat i po uložení části položek; opakovaný POST používá stejná ID.
 
 **Railway worker zatím ponechte zapnutý.** Teprve po úspěšném ručním testu s neprázdným feedem a ověření plánovaných importů nastavte na Railway `RSS_ENABLED=0` a znovu nasaďte službu. Workflow ani skript tuto proměnnou nemění a worker nemažou.
+
+### Pardubický kraj
+
+`scripts/pardubicky-push.js` načítá `https://www.hzspa.cz/vyjezdy/rss-aktualni-vyjezdy.php` a pro novou nebo stále otevřenou událost následně načte oficiální detail. Z detailu strukturálně čte popis, ohlášený čas, typ, podtyp, okres, obec, ulici, jednotky a autoritativní stav. Stabilní ID má tvar `pardubicky:<číselné-id>` a odkaz se ukládá bez sledovacích fragmentů. První import přijímá dnešní položky; včerejší jen tehdy, když detail stále uvádí otevřený stav. Starší uzavřené položky se nevkládají a chybějící položky se nemažou.
+
+Bezpečný síťový test bez zápisu lze spustit `PARDUBICKY_DRY_RUN=1 node scripts/pardubicky-push.js`. V tomto režimu nejsou potřeba GitHub Secrets. Běžný běh používá stejné Secrets `FIREWATCH_INGEST_URL` a `FIREWATCH_API_KEY` jako ostatní zdroje. Detail jedné položky může selhat bez zablokování ostatních; chyba je uvedena jen bezpečnou kategorií. RSS čas ohlášení se ukládá jako zdrojový údaj, nevydává se automaticky za přesný začátek ani konec zásahu.
+
+### Kraje, stanice a srovnání
+
+Událost má oddělený kraj, zdroj, výslovně uvedené jednotky a případné přiřazení stanice. Automatické přiřazení stanice je povolené pouze uvnitř stejného kraje a z ověřené polohy. Současná databáze stanic obsahuje jen Středočeský kraj; pro Prahu a Pardubický kraj proto UI uvádí „Stanice není v databázi“ a nic geograficky nedohaduje. Explicitní jednotky z pardubického detailu zůstávají zachované jako zdrojová data.
+
+Sekce **Porovnání krajů** nabízí dnešek, včerejšek, 7/30 dní, kalendářní měsíc a vlastní rozsah. Odděluje zásahy HZS/JPO od všech evidovaných krizových událostí, protože pražský zdroj zahrnuje i poruchy vody a elektřiny. Výsledky uvádějí dostupnost zdroje a upozornění, že nejde o úplnou oficiální statistiku HZS ČR.
 
 Lokálně lze se stejnými dvěma proměnnými prostředí spustit `npm ci` a `node scripts/rss-push.js`. `npm test` zahrnuje payload, limit 100 položek, autentizaci ingestu, timeout/retry, HTTP chyby, neplatné XML, prázdný feed, bezpečné logování a návratový kód skriptu.
 

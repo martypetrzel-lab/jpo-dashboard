@@ -243,6 +243,7 @@
           <option value="traffic">nehoda</option>
           <option value="tech">technická</option>
           <option value="rescue">záchrana</option>
+          <option value="hazmat">únik nebezpečných látek</option>
           <option value="false_alarm">planý poplach</option>
           <option value="hzs">událost HZS</option>
           <option value="water">voda</option>
@@ -273,6 +274,7 @@
           <option value="all">vše</option>
           <option value="stredocesky">Středočeský kraj</option>
           <option value="praha">Praha</option>
+          <option value="pardubicky">Pardubický kraj</option>
         </select>
       </div>
 
@@ -606,6 +608,23 @@
 
 
     <div id="v28WorkAreaLabel" class="v28SectionLabel"><span>Analytika a rozšířené nástroje</span><small>počasí, statistiky, reporty a admin úpravy</small></div>
+
+    <section id="regionComparisonCard" class="card regionComparisonCard">
+      <div class="cardHeader"><div><h2>Porovnání krajů</h2><div class="hint">Evidované události ve FireWatch CZ podle zdroje a období</div></div></div>
+      <div class="regionCompareControls">
+        <label>Období<select id="regionComparePreset"><option value="today">Dnes</option><option value="yesterday">Včera</option><option value="7" selected>Posledních 7 dní</option><option value="30">Posledních 30 dní</option><option value="month">Kalendářní měsíc</option><option value="custom">Vlastní rozsah</option></select></label>
+        <label>Od<input id="regionCompareFrom" type="date"></label><label>Do<input id="regionCompareTo" type="date"></label>
+        <fieldset><legend>Kraje</legend><label><input type="checkbox" data-region-source="stredocesky" checked> Středočeský</label><label><input type="checkbox" data-region-source="praha" checked> Praha</label><label><input type="checkbox" data-region-source="pardubicky" checked> Pardubický</label></fieldset>
+        <label>Rozsah<select id="regionCompareMode"><option value="jpo">Zásahy HZS/JPO</option><option value="all">Všechny krizové události</option></select></label>
+        <button id="loadRegionComparisonBtn" class="btn primary" type="button">Porovnat kraje</button>
+      </div>
+      <p id="regionComparisonPeriod" class="hint"></p>
+      <div id="regionComparisonKpis" class="regionComparisonKpis"></div>
+      <div class="regionComparisonCharts"><div><h3>Počet událostí</h3><canvas id="regionComparisonBar" height="160"></canvas></div><div><h3>Vývoj po dnech</h3><canvas id="regionComparisonTrend" height="160"></canvas></div></div>
+      <div id="regionComparisonTypes" class="regionComparisonTypes"></div>
+      <div class="tableWrap"><table><thead><tr><th>Kraj</th><th>Celkem</th><th>Průměr/den</th><th>Aktivní</th><th>Ukončené</th><th>Neznámý stav</th><th>Ověřená GPS</th><th>Nejčastější typ</th><th>Změna</th><th>Zdroj</th></tr></thead><tbody id="regionComparisonTable"></tbody></table></div>
+      <p id="regionComparisonDisclaimer" class="hint"></p>
+    </section>
 
 <section id="regionalWeatherCard" class="card regionalWeatherCard">
       <div class="cardHeader">
