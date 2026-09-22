@@ -794,6 +794,16 @@ function formatDuration(min) {
   return `${h} h ${m} min`;
 }
 
+function durationPresentation(it) {
+  const info=FireWatchData.durationInfo(it);
+  return {text:FireWatchData.durationText(it),tooltip:info.tooltip,minutes:info.minutes,estimate:info.estimate};
+}
+
+function durationHtml(it) {
+  const value=durationPresentation(it);
+  return `<span class="eventDuration${value.estimate?' isEstimate':''}" title="${escapeHtml(value.tooltip)}">${escapeHtml(value.text)}</span>`;
+}
+
 function escapeHtml(s) {
   return String(s || "")
     .replace(/&/g, "&amp;")
@@ -1031,8 +1041,8 @@ function detailDateText(value) {
   try { return formatDate(value); } catch { return String(value); }
 }
 
-function eventDetailLine(label, value) {
-  return `<div class="eventDetailLine"><span>${escapeHtml(label)}</span><b>${escapeHtml(value || "—")}</b></div>`;
+function eventDetailLine(label, value, tooltip = "") {
+  return `<div class="eventDetailLine"${tooltip?` title="${escapeHtml(tooltip)}"`:''}><span>${escapeHtml(label)}</span><b>${escapeHtml(value || "—")}</b></div>`;
 }
 
 function tableEditButtonHtml(it) {
@@ -1086,7 +1096,7 @@ function eventMobileCardHtml(it) {
       </div>
       <div class="eventMobileMeta">
         <span>🕒 ${escapeHtml(it.time_label || "Čas události")}: ${escapeHtml(formatDate(timeValue))}</span>
-        <span>⏱️ ${escapeHtml(formatDuration(durationValue))}</span>
+        <span>⏱️ ${durationHtml(it)}</span>
       </div>
       <div class="eventMobileBadges">
         ${alarmHtml || ""}
@@ -1147,7 +1157,7 @@ function renderTable(items) {
       <td>${escapeHtml(city)}</td>
       <td>${statusEmoji(it.is_closed)} ${escapeHtml(statusText)} ${carryHtml}</td>
       <td>${alarmHtml}</td>
-      <td>${escapeHtml(formatDuration(durationValue))}</td>
+      <td>${durationHtml(it)}</td>
       <td>${eventDetailButtonHtml(it)}</td>
       <td>${tableEditButtonHtml(it)}</td>
     `;
@@ -1196,7 +1206,7 @@ function renderMap(items) {
     const it=group.find(row=>!row.is_closed)||group[0];mapped+=group.length;
     const icon=group.length>1?L.divIcon({className:'fw-shared-marker',html:'<span class="'+(group.some(row=>!row.is_closed)?'active':'closed')+'">'+group.length+'</span>',iconSize:[36,36]}):makeEventIcon(it.event_type,it);
     const marker=L.marker([it.lat,it.lon],{icon,zIndexOffset:1000,opacity:group.every(row=>row.is_closed)?0.8:1});
-    const popup=group.map(ev=>'<article class="fw-map-event"><b>'+escapeHtml(ev.title)+'</b><br>'+escapeHtml(ev.geo_municipality||ev.city_text||ev.place_text||'')+(ev.district_text?' · okres '+escapeHtml(ev.district_text):'')+'<br><span class="fw-map-status '+(ev.is_closed?'closed':'active')+'">'+escapeHtml(statusLabelForEvent(ev))+'</span><br>'+escapeHtml(ev.time_label||'Čas události')+': '+escapeHtml(formatDate(ev.source_updated_at||ev.pub_date))+'<br>Začátek: '+escapeHtml(formatDate(ev.start_time_iso))+'<br>Délka: '+escapeHtml(formatDuration(liveDurationForEvent(ev)))+(ev.is_closed && (ev.end_time_source || ['rss_end_time','esp_duration','explicit','manual'].includes(ev.duration_source))?'<br>Konec: '+escapeHtml(formatDate(ev.end_time_iso)):'')+'<br><strong class="fw-map-precision">'+escapeHtml(ev.geo_label||'Přibližná poloha')+'</strong><br><button type="button" class="eventDetailBtn" data-event-id="'+escapeHtml(ev.id)+'">Detail události</button></article>').join('');
+    const popup=group.map(ev=>'<article class="fw-map-event"><b>'+escapeHtml(ev.title)+'</b><br>'+escapeHtml(ev.geo_municipality||ev.city_text||ev.place_text||'')+(ev.district_text?' · okres '+escapeHtml(ev.district_text):'')+'<br><span class="fw-map-status '+(ev.is_closed?'closed':'active')+'">'+escapeHtml(statusLabelForEvent(ev))+'</span><br>'+escapeHtml(ev.time_label||'Čas události')+': '+escapeHtml(formatDate(ev.source_updated_at||ev.pub_date))+'<br>Začátek: '+escapeHtml(formatDate(ev.start_time_iso))+'<br>Délka: <span title="'+escapeHtml(FireWatchData.durationInfo(ev).tooltip)+'">'+escapeHtml(FireWatchData.durationText(ev))+'</span>'+(ev.is_closed && ev.end_time_iso?'<br>Konec: '+escapeHtml(formatDate(ev.end_time_iso)):'')+'<br><strong class="fw-map-precision">'+escapeHtml(ev.geo_label||'Přibližná poloha')+'</strong><br><button type="button" class="eventDetailBtn" data-event-id="'+escapeHtml(ev.id)+'">Detail události</button></article>').join('');
     marker.bindPopup('<div class="fw-map-popup">'+(group.length>1?'<p>'+group.length+' událostí na stejném místě</p>':'')+popup+'</div>',{maxWidth:340,keepInView:true,autoPanPadding:[16,16]});
     marker.addTo(markersLayer);mapEventPoints.push([it.lat,it.lon]);
     if(popupPoint===it.lat+'|'+it.lon){
@@ -2838,7 +2848,7 @@ function updateCommandOverview(items = [], stats = null) {
     if (openSorted.length) {
       const it = openSorted[0];
       const meta = typeof typeMeta === "function" ? typeMeta(it.event_type) : { emoji: "•" };
-      primary.innerHTML = `<strong>${meta.emoji || "•"} ${escapeHtml(it.title || "Aktivní zásah")}</strong><span>${escapeHtml(it.city_text || it.place_text || "")} • ${escapeHtml(formatDuration(it.__duration))}${carryover ? ` • přesah ${carryover}` : ""}</span>`;
+      primary.innerHTML = `<strong>${meta.emoji || "•"} ${escapeHtml(it.title || "Aktivní zásah")}</strong><span>${escapeHtml(it.city_text || it.place_text || "")} • ${durationHtml(it)}${carryover ? ` • přesah ${carryover}` : ""}</span>`;
     } else {
       primary.innerHTML = `<strong>✅ Bez aktivního zásahu</strong><span>${closed} ukončených v aktuálním filtru</span>`;
     }
@@ -3387,7 +3397,7 @@ async function openEventDetailModal(id) {
         ${eventDetailLine("Poloha", ev.geo_label || "Poloha na mapě nebyla spolehlivě určena.")}
         ${eventDetailLine("Typ", `${meta.emoji} ${meta.label || ev.event_type || ""}`)}
         ${eventDetailLine("Stav", statusLabelForEvent(ev))}
-        ${eventDetailLine("Délka", formatDuration(liveDurationForEvent(ev)))}
+        ${eventDetailLine("Délka", durationPresentation(ev).text, durationPresentation(ev).tooltip)}
         ${eventDetailLine("Stupeň", ev.alarm_level_text || "")}
         ${eventDetailLine("Význam", ev.major_reason || (ev.is_major_event ? "významná událost" : ""))}
       `;
@@ -4014,6 +4024,11 @@ loadAll();
 setInterval(() => {
   loadAll({ auto: true });
 }, 5 * 60 * 1000);
+
+// Průběžné odhady rostou z neměnného first_seen_at bez nového požadavku na server.
+setInterval(() => {
+  if (Array.isArray(window.latestItemsSnapshot)) renderTable(window.latestItemsSnapshot);
+}, 30 * 1000);
 
 // ==============================
 // OPS / ADMIN + SHIFT UI (frontend)

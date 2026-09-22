@@ -12,6 +12,14 @@ test('display durations require trusted timestamps or explicit/manual measuremen
  const now=Date.parse('2026-09-17T12:00:00Z');assert.equal(data.duration({is_closed:false,start_time_iso:'2026-09-17T11:00:17Z'},now),59);assert.equal(data.duration({is_closed:false,first_seen_at:'2026-09-17T11:00:00Z'},now),null);
  assert.equal(data.duration({is_closed:true,duration_min:25,duration_source:'rss_end_time'}),25);for(const source of ['close_update','estimated_stale_close','observed_first_seen',null])assert.equal(data.duration({is_closed:true,duration_min:25,duration_source:source}),null);
 });
+test('estimated durations use immutable first observation and always display the estimate sign',()=>{
+ const now=Date.parse('2026-09-17T12:00:00Z');
+ const open={is_closed:false,first_seen_at:'2026-09-17T10:45:00Z',first_seen_was_open:true,duration_source:'first_seen_open_estimate',duration_is_estimate:true};
+ assert.equal(data.duration(open,now),75);assert.equal(data.durationText(open,now),'≈ 1 h 15 min');assert.match(data.durationInfo(open,now).tooltip,/Orientační doba/);
+ const closed={...open,is_closed:true,end_time_iso:'2026-09-17T11:55:00Z',duration_source:'first_seen_to_rss_end_estimate'};
+ assert.equal(data.duration(closed,now),70);assert.equal(data.durationText(closed,now),'≈ 1 h 10 min');
+ assert.equal(data.duration({...closed,first_seen_was_open:null},now),null);assert.equal(data.durationText({...closed,first_seen_at:'2026-09-17T12:30:00Z'},now),'—');
+});
 test('RSS source links allow only HTTP(S), including in map popups',()=>{assert.equal(data.safeLink('javascript:alert(1)'), '');assert.equal(data.safeLink('data:text/html,hello'),'');assert.equal(data.safeLink('https://example.test/'), 'https://example.test/');});
 test('reconnect backoff is bounded and permission failures never loop',()=>{assert.deepEqual([0,1,2,3,4,5,6].map(x=>data.reconnectDelay(x,1006)),[1800,3600,7200,14400,28800,30000,null]);assert.equal(data.reconnectDelay(0,1008),null);assert.equal(data.reconnectDelay(0,4001),null);});
 test('manual date inputs use Prague independently of device zone and preserve seconds/DST',()=>{

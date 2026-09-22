@@ -28,16 +28,32 @@
   }
   function duration(event, now = Date.now()) {
     if (!event) return null;
+    const estimated=event.duration_is_estimate===true || event.duration_is_estimate==='true';
+    if(estimated){
+      if(event.first_seen_was_open!==true && event.first_seen_was_open!=='true')return null;
+      if(event.duration_source==='first_seen_open_estimate'&&!event.is_closed){const start=Date.parse(event.first_seen_at||'');if(!Number.isFinite(start)||start>=now)return null;const minutes=Math.floor((now-start)/60000);return minutes>0&&minutes<=4320?minutes:null;}
+      if(event.duration_source==='first_seen_to_rss_end_estimate'&&event.is_closed){const start=Date.parse(event.first_seen_at||''),end=Date.parse(event.end_time_iso||'');if(!Number.isFinite(start)||!Number.isFinite(end)||start>=end)return null;const minutes=Math.floor((end-start)/60000);return minutes>0&&minutes<=4320?minutes:null;}
+      return null;
+    }
     if(event.start_time_trusted===false && !["esp_duration","explicit","manual"].includes(event.duration_source))return null;
     if(event.source_kind==='rss' && !['rss_description','explicit','manual','esp'].includes(event.start_time_source) && event.status_source!=='manual' && event.duration_source!=='manual')return null;
     if (event.is_closed) {
-      if (!['rss_end_time','esp_duration','explicit','manual'].includes(event.duration_source)) return null;
+      if (!['rss_start_and_end','manual_start_rss_end','trusted_start_rss_end','rss_end_time','esp_duration','explicit','manual'].includes(event.duration_source)) return null;
       const n = Number(event.duration_min);
       return event.duration_min != null && Number.isFinite(n) && n > 0 && n <= 4320 ? n : null;
     }
     const start = Date.parse(event.start_time_iso || (event.source_kind==='rss' ? '' : event.pub_date) || '');
     if (!Number.isFinite(start) || start > now) return null;
     const minutes=Math.floor((now-start)/60000);return minutes>0 && minutes<=4320 ? minutes : null;
+  }
+  function durationInfo(event,now=Date.now()){
+    const minutes=duration(event,now),estimate=minutes!=null&&(event?.duration_is_estimate===true||event?.duration_is_estimate==='true');
+    return {minutes,estimate,tooltip:minutes==null?'Délku nelze určit – zdroj neposkytuje čas zahájení.':estimate?'Orientační doba od prvního zachycení události FireWatch. Skutečný začátek zásahu zdroj neposkytuje.':'Délka ze skutečného nebo ručně ověřeného začátku a konce zásahu.'};
+  }
+  function durationText(event,now=Date.now()){
+    const info=durationInfo(event,now);if(info.minutes==null)return '—';
+    const h=Math.floor(info.minutes/60),m=Math.round(info.minutes%60),value=h>0?h+' h '+m+' min':m+' min';
+    return (info.estimate?'≈ ':'')+value;
   }
   function safeLink(value) {
     try {const url = new URL(value);return ['http:','https:'].includes(url.protocol) ? url.href : '';} catch {return '';}
@@ -58,5 +74,5 @@
     for(const offset of [120,60]){const date=new Date(wall-offset*60000);if(pragueInput(date.toISOString())===normalized)return date.toISOString();}
     return null;
   }
-  scope.FireWatchData = Object.freeze({coordinate,hasCoords,groupMapEvents,normalizeEvents,sortEvents,duration,safeLink,reconnectDelay,pragueInput,pragueIso});
+  scope.FireWatchData = Object.freeze({coordinate,hasCoords,groupMapEvents,normalizeEvents,sortEvents,duration,durationInfo,durationText,safeLink,reconnectDelay,pragueInput,pragueIso});
 })(globalThis);

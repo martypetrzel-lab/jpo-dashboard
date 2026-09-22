@@ -4532,3 +4532,8 @@ button.btn {
     background: rgba(255,255,255,0.035);
   }
 }
+.eventDuration.isEstimate {
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+  cursor: help;
+}
