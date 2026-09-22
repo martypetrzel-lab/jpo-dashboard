@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {eventLocation,normalizeName,normalizeDistrict} from '../location.js';
-import {buildQueries,buildPrahaQueries,cacheKey,evaluateCandidate,evaluatePrahaCandidate,selectCandidate,localCenter,annotateEventGeo,canImprove,diagnoseCoordinates,createGeocoder,createGeocodeJobs,insidePraha} from '../geocoding.js';
+import {buildQueries,buildPrahaQueries,buildPardubickyQueries,cacheKey,evaluateCandidate,evaluatePrahaCandidate,evaluatePardubickyCandidate,selectCandidate,localCenter,annotateEventGeo,canImprove,diagnoseCoordinates,createGeocoder,createGeocodeJobs,insidePraha,insidePardubicky} from '../geocoding.js';
 import {rssItemToEvent} from '../rss-worker.js';
 import '../public/event-utils.js';
 const event={city_text:'Dobřejovice',description_raw:'stav: probíhá zásah<br>Dobřejovice<br>okres Praha Východ'};
@@ -128,4 +128,15 @@ test('Praha geocoding accepts matching address and rejects outside or wrong dist
  assert.equal(evaluatePrahaCandidate({...valid,lat:'50.2'},c).reason,'outside_expected_area');
  assert.equal(evaluatePrahaCandidate({...valid,address:{...valid.address,city_district:'Praha 10'}},c).reason,'district_mismatch');
  assert.equal(annotateEventGeo({source:'praha',city_text:'Praha 11',place_text:'Tererova 1356/6a',lat:50.2,lon:14.49,geo_precision:'exact'}).geo_reliable,false);
+});
+test('Pardubice detail produces a bounded address query and accepts only the expected region',()=>{
+ const c=eventLocation({source:'pardubicky',city_text:'Letohrad',street:'Spořilov III',district_text:'Ústí nad Orlicí'});
+ const queries=buildPardubickyQueries(c);
+ assert.match(queries[0],/^Spořilov III, Letohrad, okres Ústí nad Orlicí, Pardubický kraj, Česko$/);
+ const valid={lat:'50.0358',lon:'16.4994',addresstype:'road',name:'Spořilov III',display_name:'Spořilov III, Letohrad',address:{country_code:'cz',state:'Pardubický kraj',county:'okres Ústí nad Orlicí',town:'Letohrad',road:'Spořilov III'}};
+ assert.equal(evaluatePardubickyCandidate(valid,c).precision,'locality');
+ assert.equal(insidePardubicky(valid.lat,valid.lon),true);
+ assert.equal(evaluatePardubickyCandidate({...valid,lat:'49.95',lon:'14.1'},c).reason,'outside_expected_area');
+ assert.equal(evaluatePardubickyCandidate({...valid,address:{...valid.address,state:'Středočeský kraj'}},c).reason,'state_mismatch');
+ assert.equal(evaluatePardubickyCandidate({...valid,address:{...valid.address,county:'okres Pardubice'}},c).reason,'district_mismatch');
 });

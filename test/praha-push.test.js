@@ -54,5 +54,6 @@ test("workflow runs both sources independently before evaluating failures", () =
   const workflow = fs.readFileSync(fileURLToPath(new URL("../.github/workflows/rss-ingest.yml", import.meta.url)), "utf8");
   assert.match(workflow, /id: stredocesky\s+continue-on-error: true[\s\S]+node scripts\/rss-push\.js/);
   assert.match(workflow, /id: praha\s+continue-on-error: true[\s\S]+node scripts\/praha-push\.js/);
+  assert.match(workflow, /id: pardubicky\s+continue-on-error: true[\s\S]+node scripts\/pardubicky-push\.js/);
   assert.match(workflow, /name: Check independent source imports\s+if: always\(\)/);
 });

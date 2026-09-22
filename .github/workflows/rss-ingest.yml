@@ -42,9 +42,17 @@ jobs:
           FIREWATCH_INGEST_URL: ${{ secrets.FIREWATCH_INGEST_URL }}
           FIREWATCH_API_KEY: ${{ secrets.FIREWATCH_API_KEY }}
           PRAHA_MAX_AGE_HOURS: '24'
+      - name: Import Pardubický RSS and details into FireWatch
+        id: pardubicky
+        continue-on-error: true
+        run: node scripts/pardubicky-push.js
+        env:
+          FIREWATCH_INGEST_URL: ${{ secrets.FIREWATCH_INGEST_URL }}
+          FIREWATCH_API_KEY: ${{ secrets.FIREWATCH_API_KEY }}
+          PARDUBICKY_DETAIL_DELAY_MS: '250'
       - name: Check independent source imports
         if: always()
         shell: bash
         run: |
-          echo "stredocesky=${{ steps.stredocesky.outcome }} praha=${{ steps.praha.outcome }}"
-          test "${{ steps.stredocesky.outcome }}" = success -a "${{ steps.praha.outcome }}" = success
+          echo "stredocesky=${{ steps.stredocesky.outcome }} praha=${{ steps.praha.outcome }} pardubicky=${{ steps.pardubicky.outcome }}"
+          test "${{ steps.stredocesky.outcome }}" = success -a "${{ steps.praha.outcome }}" = success -a "${{ steps.pardubicky.outcome }}" = success

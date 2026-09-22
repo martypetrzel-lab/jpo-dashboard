@@ -12,6 +12,13 @@ export function eventLocation(event = {}) {
     const locality = String(event.neighborhoodText || event.neighborhood_text || event.locality_text || '').trim();
     return {source:'praha', municipality, detail:normalizeName(detail)===normalizeName(municipality)?'':detail, locality, district:municipality, state:'Hlavní město Praha', country:'Česko'};
   }
+  if (event.source === 'pardubicky' || event.region === 'Pardubický kraj' || event.event_region === 'Pardubický kraj') {
+    const municipality=String(event.cityText || event.city_text || '').trim();
+    const detail=String(event.street || event.placeText || event.place_text || '').trim();
+    const locality=String(event.cityPart || event.city_part || event.locality_text || '').trim();
+    const district=normalizeDistrict(event.district || event.district_text || '');
+    return {source:'pardubicky',municipality,detail:normalizeName(detail)===normalizeName(municipality)?'':detail,locality,district,state:'Pardubický kraj',country:'Česko'};
+  }
   const lines = String(event.descriptionRaw || event.description_raw || '').replace(/<br\s*\/?>/gi,'\n').replace(/<[^>]*>/g,' ').split(/[\r\n]+/).map(s=>s.trim()).filter(Boolean);
   const district = normalizeDistrict(event.district_text || lines.find(s=>/^okres\s+/i.test(s)) || '');
   const places = lines.filter(s=>! /^(stav\s*:|ukon(?:čení|ceni)\s*:|okres\s+)/i.test(s));
