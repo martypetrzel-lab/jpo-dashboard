@@ -2972,6 +2972,7 @@ function updateCommandOverview(items = [], stats = null) {
   const mapCount = document.getElementById("overviewMapCount");
   const majorCount = document.getElementById("overviewMajorCount");
   const openCount = document.getElementById("overviewOpenCount");
+  const closedCount = document.getElementById("overviewClosedCount");
   const totalCount = document.getElementById("overviewTotalCount");
   const missingCount = document.getElementById("overviewMissingCount");
   const weatherRisk = document.getElementById("overviewWeatherRisk");
@@ -2990,6 +2991,7 @@ function updateCommandOverview(items = [], stats = null) {
   if (mapCount) mapCount.textContent = `${mapped}`;
   if (majorCount) majorCount.textContent = `${major}`;
   if (openCount) openCount.textContent = `${open}`;
+  if (closedCount) closedCount.textContent = `${closed}`;
   if (totalCount) totalCount.textContent = `${safeItems.length}`;
   if (missingCount) missingCount.textContent = `${missing}`;
 

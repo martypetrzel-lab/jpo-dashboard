@@ -11,6 +11,8 @@ test("workspace navigation exposes the core product areas without duplicating pa
     assert.match(html,new RegExp(`data-workspace="${view}"`));
   assert.match(app,/const WORKSPACE_VIEWS/);
   assert.match(app,/setWorkspaceView/);
+  for(const id of ["overviewOpenCount","overviewTotalCount","overviewClosedCount","overviewMajorCount","overviewMapCount","overviewMissingCount"])
+    assert.match(html,new RegExp(`id="${id}"`));
 });
 
 test("event filters share period, region and search state through the URL",()=>{
