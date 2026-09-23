@@ -18,6 +18,8 @@ test("regional comparison keeps JPO incidents separate from Prague utilities", (
     row("pardubicky", {is_closed:true,status_source:"explicit_closed",district_text:"Ústí nad Orlicí"})
   ];
   const result = buildRegionComparison(rows, [], {start:"2026-09-21",end:"2026-09-22T00:00:00Z",sourceStatus:{}});
+  assert.equal(result.period.end,"2026-09-21");
+  assert.equal(result.period.end_exclusive,"2026-09-22T00:00:00Z");
   const praha = result.regions.find(r=>r.source==="praha");
   assert.equal(praha.all.total,2);
   assert.equal(praha.all.other,1);

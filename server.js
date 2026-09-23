@@ -1017,8 +1017,10 @@ function aggregateRegionRows(rows, source, periodDays) {
 }
 
 function buildRegionComparison(currentRows, previousRows, { start, end, sourceStatus = {} } = {}) {
-  const periodMs = Math.max(86400000, new Date(end).getTime() - new Date(start).getTime());
+  const endExclusive = new Date(end);
+  const periodMs = Math.max(86400000, endExclusive.getTime() - new Date(start).getTime());
   const periodDays = Math.max(1, Math.round(periodMs / 86400000));
+  const endInclusive = new Date(endExclusive.getTime() - 86400000).toISOString().slice(0, 10);
   const regions = REGION_COMPARISON.map(region => {
     const all = aggregateRegionRows(currentRows, region.source, periodDays);
     const previousAll = aggregateRegionRows(previousRows, region.source, periodDays);
@@ -1032,7 +1034,7 @@ function buildRegionComparison(currentRows, previousRows, { start, end, sourceSt
     return { ...region, all, jpo, last_successful_import: sourceStatus[region.source] || null, station_data_available: region.source === "stredocesky" };
   });
   return {
-    period: { start, end, days: periodDays }, regions,
+    period: { start, end: endInclusive, end_exclusive: end, days: periodDays }, regions,
     disclaimer: "Jednotlivé kraje používají rozdílné zdroje a rozsah zveřejňovaných údajů. Hodnoty proto představují evidované události ve FireWatch CZ, nikoliv úplnou oficiální statistiku HZS ČR."
   };
 }
