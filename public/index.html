@@ -33,19 +33,15 @@
     </div>
 
     <nav class="fwSidebarNav" aria-label="FireWatch navigace">
-      <button type="button" data-scroll-target="landingPage">Úvod</button>
-      <button type="button" data-scroll-target="commandOverviewCard">Přehled</button>
-      <button type="button" data-scroll-target="publicGuestHero">Veřejný režim</button>
-      <button type="button" data-scroll-target="mapCard">Mapa</button>
-      <button type="button" data-scroll-target="statsProCard">Statistiky PRO</button>
-      <button type="button" data-scroll-target="regionalWeatherCard">Počasí</button>
-      <button type="button" data-scroll-target="majorEventsCard">Významné</button>
-      <button type="button" class="adminOnlyNav" data-scroll-target="manualEventQuickCard" style="display:none;">Ruční úpravy</button>
-      <button type="button" data-scroll-target="watchCard">Notifikace</button>
-      <button type="button" data-scroll-target="reportsArchiveCard">Reporty</button>
-      <button type="button" class="supportersNavBtn" data-scroll-target="supportersCard">Podporovatelé</button>
-      <button type="button" data-scroll-target="talkLauncherCard">FireWatch Talk</button>
-      <button type="button" class="adminOnlyNav" data-scroll-target="adminBtn" style="display:none;">Admin</button>
+      <button type="button" data-workspace="overview" data-scroll-target="commandOverviewCard" class="is-active">Přehled</button>
+      <button type="button" data-workspace="events" data-scroll-target="eventsTableCard">Události</button>
+      <button type="button" data-workspace="map" data-scroll-target="mapCard">Mapa</button>
+      <button type="button" data-workspace="analytics" data-scroll-target="statsProCard">Analytika</button>
+      <button type="button" data-workspace="regions" data-scroll-target="regionComparisonCard">Porovnání krajů</button>
+      <button type="button" data-workspace="reports" data-scroll-target="reportsArchiveCard">Reporty a archiv</button>
+      <button type="button" data-workspace="talk" data-scroll-target="talkLauncherCard">FireWatch Talk</button>
+      <button type="button" class="supportersNavBtn" data-workspace="supporters" data-scroll-target="supportersCard">Podporovatelé</button>
+      <button type="button" class="adminOnlyNav" data-workspace="admin" data-scroll-target="adminBtn" style="display:none;">Administrace</button>
     </nav>
 
     <div class="fwSidebarFooter">
@@ -81,9 +77,9 @@
         </div>
       </div>
 
-      <button id="fullscreenBtn" class="btn" title="Celá obrazovka">⛶</button>
-      <button id="tvModeBtn" class="btn" title="TV mód (větší písmo, kiosk)">📺</button>
-      <button id="muteBtn" class="btn" title="Ztlumit vše (FireWatch)">🔈</button>
+      <button id="fullscreenBtn" class="btn iconOnly" title="Celá obrazovka" aria-label="Zapnout celou obrazovku">⛶</button>
+      <button id="tvModeBtn" class="btn iconOnly" title="TV mód (větší písmo, kiosk)" aria-label="Zapnout TV režim">📺</button>
+      <button id="muteBtn" class="btn iconOnly" title="Ztlumit vše (FireWatch)" aria-label="Ztlumit zvuky FireWatch">🔈</button>
 
       <button id="audioBtn" class="btn" title="Audio (OPS)" style="display:none;">🔊</button>
       <button id="briefingBtn" class="btn" title="Hlasový briefing (OPS)" style="display:none;">🗣️</button>
@@ -223,16 +219,48 @@
     </div>
   </section>
 
-  <section class="filters">
+  <section id="workspaceContext" class="workspaceContext" aria-live="polite">
+    <div>
+      <span class="workspaceEyebrow">FireWatch CZ · neoficiální analytická služba</span>
+      <h1 id="workspaceTitle" tabindex="-1">Přehled událostí</h1>
+      <p id="workspaceDescription">Aktuální situace, aktivní zásahy, mapa a poslední zaznamenané události.</p>
+    </div>
+    <dl class="workspaceMeta">
+      <div><dt>Období</dt><dd id="workspacePeriod">Dnes</dd></div>
+      <div><dt>Oblast</dt><dd id="workspaceRegion">Všechny kraje</dd></div>
+      <div><dt>Data</dt><dd id="workspaceFreshness">Načítám…</dd></div>
+    </dl>
+  </section>
+
+  <section class="filters" id="mainFilters" aria-label="Filtry událostí">
+    <div class="filtersHeader">
+      <div><strong>Filtry událostí</strong><span>Ovlivňují seznam, mapu, souhrny i export.</span></div>
+      <button id="filterToggleBtn" class="btn filterToggleBtn" type="button" aria-expanded="false" aria-controls="filtersBody">Upravit filtry</button>
+    </div>
+    <div id="activeFilterChips" class="activeFilterChips" aria-live="polite"></div>
+    <div class="filtersBody" id="filtersBody">
     <div class="filtersRow">
 
       <div class="field">
-        <label for="daySelect">Den (mapa + tabulka)</label>
+        <label for="daySelect">Období</label>
         <select id="daySelect">
-          <option value="today" selected>dnes</option>
-          <option value="yesterday">včera</option>
-          <option value="all">vše</option>
+          <option value="today" selected>Dnes</option>
+          <option value="yesterday">Včera</option>
+          <option value="last7">Posledních 7 dní</option>
+          <option value="last30">Posledních 30 dní</option>
+          <option value="custom">Vlastní období</option>
+          <option value="all">Všechny dostupné</option>
         </select>
+      </div>
+
+      <div class="field customDateField" hidden>
+        <label for="filterFrom">Od</label>
+        <input id="filterFrom" type="date" />
+      </div>
+
+      <div class="field customDateField" hidden>
+        <label for="filterTo">Do</label>
+        <input id="filterTo" type="date" />
       </div>
 
       <div class="field">
@@ -255,8 +283,8 @@
       </div>
 
       <div class="field">
-        <label for="cityInput">Město</label>
-        <input id="cityInput" type="text" placeholder="např. Nehvizdy" />
+        <label for="cityInput">Hledat</label>
+        <input id="cityInput" type="search" placeholder="Město, místo nebo název" autocomplete="off" />
       </div>
 
       <div class="field">
@@ -278,7 +306,7 @@
         </select>
       </div>
 
-      <div class="field">
+      <div class="field filterSecondary">
         <label class="ghost">Vrstva</label>
         <div class="checkRow">
           <label class="check">
@@ -288,7 +316,7 @@
         </div>
       </div>
 
-      <div class="field">
+      <div class="field filterSecondary">
         <label for="monthInput">Měsíc (statistika měst)</label>
         <input id="monthInput" type="month" />
       </div>
@@ -297,7 +325,7 @@
         <label class="ghost">Akce</label>
         <div class="btnRow">
           <button id="applyBtn" class="btn primary">Použít</button>
-          <button id="resetBtn" class="btn">Reset</button>
+          <button id="resetBtn" class="btn">Zrušit filtry</button>
         </div>
       </div>
 
@@ -308,6 +336,7 @@
           <button id="exportPdfBtn" class="btn">Export PDF</button>
         </div>
       </div>
+    </div>
     </div>
   </section>
 

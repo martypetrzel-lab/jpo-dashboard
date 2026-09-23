@@ -18,6 +18,14 @@ Projekt nabízí:
 Firewatch CZ klade důraz na jednoduchost, přehlednost a technickou čistotu.
 Nejde o oficiální systém HZS, ale o doplňkový nástroj, který pomáhá lépe chápat dění v terénu a dlouhodobé trendy.
 
+## Rozhraní a navigace
+
+Dashboard je rozdělený do pracovních pohledů **Přehled**, **Události**, **Mapa**, **Analytika**, **Porovnání krajů**, **Reporty a archiv**, **FireWatch Talk** a oprávněné **Administrace**. Přepnutí pohledu nemění zdrojová data ani API; pouze zobrazí související existující komponenty a ponechá aktivní filtry. Adresa stránky uchovává vybraný pohled a sdílené filtry, takže filtrovaný přehled lze obnovit nebo sdílet.
+
+Společný filtr událostí podporuje dnešek, včerejšek, posledních 7/30 dní, vlastní rozsah do 366 dní, kraj/zdroj, typ, stav a textové hledání. Stejné hodnoty používají seznam, mapa, souhrnné statistiky a CSV/PDF export. Na mobilu se filtr skládá do samostatného panelu a desktopová tabulka se mění na dotykové karty. Aktivní filtry, období, oblast a čerstvost dat zůstávají viditelné v kontextové hlavičce.
+
+Vizuální tokeny a responzivní pravidla jsou soustředěné v `public/interface.css`. Starší funkční styly zůstávají kvůli kompatibilitě v `public/styles.css`; nové komponenty používají jednotné barvy, mezery, ovládací prvky, stavy, viditelné zaměření a omezení pohybu přes `prefers-reduced-motion`.
+
 👨‍🚒 Bio – autor / provozovatel
 
 Firewatch CZ vzniká z iniciativy aktivního hasiče a technického nadšence, který kombinuje:

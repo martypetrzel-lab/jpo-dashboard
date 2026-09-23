@@ -937,6 +937,7 @@ function buildEventsQuery(filters) {
   if (filters.city) params.set("city", filters.city);
   if (filters.status && filters.status !== "all") params.set("status", filters.status);
   if (filters.source && filters.source !== "all") params.set("source", filters.source);
+  if (filters.day === "custom" && filters.from && filters.to) { params.set("from", filters.from); params.set("to", filters.to); }
   params.set("limit", String(getEventsTableLimit()));
   params.set("limit", String(getEventsApiLimit()));
   // month zde úmyslně není
@@ -950,6 +951,7 @@ function buildStatsQuery(filters) {
   if (filters.city) params.set("city", filters.city);
   if (filters.status && filters.status !== "all") params.set("status", filters.status);
   if (filters.source && filters.source !== "all") params.set("source", filters.source);
+  if (filters.day === "custom" && filters.from && filters.to) { params.set("from", filters.from); params.set("to", filters.to); }
   if (filters.month) params.set("month", filters.month);
   return params.toString();
 }
@@ -961,6 +963,7 @@ function buildExportQuery(filters) {
   if (filters.city) params.set("city", filters.city);
   if (filters.status && filters.status !== "all") params.set("status", filters.status);
   if (filters.source && filters.source !== "all") params.set("source", filters.source);
+  if (filters.day === "custom" && filters.from && filters.to) { params.set("from", filters.from); params.set("to", filters.to); }
   // month zde úmyslně není (export = tabulka/události podle filtrů)
   return params.toString();
 }
@@ -1022,6 +1025,8 @@ function getFiltersFromUi() {
     city: document.getElementById("cityInput").value.trim(),
     status: document.getElementById("statusSelect").value,
     source: document.getElementById("sourceSelect")?.value || "all",
+    from: document.getElementById("filterFrom")?.value || "",
+    to: document.getElementById("filterTo")?.value || "",
     month: document.getElementById("monthInput")?.value || "",
     majorOnly: !!document.getElementById("majorOnlyCheck")?.checked
   };
@@ -1246,6 +1251,8 @@ function renderTable(items) {
 
   const safeItems = FireWatchData.sortEvents(FireWatchData.normalizeEvents(items),document.getElementById('eventsSortSelect')?.value).slice(0,getEventsTableLimit());
   renderMobileEventCards(safeItems);
+
+  if(!safeItems.length) tbody.innerHTML='<tr><td colspan="9"><div class="emptyState">Pro vybrané období nebyly nalezeny žádné události.</div></td></tr>';
 
   for (const it of safeItems) {
     const meta = typeMeta(it.event_type);
@@ -1746,6 +1753,11 @@ async function loadAll(options = {}) {
     if (!isAutoRefresh) setStatus("načítám…", true);
 
     const filters = getFiltersFromUi();
+    if(filters.day === "custom" && (!filters.from || !filters.to || filters.from > filters.to)) {
+      throw new Error("Neplatné vlastní období");
+    }
+    if(!isAutoRefresh) syncUrlWithFilters();
+    updateWorkspaceContext();
     const qEvents = buildEventsQuery(filters);
     const qStats = buildStatsQuery(filters);
 
@@ -1772,6 +1784,7 @@ async function loadAll(options = {}) {
     lastGoodStatsSnapshot=statsJson;
     lastGoodLoadAt=Date.now();
     latestSourceStatus=eventsJson.data_status || null;
+    updateWorkspaceContext();
 
     renderTable(items);
     renderMajorEvents(items);
@@ -1802,6 +1815,11 @@ async function loadAll(options = {}) {
       const signal=document.getElementById("dataSourceSignal");if(signal){signal.textContent="● Chyba obnovení";signal.className="v29Signal warn";}
     } else {
       setStatus("chyba načítání", false);
+      const tbody=document.getElementById("eventsTbody"),mobile=document.getElementById("eventsMobileList"),info=document.getElementById("eventsTableCountInfo"),mapSummary=document.getElementById("mapDataSummary");
+      if(tbody)tbody.innerHTML='<tr><td colspan="9"><div class="errorState">Události se nepodařilo načíst. Zkuste obnovení za chvíli.</div></td></tr>';
+      if(mobile)mobile.innerHTML='<div class="errorState">Události se nepodařilo načíst. Zkuste obnovení za chvíli.</div>';
+      if(info)info.textContent="Část zdrojů je dočasně nedostupná.";
+      if(mapSummary)mapSummary.textContent="Mapová data se nepodařilo načíst.";
     }
   } finally {
     inFlight = false;
@@ -1817,6 +1835,8 @@ function resetFilters() {
   const sourceEl=document.getElementById("sourceSelect");if(sourceEl)sourceEl.value="all";
   const monthEl = document.getElementById("monthInput");
   if (monthEl) monthEl.value = "";
+  const fromEl=document.getElementById("filterFrom"),toEl=document.getElementById("filterTo");
+  if(fromEl)fromEl.value="";if(toEl)toEl.value="";toggleCustomDateFields();
 }
 
 function exportWithFilters(kind) {
@@ -1825,7 +1845,11 @@ function exportWithFilters(kind) {
   const url = kind === "pdf"
     ? `/api/export.pdf${q ? `?${q}` : ""}`
     : `/api/export.csv${q ? `?${q}` : ""}`;
+  const button=document.getElementById(kind==="pdf"?"exportPdfBtn":"exportCsvBtn");
+  if(button?.disabled)return;const original=button?.textContent;
+  if(button){button.disabled=true;button.textContent=kind==="pdf"?"Připravuji PDF…":"Připravuji CSV…";button.title=`Export: ${filterPeriodLabel(filters)}, ${filterRegionLabel(filters.source)}`;}
   window.open(url, "_blank");
+  window.setTimeout(()=>{if(button){button.disabled=false;button.textContent=original;}},1200);
 }
 
 
@@ -2033,11 +2057,7 @@ function showLandingPage() {
 function openDashboardFromLanding() {
   localStorage.setItem(LS_LANDING_DISMISSED, "1");
   setLandingVisible(false);
-
-  const filters = document.querySelector(".filters");
-  if (filters) {
-    filters.scrollIntoView({ behavior: "smooth", block: "start" });
-  }
+  if(typeof setWorkspaceView==="function")setWorkspaceView("overview",{focus:true});
 }
 
 function initLandingPage() {
@@ -2518,71 +2538,98 @@ function wireWatchNotifications() {
 // FireWatchCZ Web v2.0 – Professional layout
 // ==============================
 
+const WORKSPACE_VIEWS = {
+  overview: { title:"Přehled událostí", description:"Aktuální situace, aktivní a významné zásahy, mapa a poslední události.", sections:["commandOverviewCard","majorEventsCard","mapCard","eventsTableCard"] },
+  events: { title:"Události", description:"Přehledný seznam se stavem, krajem, zdrojem, délkou a ověřením polohy.", sections:["eventsTableCard"] },
+  map: { title:"Mapa událostí", description:"Ověřené a přibližné polohy podle krajů a stavu. Události bez polohy zůstávají v seznamu.", sections:["mapCard"] },
+  analytics: { title:"Analytika", description:"Trendy, typy, vytížená období, kvalita dat a počasí v jednom pracovním pohledu.", sections:["dailyStatsCard","activeClosedCard","cityRankCard","longestEventsCard","statsProCard","regionalWeatherCard","watchCard"] },
+  regions: { title:"Porovnání krajů", description:"Oddělené srovnání zásahů HZS/JPO a všech evidovaných krizových událostí.", sections:["regionComparisonCard"] },
+  reports: { title:"Reporty a archiv", description:"Denní, týdenní a měsíční analytické souhrny s filtrováním a PDF exportem.", sections:["reportsArchiveCard"] },
+  talk: { title:"FireWatch Talk", description:"Týmová hlasová komunikace, kanály, stav připojení a ovládání push-to-talk.", sections:["talkLauncherCard","opsRadioMount","talkLockedCard"] },
+  supporters: { title:"Podporovatelé", description:"Poděkování lidem, kteří pomáhají udržet FireWatch CZ v provozu.", sections:["supportersCard"] }
+};
+const WORKSPACE_SECTION_IDS = [...new Set(Object.values(WORKSPACE_VIEWS).flatMap(view=>view.sections))];
+let currentWorkspaceView = "overview";
+
+function filterPeriodLabel(filters=getFiltersFromUi()) {
+  return ({today:"Dnes",yesterday:"Včera",last7:"Posledních 7 dní",last30:"Posledních 30 dní",all:"Všechny dostupné"})[filters.day]
+    || (filters.day === "custom" && filters.from && filters.to ? `${filters.from} až ${filters.to}` : "Vlastní období");
+}
+function filterRegionLabel(source=getFiltersFromUi().source) {
+  return ({stredocesky:"Středočeský kraj",praha:"Praha",pardubicky:"Pardubický kraj"})[source] || "Všechny kraje";
+}
+function updateWorkspaceContext() {
+  const view=WORKSPACE_VIEWS[currentWorkspaceView] || WORKSPACE_VIEWS.overview;
+  const filters=getFiltersFromUi();
+  document.getElementById("workspaceTitle").textContent=view.title;
+  document.getElementById("workspaceDescription").textContent=view.description;
+  document.getElementById("workspacePeriod").textContent=filterPeriodLabel(filters);
+  document.getElementById("workspaceRegion").textContent=filterRegionLabel(filters.source);
+  const freshness=document.getElementById("workspaceFreshness");
+  const sourceTime=latestSourceStatus?.last_success || latestSourceStatus?.last_successful_import;
+  if(freshness) freshness.textContent=sourceTime ? `Aktualizováno ${formatDate(sourceTime)}` : (lastGoodLoadAt ? `Načteno ${new Date(lastGoodLoadAt).toLocaleTimeString("cs-CZ",{hour:"2-digit",minute:"2-digit",timeZone:"Europe/Prague"})}` : "Načítám…");
+}
+function setWorkspaceView(name,{updateUrl=true,focus=false}={}) {
+  if(!WORKSPACE_VIEWS[name]) name="overview";
+  currentWorkspaceView=name;
+  const visible=new Set(WORKSPACE_VIEWS[name].sections);
+  for(const id of WORKSPACE_SECTION_IDS){const el=document.getElementById(id);if(el)el.hidden=!visible.has(id);}
+  const supporters=document.getElementById("supportersCard");
+  if(supporters){supporters.classList.toggle("supportersHidden",name!=="supporters");supporters.setAttribute("aria-hidden",String(name!=="supporters"));}
+  document.body.dataset.workspace=name;
+  document.querySelectorAll(".fwSidebarNav [data-workspace]").forEach(button=>{const active=button.dataset.workspace===name;button.classList.toggle("is-active",active);button.setAttribute("aria-current",active?"page":"false");});
+  updateWorkspaceContext();
+  safeInvalidateMap();
+  if(updateUrl) syncUrlWithFilters();
+  if(focus){window.scrollTo({top:0,behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth"});document.getElementById("workspaceTitle")?.focus?.({preventScroll:true});}
+}
+
+function syncUrlWithFilters() {
+  const f=getFiltersFromUi(),params=new URLSearchParams();
+  if(currentWorkspaceView!=="overview")params.set("view",currentWorkspaceView);
+  if(f.day!=="today")params.set("day",f.day);
+  if(f.day==="custom"&&f.from&&f.to){params.set("from",f.from);params.set("to",f.to);}
+  if(f.type)params.set("type",f.type);if(f.city)params.set("q",f.city);if(f.status!=="all")params.set("status",f.status);if(f.source!=="all")params.set("source",f.source);if(f.month)params.set("month",f.month);
+  history.replaceState(null,"",`${location.pathname}${params.size?`?${params}`:""}`);
+  renderActiveFilterChips();
+}
+function restoreUiFromUrl() {
+  const p=new URLSearchParams(location.search),set=(id,value,allowed)=>{const el=document.getElementById(id);if(el&&value&&(!allowed||allowed.includes(value)))el.value=value;};
+  set("daySelect",p.get("day"),["today","yesterday","last7","last30","custom","all"]);set("typeSelect",p.get("type"));set("cityInput",p.get("q"));set("statusSelect",p.get("status"),["all","open","closed"]);set("sourceSelect",p.get("source"),["all","stredocesky","praha","pardubicky"]);set("monthInput",p.get("month"));set("filterFrom",p.get("from"));set("filterTo",p.get("to"));
+  return WORKSPACE_VIEWS[p.get("view")]?p.get("view"):"overview";
+}
+function toggleCustomDateFields() {
+  const custom=document.getElementById("daySelect")?.value==="custom";
+  document.querySelectorAll(".customDateField").forEach(el=>el.hidden=!custom);
+}
+function renderActiveFilterChips() {
+  const box=document.getElementById("activeFilterChips");if(!box)return;const f=getFiltersFromUi(),chips=[];
+  chips.push({key:"day",label:`Období: ${filterPeriodLabel(f)}`});
+  if(f.source!=="all")chips.push({key:"source",label:`Oblast: ${filterRegionLabel(f.source)}`});
+  if(f.status!=="all")chips.push({key:"status",label:`Stav: ${f.status==="open"?"aktivní":"ukončené"}`});
+  if(f.type)chips.push({key:"type",label:`Typ: ${document.getElementById("typeSelect")?.selectedOptions[0]?.textContent||f.type}`});
+  if(f.city)chips.push({key:"city",label:`Hledání: ${f.city}`});
+  box.innerHTML=chips.map((chip,index)=>`<button type="button" class="filterChip" data-filter-key="${chip.key}" ${index===0&&chip.key==="day"?'data-period-chip="true"':''}>${escapeHtml(chip.label)}${chip.key==="day"&&f.day==="today"?'':' <span aria-hidden="true">×</span>'}</button>`).join("");
+}
+
 function wireProfessionalLayout() {
-  syncAdminVisibility();
-  rerenderCurrentTableForAdminButtons();
-  const sidebar = document.getElementById("fwSidebar");
-  const toggle = document.getElementById("mobileSidebarToggle");
-
-  function closeMobileSidebar() {
-    document.body.classList.remove("fwSidebarOpen");
-  }
-
-  toggle?.addEventListener("click", () => {
-    document.body.classList.toggle("fwSidebarOpen");
-  });
-
-  document.querySelectorAll("[data-scroll-target]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const id = btn.getAttribute("data-scroll-target");
-      if (!id) return;
-
-      if (id === "adminBtn") {
-        document.getElementById("adminBtn")?.click();
-        closeMobileSidebar();
-        return;
-      }
-
-      const el = document.getElementById(id);
-      if (!el) {
-        closeMobileSidebar();
-        return;
-      }
-
-      if (id === "talkLauncherCard" && !document.body.classList.contains("isTalkOpen")) {
-        document.getElementById("toggleTalkBtn")?.click();
-      }
-
-      el.scrollIntoView({ behavior: "smooth", block: "start" });
-      closeMobileSidebar();
-    });
-  });
-
-  // Zvýraznění sidebar položek podle aktuální pozice
-  const buttons = [...document.querySelectorAll(".fwSidebarNav [data-scroll-target]")];
-  const targets = buttons
-    .map(btn => ({ btn, el: document.getElementById(btn.getAttribute("data-scroll-target")) }))
-    .filter(x => x.el);
-
-  if ("IntersectionObserver" in window && targets.length) {
-    const observer = new IntersectionObserver((entries) => {
-      const visible = entries
-        .filter(e => e.isIntersecting)
-        .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
-
-      if (!visible) return;
-
-      buttons.forEach(b => b.classList.remove("is-active"));
-      const active = targets.find(x => x.el === visible.target);
-      active?.btn?.classList.add("is-active");
-    }, {
-      root: null,
-      threshold: [0.18, 0.35, 0.55],
-      rootMargin: "-15% 0px -65% 0px"
-    });
-
-    targets.forEach(x => observer.observe(x.el));
-  }
+  syncAdminVisibility();rerenderCurrentTableForAdminButtons();
+  const closeMobileSidebar=()=>document.body.classList.remove("fwSidebarOpen");
+  document.getElementById("mobileSidebarToggle")?.addEventListener("click",()=>document.body.classList.toggle("fwSidebarOpen"));
+  const initialView=restoreUiFromUrl();toggleCustomDateFields();setWorkspaceView(initialView,{updateUrl:false});renderActiveFilterChips();
+  document.querySelectorAll("[data-scroll-target]").forEach(btn=>btn.addEventListener("click",()=>{
+    const id=btn.dataset.scrollTarget,workspace=btn.dataset.workspace || Object.entries(WORKSPACE_VIEWS).find(([,view])=>view.sections.includes(id))?.[0];
+    if(id==="adminBtn"){document.getElementById("adminBtn")?.click();closeMobileSidebar();return;}
+    if(workspace)setWorkspaceView(workspace,{focus:true});
+    if(id==="talkLauncherCard"&&!document.body.classList.contains("isTalkOpen"))document.getElementById("toggleTalkBtn")?.click();
+    closeMobileSidebar();
+  }));
+  const filters=document.getElementById("mainFilters"),filterToggle=document.getElementById("filterToggleBtn");
+  filterToggle?.addEventListener("click",()=>{const open=filters.classList.toggle("isOpen");filterToggle.setAttribute("aria-expanded",String(open));filterToggle.textContent=open?"Skrýt filtry":"Upravit filtry";});
+  document.getElementById("daySelect")?.addEventListener("change",()=>{toggleCustomDateFields();updateWorkspaceContext();renderActiveFilterChips();});
+  document.getElementById("activeFilterChips")?.addEventListener("click",event=>{const key=event.target.closest("[data-filter-key]")?.dataset.filterKey;if(!key)return;if(key==="day"&&getFiltersFromUi().day==="today")return;const ids={day:"daySelect",source:"sourceSelect",status:"statusSelect",type:"typeSelect",city:"cityInput"};const defaults={day:"today",source:"all",status:"all",type:"",city:""};document.getElementById(ids[key]).value=defaults[key];toggleCustomDateFields();loadAll();});
+  let searchTimer;document.getElementById("cityInput")?.addEventListener("input",()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>{renderActiveFilterChips();},250);});
+  window.addEventListener("popstate",()=>{const view=restoreUiFromUrl();toggleCustomDateFields();setWorkspaceView(view,{updateUrl:false});loadAll();});
 }
 
 
@@ -2961,7 +3008,7 @@ function updateCommandOverview(items = [], stats = null) {
 
   if (filterLabel) {
     const f = typeof getFiltersFromUi === "function" ? getFiltersFromUi() : {};
-    const dayMap = { today: "dnes", yesterday: "včera", all: "vše" };
+    const dayMap = { today: "dnes", yesterday: "včera", last7:"7 dní", last30:"30 dní", custom:`${f.from||"?"}–${f.to||"?"}`, all: "vše" };
     const statusMap = { all: "vše", open: "aktivní", closed: "ukončené" };
     filterLabel.textContent = `Filtr: ${dayMap[f.day] || f.day || "—"} • ${f.type || "vše"} • ${statusMap[f.status] || f.status || "vše"}${f.city ? ` • ${f.city}` : ""}`;
   }
@@ -4092,11 +4139,13 @@ function wireManualCreateAndDiagnostics() {
 
 // UI events
 document.getElementById("refreshBtn").addEventListener("click", () => loadAll());
-document.getElementById("applyBtn").addEventListener("click", loadAll);
+document.getElementById("applyBtn").addEventListener("click", () => { document.getElementById("mainFilters")?.classList.remove("isOpen");document.getElementById("filterToggleBtn")?.setAttribute("aria-expanded","false");loadAll(); });
 document.getElementById("resetBtn").addEventListener("click", () => { resetFilters(); loadAll(); });
 document.getElementById("exportCsvBtn").addEventListener("click", () => exportWithFilters("csv"));
 document.getElementById("exportPdfBtn").addEventListener("click", () => exportWithFilters("pdf"));
-document.getElementById("sourceSelect")?.addEventListener("change", () => renderHzsStations());
+document.getElementById("sourceSelect")?.addEventListener("change", () => {renderHzsStations();updateWorkspaceContext();renderActiveFilterChips();});
+document.getElementById("daySelect")?.addEventListener("change",()=>{if(document.getElementById("daySelect").value==="custom"&&!document.getElementById("filterFrom")?.value){const now=new Date(),from=new Date(now.getTime()-6*86400000),iso=d=>new Intl.DateTimeFormat("en-CA",{timeZone:"Europe/Prague",year:"numeric",month:"2-digit",day:"2-digit"}).format(d);document.getElementById("filterFrom").value=iso(from);document.getElementById("filterTo").value=iso(now);}toggleCustomDateFields();updateWorkspaceContext();renderActiveFilterChips();});
+document.getElementById("cityInput")?.addEventListener("keydown",event=>{if(event.key==="Enter"){event.preventDefault();loadAll();}});
 
 // map resize on responsive changes
 let resizeTimer = null;
@@ -5494,36 +5543,8 @@ document.getElementById("eventsLimitSelect")?.addEventListener("change", () => r
 function setupSupportersTab() {
   const supporters = document.getElementById("supportersCard");
   if (!supporters) return;
-
-  const navButtons = document.querySelectorAll('[data-scroll-target="supportersCard"]');
-
-  function openSupporters() {
-    supporters.classList.remove("supportersHidden");
-    supporters.setAttribute("aria-hidden", "false");
-
-    setTimeout(() => {
-      supporters.scrollIntoView({ behavior: "smooth", block: "start" });
-    }, 30);
-  }
-
-  function closeSupportersOnOtherNav(target) {
-    if (target === "supportersCard") return;
-    supporters.classList.add("supportersHidden");
-    supporters.setAttribute("aria-hidden", "true");
-  }
-
-  navButtons.forEach((btn) => {
-    btn.addEventListener("click", (ev) => {
-      ev.preventDefault();
-      openSupporters();
-    });
-  });
-
-  document.querySelectorAll("[data-scroll-target]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      closeSupportersOnOtherNav(btn.getAttribute("data-scroll-target"));
-    });
-  });
+  supporters.classList.toggle("supportersHidden",currentWorkspaceView!=="supporters");
+  supporters.setAttribute("aria-hidden",String(currentWorkspaceView!=="supporters"));
 }
 
 document.addEventListener("DOMContentLoaded", setupSupportersTab);
