@@ -1132,9 +1132,10 @@ function eventTimeSql() {
   return "COALESCE(NULLIF(pub_date,'' )::timestamptz, NULLIF(start_time_iso,'' )::timestamptz, created_at)";
 }
 
-function buildTimeWindowSql(day, params, iStart) {
+function buildTimeWindowSql(filters, params, iStart) {
   const clauses = [];
   let i = iStart;
+  const day = String(filters?.day || "all");
   const t = eventTimeSql();
 
   if (day === "today" || day === "yesterday") {
@@ -1157,6 +1158,21 @@ function buildTimeWindowSql(day, params, iStart) {
 
     params.push(offset);
     i++;
+  } else if (day === "last7" || day === "last30") {
+    const days = day === "last7" ? 7 : 30;
+    clauses.push(`(
+      ((${t} AT TIME ZONE 'Europe/Prague')::date BETWEEN (NOW() AT TIME ZONE 'Europe/Prague')::date - $${i}::int AND (NOW() AT TIME ZONE 'Europe/Prague')::date)
+      OR (is_closed = FALSE AND (${t} AT TIME ZONE 'Europe/Prague')::date < (NOW() AT TIME ZONE 'Europe/Prague')::date - $${i}::int)
+    )`);
+    params.push(days - 1);
+    i++;
+  } else if (day === "custom") {
+    clauses.push(`(
+      ((${t} AT TIME ZONE 'Europe/Prague')::date BETWEEN $${i}::date AND $${i + 1}::date)
+      OR (is_closed = FALSE AND (${t} AT TIME ZONE 'Europe/Prague')::date < $${i}::date)
+    )`);
+    params.push(filters.from, filters.to);
+    i += 2;
   }
 
   return { clauses, nextI: i };
@@ -1206,7 +1222,7 @@ export async function getEventsFiltered(filters, limit = 400) {
   if (status === "open") where.push(`is_closed = FALSE`);
   if (status === "closed") where.push(`is_closed = TRUE`);
 
-  const dayWin = buildTimeWindowSql(day, params, i);
+  const dayWin = buildTimeWindowSql(filters, params, i);
   where.push(...dayWin.clauses);
   i = dayWin.nextI;
 
@@ -1290,7 +1306,7 @@ export async function countEventsFiltered(filters = {}) {
   if (status === "open") where.push(`is_closed = FALSE`);
   if (status === "closed") where.push(`is_closed = TRUE`);
 
-  const dayWin = buildTimeWindowSql(day, params, i);
+  const dayWin = buildTimeWindowSql(filters, params, i);
   where.push(...dayWin.clauses);
   i = dayWin.nextI;
 
@@ -1316,7 +1332,7 @@ export async function getStatsFiltered(filters) {
 
   const cutoffIso = await getLongestCutoffIso();
 
-  const where30 = [`created_at >= NOW() - INTERVAL '30 days'`];
+  const where30 = [day === "all" && !month ? `created_at >= NOW() - INTERVAL '30 days'` : "TRUE"];
   const params30 = [];
   let i30 = 1;
 
@@ -1336,7 +1352,7 @@ export async function getStatsFiltered(filters) {
   if (status === "open") where30.push(`is_closed = FALSE`);
   if (status === "closed") where30.push(`is_closed = TRUE`);
 
-  const dayWin30 = buildTimeWindowSql(day, params30, i30);
+  const dayWin30 = buildTimeWindowSql(filters, params30, i30);
   where30.push(...dayWin30.clauses);
   i30 = dayWin30.nextI;
 
@@ -1404,6 +1420,10 @@ export async function getStatsFiltered(filters) {
   const mWinAll = buildMonthSql(month, paramsAll, iAll);
   whereAll.push(...mWinAll.clauses);
   iAll = mWinAll.nextI;
+
+  const dayWinAll = buildTimeWindowSql(filters, paramsAll, iAll);
+  whereAll.push(...dayWinAll.clauses);
+  iAll = dayWinAll.nextI;
 
   whereAll.push(`is_jpo_event IS DISTINCT FROM FALSE`);
   const whereAllSql = `WHERE ${whereAll.join(" AND ")}`;
@@ -1512,10 +1532,16 @@ export async function getStatsFiltered(filters) {
     if (status === "open") whereLongest.push(`is_closed = FALSE`);
     if (status === "closed") whereLongest.push(`is_closed = TRUE`);
 
-    // ochrana proti extrémům a "jen od nynějška"
-    whereLongest.push(`first_seen_at >= $${iL}::timestamptz`);
-    paramsLongest.push(cutoffIso);
-    iL++;
+    if (day !== "all") {
+      const dayWinLongest = buildTimeWindowSql(filters, paramsLongest, iL);
+      whereLongest.push(...dayWinLongest.clauses);
+      iL = dayWinLongest.nextI;
+    } else {
+      // ochrana proti extrémům a "jen od nynějška"
+      whereLongest.push(`first_seen_at >= $${iL}::timestamptz`);
+      paramsLongest.push(cutoffIso);
+      iL++;
+    }
 
     const whereLongestSql = `WHERE ${whereLongest.join(" AND ")}`;
 

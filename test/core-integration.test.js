@@ -191,6 +191,9 @@ test("station audit dry-run preserves data and apply clears only automatic cross
 // Failure paths use the isolated database and never production credentials.
 test('API validates limits/filters, handles malformed cookies and rejects foreign origins',async()=>{
  for(const route of ['/api/events?limit=-1','/api/events?limit=not-a-number','/api/events?status=bad','/api/stats?month=2026-13'])assert.equal((await fetch(base+route)).status,400);
+ const today=dateKey();
+ for(const route of [`/api/events?day=last7`,`/api/events?day=last30`,`/api/events?day=custom&from=${today}&to=${today}`,`/api/stats?day=custom&from=${today}&to=${today}`])assert.equal((await fetch(base+route)).status,200);
+ for(const route of ['/api/events?day=custom','/api/events?day=custom&from=2026-01-02&to=2026-01-01','/api/events?day=custom&from=2026-02-30&to=2026-03-01','/api/events?day=custom&from=2025-01-01&to=2026-12-31'])assert.equal((await fetch(base+route)).status,400);
  assert.equal((await fetch(base+'/api/auth/me',{headers:{Cookie:'FWSESS=%ZZ'}})).status,200);
  assert.equal((await fetch(base+'/api/auth/logout',{method:'POST',headers:{Origin:'https://foreign.test'}})).status,403);
  assert.equal((await fetch(base+'/api/admin/fix-geocode',{method:'POST',headers:{'X-API-Key':process.env.API_KEY}})).status,401);

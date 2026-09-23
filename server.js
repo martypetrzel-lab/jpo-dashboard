@@ -495,10 +495,19 @@ function parseFilters(req) {
   const city = String(req.query.city || "").trim();
   const status = String(req.query.status || "all").trim();
   const day = String(req.query.day || "all").trim();
+  const from = String(req.query.from || "").trim();
+  const to = String(req.query.to || "").trim();
   const month = String(req.query.month || "").trim();
   const source = String(req.query.source || "all").trim();
-  if(types.length>10||types.some(value=>value.length>64)||city.length>120||!['all','open','closed'].includes(status)||!['all','today','yesterday'].includes(day)||!['all','stredocesky','praha','pardubicky'].includes(source)|| (month && (!/^\d{4}-\d{2}$/.test(month)||Number(month.slice(5))<1||Number(month.slice(5))>12))) {const error=new Error('bad_filters');error.status=400;throw error;}
-  return { types, city, status, day, month, source };
+  const validDate = value => {
+    if (!value) return true;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+    const parsed = new Date(`${value}T00:00:00Z`);
+    return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+  };
+  const customInvalid = day === 'custom' && (!from || !to || from > to || (Date.parse(to)-Date.parse(from)) > 366*86400000);
+  if(types.length>10||types.some(value=>value.length>64)||city.length>120||!['all','open','closed'].includes(status)||!['all','today','yesterday','last7','last30','custom'].includes(day)||!validDate(from)||!validDate(to)||customInvalid||!['all','stredocesky','praha','pardubicky'].includes(source)|| (month && (!/^\d{4}-\d{2}$/.test(month)||Number(month.slice(5))<1||Number(month.slice(5))>12))) {const error=new Error('bad_filters');error.status=400;throw error;}
+  return { types, city, status, day, from, to, month, source };
 }
 
 function exportFiltersLabel(filters) {
@@ -506,7 +515,9 @@ function exportFiltersLabel(filters) {
     ? "dnes"
     : filters.day === "yesterday"
       ? "včera"
-      : "vše";
+      : filters.day === "last7" ? "posledních 7 dní"
+      : filters.day === "last30" ? "posledních 30 dní"
+      : filters.day === "custom" ? `${filters.from} až ${filters.to}` : "vše";
 
   const statusLabel = filters.status === "open"
     ? "aktivní"
@@ -3403,10 +3414,10 @@ app.get('/api/events', async (req,res) => {
     res.json({ok:true,filters,limit,total_matching:totalMatching,backfilled_coords:0,backfilled_durations:0,data_status:dataStatus,items:rows.map(row=>annotateEventGeo(annotateEventTime(row)))});
   }catch(e){if(e.status!==400)console.error('[events]',e.code||'database_error');res.status(e.status===400?400:500).json({ok:false,error:e.status===400?'bad_filters':'events_failed'});}
 });
-// Statistics retain the existing 30-day scope, independent of the day selector.
+// Statistics use the same validated period and source filters as the event list.
 app.get('/api/stats',async(req,res)=>{
   try {
-    const filters=parseFilters(req),statsFilters={...filters,day:'all'};
+    const filters=parseFilters(req),statsFilters={...filters};
     const stats=await getStatsFiltered(statsFilters);
     res.json({ok:true,filters:statsFilters,...stats,openCount:stats?.openVsClosed?.open??0,closedCount:stats?.openVsClosed?.closed??0});
   }catch(e){if(e.status!==400)console.error('[stats]',e.code||'database_error');res.status(e.status===400?400:500).json({ok:false,error:e.status===400?'bad_filters':'stats_failed'});}
