@@ -184,6 +184,69 @@ test("identical reconciliation only touches check metadata and manual override s
   assert.equal(row.source_status,'ukončená');assert.equal(row.normalized_status,'completed');assert.equal(row.manual_status_override,'active');assert.equal(row.is_closed,false);
 });
 
+test("reconciliation preserves live estimates and computes closed estimates only from an open first observation",async()=>{
+  const firstSeen=new Date(Date.now()-80*60000).toISOString();
+  const endedAt=new Date(Date.parse(firstSeen)+70*60000).toISOString();
+  await pool.query(`INSERT INTO events(id,title,link,source,external_id,source_kind,status_text,source_status,normalized_status,is_closed,first_seen_at,first_seen_status,first_seen_was_open,duration_source,duration_is_estimate)
+    VALUES('reconcile:estimate','Test','https://example.test/estimate','stredocesky','900002','rss','probíhá zásah','probíhá zásah','active',FALSE,$1,'probíhá zásah',TRUE,'first_seen_open_estimate',TRUE)`,[firstSeen]);
+  const active={source:'stredocesky',externalId:'900002',sourceStatus:'neupřesněno',normalizedStatus:'active',title:'Test'};
+  active.contentHash=stableSourceContentHash(active);
+  await reconcileSourceObservation(active);
+  let row=await getEventMeta('reconcile:estimate');
+  assert.equal(row.duration_source,'first_seen_open_estimate');
+  assert.equal(row.duration_is_estimate,true);
+  assert.equal(new Date(row.first_seen_at).toISOString(),firstSeen);
+  let detail=await fetch(base+'/api/events/reconcile%3Aestimate/detail').then(response=>response.json());
+  assert.equal(detail.event.duration_is_estimate,true);
+  assert.ok(detail.event.duration_min>=79);
+  await pool.query("UPDATE events SET duration_source=NULL,duration_is_estimate=FALSE WHERE id='reconcile:estimate'");
+  await reconcileSourceObservation(active);
+  row=await getEventMeta('reconcile:estimate');
+  assert.equal(row.duration_source,'first_seen_open_estimate');
+  assert.equal(row.duration_is_estimate,true);
+  const closed={...active,sourceStatus:'ukončená',normalizedStatus:'completed',endedAt,endedAtAccuracy:'official'};
+  closed.contentHash=stableSourceContentHash(closed);
+  await reconcileSourceObservation(closed);
+  row=await getEventMeta('reconcile:estimate');
+  assert.equal(row.duration_source,'first_seen_to_rss_end_estimate');
+  assert.equal(row.duration_is_estimate,true);
+  assert.equal(row.duration_min,70);
+  assert.equal(new Date(row.first_seen_at).toISOString(),firstSeen);
+  await pool.query("UPDATE events SET duration_min=NULL,duration_source=NULL,duration_is_estimate=FALSE WHERE id='reconcile:estimate'");
+  assert.equal((await reconcileSourceObservation(closed)).updated,true);
+  row=await getEventMeta('reconcile:estimate');
+  assert.equal(row.duration_min,70);
+  assert.equal(row.duration_source,'first_seen_to_rss_end_estimate');
+  assert.equal((await reconcileSourceObservation(closed)).unchanged,true);
+
+  await pool.query(`INSERT INTO events(id,title,link,source,external_id,source_kind,is_closed,first_seen_at,first_seen_status,first_seen_was_open)
+    VALUES('reconcile:first-closed','Test','https://example.test/closed','stredocesky','900003','rss',TRUE,$1,'ukončená',FALSE)`,[firstSeen]);
+  await reconcileSourceObservation({...active,externalId:'900003',sourceStatus:'ukončená',normalizedStatus:'completed',endedAt,endedAtAccuracy:'official'});
+  row=await getEventMeta('reconcile:first-closed');
+  assert.equal(row.duration_min,null);
+  assert.equal(row.duration_source,null);
+
+  await pool.query(`INSERT INTO events(id,title,link,source,external_id,source_kind,is_closed,first_seen_at,first_seen_status,first_seen_was_open)
+    VALUES('reconcile:late-first','Test','https://example.test/late','stredocesky','900004','rss',FALSE,$1,'probíhá zásah',TRUE)`,[new Date(Date.now()+10*60000).toISOString()]);
+  await reconcileSourceObservation({...active,externalId:'900004',sourceStatus:'ukončená',normalizedStatus:'completed',endedAt,endedAtAccuracy:'official'});
+  row=await getEventMeta('reconcile:late-first');
+  assert.equal(row.duration_min,null);
+  assert.equal(row.duration_source,null);
+});
+
+test("reconciliation uses a verified start for exact duration and never treats pubDate as one",async()=>{
+  const start=new Date(Date.now()-90*60000).toISOString();
+  const end=new Date(Date.now()-30*60000).toISOString();
+  await pool.query(`INSERT INTO events(id,title,link,source,external_id,source_kind,is_closed,start_time_iso,start_time_source,pub_date,first_seen_was_open)
+    VALUES('reconcile:exact','Test','https://example.test/exact','stredocesky','900005','rss',FALSE,$1,'manual',$2,TRUE)`,[start,new Date(Date.now()-5*60000).toISOString()]);
+  await reconcileSourceObservation({source:'stredocesky',externalId:'900005',sourceStatus:'ukončená',normalizedStatus:'completed',endedAt:end,endedAtAccuracy:'official',sourceUpdatedAt:new Date().toISOString()});
+  const row=await getEventMeta('reconcile:exact');
+  assert.equal(row.duration_min,60);
+  assert.equal(row.duration_source,'manual_start_rss_end');
+  assert.equal(row.duration_is_estimate,false);
+  assert.equal(new Date(row.start_time_iso).toISOString(),start);
+});
+
 test("temporary source failure preserves state and permanent 404 only marks source unavailable",async()=>{
   const before=(await pool.query("SELECT is_closed,normalized_status FROM events WHERE id='reconcile:one'")).rows[0];
   await recordReconciliationFailure({source:'stredocesky',externalId:'900001',category:'timeout',permanent:false});

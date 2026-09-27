@@ -1,5 +1,6 @@
 import {canImprove} from './geocoding.js';
 import { normalizeReportFilters, buildReportWhere } from "./report-query.js";
+import { hasTrustedStart } from "./time-model.js";
 import pg from "pg";
 
 // ✅ stejný limit jako v serveru (fallback), aby se do DB neukládaly extrémy
@@ -2298,7 +2299,7 @@ const sourceFieldMap = Object.freeze({
   respondingUnits: "responding_units", sourceUrl: "source_url", sourceUpdatedAt: "source_updated_at", reportedAt: "reported_at"
 });
 
-function comparable(value) { return value == null ? null : typeof value === "object" ? JSON.stringify(value) : String(value); }
+function comparable(value) { return value == null ? null : value instanceof Date ? value.toISOString() : typeof value === "object" ? JSON.stringify(value) : String(value); }
 
 export async function reconcileSourceObservation(observation, { dryRun = false, jobId = null, actor = "automatic" } = {}) {
   const source = String(observation?.source || "");
@@ -2316,8 +2317,20 @@ export async function reconcileSourceObservation(observation, { dryRun = false, 
     for (const [input, column] of [["sourceStatus","source_status"],["normalizedStatus","normalized_status"],["contentHash","content_hash"],["endedAt","ended_at"],["endedAtAccuracy","ended_at_accuracy"]]) {
       if (observation[input] !== undefined && comparable(current[column]) !== comparable(observation[input])) changedFields.push(column);
     }
+    const minutesBetween = (start, end) => {
+      const difference = Math.floor((Date.parse(end || "") - Date.parse(start || "")) / 60000);
+      return Number.isFinite(difference) && difference > 0 && difference <= MAX_DURATION_MINUTES ? difference : null;
+    };
+    const missingOpenEstimate = !current.is_closed && current.first_seen_was_open === true
+      && current.duration_source !== "first_seen_open_estimate" && current.duration_source !== "manual"
+      && minutesBetween(current.first_seen_at, new Date().toISOString()) != null;
+    const missingClosedDuration = current.is_closed && !current.duration_source && observation.endedAt
+      && (hasTrustedStart(current) ? minutesBetween(current.start_time_iso, observation.endedAt) != null
+        : current.first_seen_was_open === true && minutesBetween(current.first_seen_at, observation.endedAt) != null);
+    const durationNeedsRepair = missingOpenEstimate || missingClosedDuration;
+    if (durationNeedsRepair) changedFields.push("duration_source", "duration_is_estimate");
     const hashUnchanged = Boolean(observation.contentHash && current.content_hash === observation.contentHash);
-    if (hashUnchanged && !changedFields.some(field => ["source_status","normalized_status","ended_at","ended_at_accuracy"].includes(field))) {
+    if (hashUnchanged && !durationNeedsRepair && !changedFields.some(field => ["source_status","normalized_status","ended_at","ended_at_accuracy"].includes(field))) {
       if (!dryRun) await client.query("UPDATE events SET last_source_check_at=NOW(),reconciliation_error=NULL,reconciliation_attempts=reconciliation_attempts+1,source_record_unavailable=FALSE WHERE id=$1", [current.id]);
       await client.query(dryRun ? "ROLLBACK" : "COMMIT");
       return { found: true, updated: false, unchanged: true, statusChanged: false, changedFields: [] };
@@ -2334,13 +2347,30 @@ export async function reconcileSourceObservation(observation, { dryRun = false, 
     let durationMin = null;
     let durationSource = null;
     let durationEstimate = false;
-    if (effectiveClosed && observation.endedAt && observation.reportedAt) {
-      const diff = Math.round((new Date(observation.endedAt).getTime() - new Date(observation.reportedAt).getTime()) / 60000);
-      if (Number.isFinite(diff) && diff > 0 && diff <= MAX_DURATION_MINUTES) {
-        durationMin = diff;
-        durationSource = observation.endedAtAccuracy === "official" ? "source_reported_and_end" : "source_observed_end";
-        durationEstimate = observation.endedAtAccuracy !== "official";
+    if (current.duration_source === "manual") {
+      durationMin = current.duration_min;
+      durationSource = "manual";
+    } else if (effectiveClosed) {
+      const end = observation.endedAt || (current.is_closed ? current.end_time_iso : null);
+      if (end && hasTrustedStart(current)) {
+        durationMin = minutesBetween(current.start_time_iso, end);
+        if (durationMin != null) durationSource = current.start_time_source === "manual" ? "manual_start_rss_end" : current.start_time_source === "rss_description" ? "rss_start_and_end" : "trusted_start_rss_end";
       }
+      if (durationMin == null && end && current.first_seen_was_open === true) {
+        durationMin = minutesBetween(current.first_seen_at, end);
+        if (durationMin != null) {
+          durationSource = "first_seen_to_rss_end_estimate";
+          durationEstimate = true;
+        }
+      }
+      if (durationMin == null && current.is_closed && !observation.endedAt) {
+        durationMin = current.duration_min;
+        durationSource = current.duration_source;
+        durationEstimate = current.duration_is_estimate === true;
+      }
+    } else if (current.first_seen_was_open === true && minutesBetween(current.first_seen_at, new Date().toISOString()) != null) {
+      durationSource = "first_seen_open_estimate";
+      durationEstimate = true;
     }
     await client.query(`UPDATE events SET
       source_status=$2, normalized_status=$3, status_text=COALESCE($2,status_text),
@@ -2350,9 +2380,7 @@ export async function reconcileSourceObservation(observation, { dryRun = false, 
       ended_at_accuracy=CASE WHEN $3='completed' THEN COALESCE($7,'unknown') ELSE NULL END,
       end_time_iso=CASE WHEN $3='completed' AND $6::text IS NOT NULL THEN $6::text ELSE CASE WHEN $3='active' AND end_time_source IS DISTINCT FROM 'manual' THEN NULL ELSE end_time_iso END END,
       end_time_source=CASE WHEN $3='completed' AND $6::text IS NOT NULL THEN 'source_reconciliation' ELSE CASE WHEN $3='active' AND end_time_source IS DISTINCT FROM 'manual' THEN NULL ELSE end_time_source END END,
-      duration_min=CASE WHEN $4::text IS NOT NULL AND duration_source='manual' THEN duration_min ELSE $8 END,
-      duration_source=CASE WHEN $4::text IS NOT NULL AND duration_source='manual' THEN duration_source ELSE $9 END,
-      duration_is_estimate=CASE WHEN $4::text IS NOT NULL AND duration_source='manual' THEN duration_is_estimate ELSE $10 END,
+      duration_min=$8, duration_source=$9, duration_is_estimate=$10,
       title=COALESCE($11,title), description_raw=COALESCE($12,description_raw), event_type=COALESCE($13,event_type), subtype=COALESCE($14,subtype),
       alarm_level=COALESCE($15,alarm_level), region=COALESCE($16,region), event_region=COALESCE($16,event_region), district_text=COALESCE($17,district_text),
       city_text=COALESCE($18,city_text), city_part=COALESCE($19,city_part), street=COALESCE($20,street), responding_units=COALESCE($21::jsonb,responding_units),
