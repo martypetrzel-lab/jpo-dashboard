@@ -135,6 +135,8 @@ Lokálně lze se stejnými dvěma proměnnými prostředí spustit `npm ci` a `n
 
 Pokud původní server odmítne síť GitHub Actions, importer automaticky použije veřejnou bránu rss2json. Volitelný GitHub Secret `RSS2JSON_API_KEY` zapne požadavek na až 100 nejnovějších položek (`count=100`, řazení podle data sestupně). Bez tohoto klíče brána vrací posledních 10 položek. URL zdroje obsahuje pětiminutový cache bucket, aby brána nevracela dlouhodobě zastaralý výsledek. Stabilní ID a databázový upsert zajistí, že nové zásahy vzniknou jednou a dříve uložené zásahy se pouze aktualizují.
 
+Stejný Secret používá také reconciliační workflow při kontrole aktuálního středočeského feedu. Položky nalezené ve feedu ověří přímo z jeho stavu; pro starší položky mimo feed zkusí historický detail. Nedostupný detail ani zmizení z feedu samo o sobě zásah neukončuje.
+
 Příjem RSS je omezen na aktuální kalendářní den v časovém pásmu `Europe/Prague`. Ze starších dnů se nově přijmou jen výslovně otevřené zásahy, které pokračují přes půlnoc. Již známý přesah lze následným RSS během aktualizovat nebo ukončit; neznámé starší ukončené události se nevkládají. Pohled „dnes“ zobrazuje dnešní zásahy a všechny stále otevřené přesahy.
 ## Pražský Atom feed
 

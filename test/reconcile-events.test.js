@@ -59,6 +59,32 @@ test('current Central feed reconciles an event without requesting its blocked hi
   assert.equal(observations[0].endedAt,'2026-09-27T04:02:00.000Z');
 });
 
+test('blocked Central feed uses the configured gateway and keeps its key out of logs',async()=>{
+  let candidatePages=0,historyRequests=0;const observations=[],logs=[];
+  const fetchImpl=async(url,options={})=>{
+    const text=String(url);
+    if(text.endsWith('/feed.xml'))throw new Error('source connection blocked');
+    if(text.startsWith('https://api.rss2json.com/'))return json({status:'ok',items:[{
+      title:'technická pomoc - Ledce',link:'https://pkr.kr-stredocesky.cz/pkr/zasahy-jpo/?id=203974',guid:'RSS_FEED_203974',
+      pubDate:'2026-09-27 04:02:00',description:'Stav: ukončená<br>Ledce<br>ukončení: 27. září 2026, 06:02',
+    }]});
+    if(text.includes('/zasahy-jpo/?id=')){historyRequests++;throw new Error('blocked detail');}
+    const path=new URL(url).pathname;
+    if(path.endsWith('/jobs/claim'))return json({ok:true,job:{id:'job-gateway',source:'stredocesky',scope:'active',dry_run:false}});
+    if(path.endsWith('/candidates'))return json({ok:true,items:candidatePages++===0?[{source:'stredocesky',external_id:'RSS_FEED_203974'}]:[]});
+    if(path.endsWith('/apply')){observations.push(JSON.parse(options.body).observation);return json({ok:true,result:{updated:true,statusChanged:true}});}
+    if(path.endsWith('/complete'))return json({ok:true,job:{id:'job-gateway'}});
+    throw new Error('unexpected URL '+url);
+  };
+  const ok=await runReconciliation({env:{FIREWATCH_INGEST_URL:'https://firewatchcz.cz/api/ingest',FIREWATCH_API_KEY:'ingest-secret',RSS2JSON_API_KEY:'gateway-secret',RECONCILE_SCOPE:'active',RECONCILE_SOURCE:'stredocesky'},fetchImpl,agentFactory,sleepImpl:async()=>{},delayImpl:async()=>{},logger:{info:value=>logs.push(value),error:value=>logs.push(value)}});
+  assert.equal(ok,true);
+  assert.equal(historyRequests,0);
+  assert.equal(observations.length,1);
+  assert.equal(observations[0].normalizedStatus,'completed');
+  assert.equal(observations[0].reportedAt,null);
+  assert.ok(logs.every(line=>!line.includes('ingest-secret')&&!line.includes('gateway-secret')));
+});
+
 test('permanent source 404 is recorded without applying a completed state',async()=>{
   let candidatePages=0,failures=0,applies=0;
   const fetchImpl=async(url)=>{

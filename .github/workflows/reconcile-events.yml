@@ -49,6 +49,7 @@ jobs:
         env:
           FIREWATCH_INGEST_URL: ${{ secrets.FIREWATCH_INGEST_URL }}
           FIREWATCH_API_KEY: ${{ secrets.FIREWATCH_API_KEY }}
+          RSS2JSON_API_KEY: ${{ secrets.RSS2JSON_API_KEY }}
           RECONCILE_SCOPE: ${{ github.event_name == 'workflow_dispatch' && inputs.scope || 'recent48' }}
           RECONCILE_SOURCE: ${{ github.event_name == 'workflow_dispatch' && inputs.source || 'all' }}
           RECONCILE_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && '1' || '0' }}
@@ -67,6 +68,7 @@ jobs:
         env:
           FIREWATCH_INGEST_URL: ${{ secrets.FIREWATCH_INGEST_URL }}
           FIREWATCH_API_KEY: ${{ secrets.FIREWATCH_API_KEY }}
+          RSS2JSON_API_KEY: ${{ secrets.RSS2JSON_API_KEY }}
           RECONCILE_SCOPE: last7
           RECONCILE_BATCH_SIZE: '40'
           RECONCILE_DELAY_MS: '350'
@@ -83,6 +85,7 @@ jobs:
         env:
           FIREWATCH_INGEST_URL: ${{ secrets.FIREWATCH_INGEST_URL }}
           FIREWATCH_API_KEY: ${{ secrets.FIREWATCH_API_KEY }}
+          RSS2JSON_API_KEY: ${{ secrets.RSS2JSON_API_KEY }}
           RECONCILE_SCOPE: last30
           RECONCILE_BATCH_SIZE: '30'
           RECONCILE_DELAY_MS: '500'
