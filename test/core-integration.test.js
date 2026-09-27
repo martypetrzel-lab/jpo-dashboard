@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { once } from "node:events";
 import { createTestDatabase } from "../test-support/database.js";
-import { pool, getEventMeta, autoCloseStaleOpenEvents, setCachedGeocode, initDb, getStatsFiltered, setSetting, auditCrossRegionStationAssignments } from "../db.js";
+import { pool, getEventMeta, autoCloseStaleOpenEvents, setCachedGeocode, initDb, getStatsFiltered, setSetting, auditCrossRegionStationAssignments, reconcileSourceObservation, recordReconciliationFailure, createReconciliationJob, claimReconciliationJob, updateReconciliationJob, getReconciliationJob } from "../db.js";
+import { stableSourceContentHash } from "../reconciliation.js";
 import { parsePrahaAtomXml } from "../prague-atom.js";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -154,6 +155,51 @@ test("repeatable additive migration preserves rows and report unique constraint"
   assert.ok((await pool.query("SELECT skipped_count, skipped_older_count, unchanged_count FROM ingest_log LIMIT 1")).rows.length);
   const migrated=await pool.query("SELECT source,external_id,source_url,region,event_region,is_jpo_event FROM events WHERE id='audit-stable'");
   assert.equal(migrated.rows[0].source,'stredocesky');assert.equal(migrated.rows[0].external_id,'audit-stable');assert.equal(migrated.rows[0].event_region,'Středočeský kraj');assert.equal(migrated.rows[0].is_jpo_event,true);
+});
+
+test("reconciliation updates both status directions, preserves manual fields and never duplicates identity", async () => {
+  await pool.query(`INSERT INTO events(id,title,link,source,external_id,source_url,region,event_region,city_text,status_text,status_source,source_status,normalized_status,is_closed,manual_detail_text,lat,lon,geo_source,geo_verified,content_hash)
+    VALUES('reconcile:one','Původní název','https://example.test/old','stredocesky','900001','https://example.test/old','Středočeský kraj','Středočeský kraj','Kladno','probíhá zásah','explicit_open','probíhá zásah','active',FALSE,'Ruční poznámka',50.1,14.1,'manual',TRUE,'old')`);
+  const completed={source:'stredocesky',externalId:'900001',sourceUrl:'https://example.test/new',sourceStatus:'Ukončená',normalizedStatus:'completed',title:'Opravený název',description:'Nový popis',eventType:'fire',region:'Středočeský kraj',city:'Kladno',endedAt:null,endedAtAccuracy:'unknown',lat:49.9,lon:15.2};
+  completed.contentHash=stableSourceContentHash(completed);
+  const first=await reconcileSourceObservation(completed,{jobId:'test-job',actor:'automatic'});
+  assert.equal(first.updated,true);assert.equal(first.statusChanged,true);
+  let row=(await pool.query("SELECT * FROM events WHERE source='stredocesky' AND external_id='900001'")).rows[0];
+  assert.equal(row.is_closed,true);assert.equal(row.normalized_status,'completed');assert.equal(row.duration_min,null);
+  assert.equal(row.manual_detail_text,'Ruční poznámka');assert.equal(row.lat,50.1);assert.equal(row.lon,14.1);
+  const active={...completed,sourceStatus:'Probíhající',normalizedStatus:'active',endedAt:null,endedAtAccuracy:null};active.contentHash=stableSourceContentHash(active);
+  const second=await reconcileSourceObservation(active,{jobId:'test-job'});assert.equal(second.statusChanged,true);
+  row=(await pool.query("SELECT * FROM events WHERE source='stredocesky' AND external_id='900001'")).rows[0];assert.equal(row.is_closed,false);assert.equal(row.normalized_status,'active');
+  assert.equal((await pool.query("SELECT COUNT(*)::int AS count FROM events WHERE source='stredocesky' AND external_id='900001'")).rows[0].count,1);
+});
+
+test("identical reconciliation only touches check metadata and manual override stays separate",async()=>{
+  const observation={source:'stredocesky',externalId:'900001',sourceUrl:'https://example.test/new',sourceStatus:'Probíhající',normalizedStatus:'active',title:'Opravený název',description:'Nový popis',eventType:'fire',region:'Středočeský kraj',city:'Kladno',endedAt:null,endedAtAccuracy:null,lat:49.9,lon:15.2};observation.contentHash=stableSourceContentHash(observation);
+  const before=(await pool.query("SELECT COUNT(*)::int AS count FROM event_reconciliation_audit WHERE event_id='reconcile:one'")).rows[0].count;
+  const result=await reconcileSourceObservation(observation);assert.equal(result.unchanged,true);
+  assert.equal((await pool.query("SELECT COUNT(*)::int AS count FROM event_reconciliation_audit WHERE event_id='reconcile:one'")).rows[0].count,before);
+  await pool.query("UPDATE events SET manual_status_override='active',manual_override_reason='Ověřeno dispečerem' WHERE id='reconcile:one'");
+  const closed={...observation,sourceStatus:'ukončená',normalizedStatus:'completed'};closed.contentHash=stableSourceContentHash(closed);
+  await reconcileSourceObservation(closed);const row=(await pool.query("SELECT * FROM events WHERE id='reconcile:one'")).rows[0];
+  assert.equal(row.source_status,'ukončená');assert.equal(row.normalized_status,'completed');assert.equal(row.manual_status_override,'active');assert.equal(row.is_closed,false);
+});
+
+test("temporary source failure preserves state and permanent 404 only marks source unavailable",async()=>{
+  const before=(await pool.query("SELECT is_closed,normalized_status FROM events WHERE id='reconcile:one'")).rows[0];
+  await recordReconciliationFailure({source:'stredocesky',externalId:'900001',category:'timeout',permanent:false});
+  let row=(await pool.query("SELECT * FROM events WHERE id='reconcile:one'")).rows[0];assert.equal(row.is_closed,before.is_closed);assert.equal(row.normalized_status,before.normalized_status);assert.equal(row.source_record_unavailable,false);
+  await recordReconciliationFailure({source:'stredocesky',externalId:'900001',category:'source_record_unavailable',permanent:true});
+  row=(await pool.query("SELECT * FROM events WHERE id='reconcile:one'")).rows[0];assert.equal(row.is_closed,before.is_closed);assert.equal(row.source_record_unavailable,true);
+});
+
+test("same external ID remains separate across sources and queued job can be claimed only once",async()=>{
+  await pool.query(`INSERT INTO events(id,title,link,source,external_id,source_url,region,event_region,is_closed) VALUES('reconcile:pard','Jiný zdroj','https://example.test/p','pardubicky','900001','https://example.test/p','Pardubický kraj','Pardubický kraj',TRUE)`);
+  assert.equal((await pool.query("SELECT COUNT(*)::int AS count FROM events WHERE external_id='900001'")).rows[0].count,2);
+  await createReconciliationJob({id:'claim-once',source:'stredocesky',scope:'full'});
+  const claimed=await Promise.all([claimReconciliationJob({id:'claim-once'}),claimReconciliationJob({id:'claim-once'})]);
+  assert.equal(claimed.filter(Boolean).length,1);
+  await updateReconciliationJob('claim-once',{checked:1,cursorSource:'stredocesky',cursorExternalId:'900001'});
+  assert.equal((await getReconciliationJob('claim-once')).checked_count,1);
 });
 test("Praha Atom ingest uses source identity, skips old history and updates changed summaries only",async()=>{
  const xml=fs.readFileSync(fileURLToPath(new URL('./fixtures/praha-atom.xml',import.meta.url)),'utf8');

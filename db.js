@@ -229,6 +229,12 @@ export async function initDb() {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_log_ts ON audit_log(ts DESC);`);
   for(const [name,type] of Object.entries({source_updated_at:'TEXT',start_time_source:'TEXT',end_time_source:'TEXT',first_seen_status:'TEXT',first_seen_was_open:'BOOLEAN',duration_is_estimate:'BOOLEAN NOT NULL DEFAULT FALSE',time_model_version:'INTEGER NOT NULL DEFAULT 0',time_original_values:'JSONB'})) await pool.query(`ALTER TABLE events ADD COLUMN IF NOT EXISTS ${name} ${type}`);
   for (const [name,type] of Object.entries({source:'TEXT',external_id:'TEXT',source_url:'TEXT',region:'TEXT',content_hash:'TEXT',raw_payload:'JSONB',is_jpo_event:'BOOLEAN NOT NULL DEFAULT TRUE'})) await pool.query(`ALTER TABLE events ADD COLUMN IF NOT EXISTS ${name} ${type}`);
+  for (const [name,type] of Object.entries({
+    source_status:'TEXT', normalized_status:'TEXT', last_source_check_at:'TIMESTAMPTZ', last_seen_in_feed_at:'TIMESTAMPTZ',
+    status_changed_at:'TIMESTAMPTZ', ended_at:'TIMESTAMPTZ', ended_at_accuracy:'TEXT', reconciliation_error:'TEXT',
+    reconciliation_attempts:'INTEGER NOT NULL DEFAULT 0', source_record_unavailable:'BOOLEAN NOT NULL DEFAULT FALSE',
+    manual_status_override:'TEXT', manual_override_reason:'TEXT', manual_override_created_at:'TIMESTAMPTZ'
+  })) await pool.query(`ALTER TABLE events ADD COLUMN IF NOT EXISTS ${name} ${type}`);
   for (const [name,type] of Object.entries({reported_at:'TEXT',subtype:'TEXT',district_text:'TEXT',city_part:'TEXT',street:'TEXT',responding_units:"JSONB NOT NULL DEFAULT '[]'::jsonb",status_observed_at:'TIMESTAMPTZ',event_region:'TEXT',station_region:'TEXT',station_id:'TEXT',assignment_method:"TEXT NOT NULL DEFAULT 'none'",assignment_confidence:'DOUBLE PRECISION',cross_region_assistance:'BOOLEAN NOT NULL DEFAULT FALSE'})) await pool.query(`ALTER TABLE events ADD COLUMN IF NOT EXISTS ${name} ${type}`);
   for (const [name,type] of Object.entries({geo_precision:'TEXT',geo_confidence:'DOUBLE PRECISION',geo_query:'TEXT',geo_display_name:'TEXT',geo_verified:'BOOLEAN NOT NULL DEFAULT FALSE',geo_failure_reason:'TEXT',geo_context_key:'TEXT'})) await pool.query(`ALTER TABLE events ADD COLUMN IF NOT EXISTS ${name} ${type}`);
   await pool.query(`CREATE TABLE IF NOT EXISTS geocode_cache_v2 (context_key TEXT PRIMARY KEY, result JSONB NOT NULL, expires_at TIMESTAMPTZ NOT NULL)`);
@@ -236,6 +242,30 @@ export async function initDb() {
   await pool.query(`UPDATE events SET source=CASE WHEN source IS NULL OR BTRIM(source)='' OR source='unknown' THEN 'stredocesky' ELSE source END, external_id=COALESCE(external_id,id), source_url=COALESCE(source_url,link), region=COALESCE(region,'Středočeský kraj'), is_jpo_event=COALESCE(is_jpo_event,TRUE) WHERE source IS NULL OR BTRIM(source)='' OR source='unknown' OR external_id IS NULL OR source_url IS NULL OR region IS NULL OR is_jpo_event IS NULL`);
   await pool.query(`UPDATE events SET event_region=COALESCE(event_region,region,CASE source WHEN 'praha' THEN 'Hlavní město Praha' WHEN 'pardubicky' THEN 'Pardubický kraj' ELSE 'Středočeský kraj' END), assignment_method=COALESCE(assignment_method,'none'), cross_region_assistance=COALESCE(cross_region_assistance,FALSE) WHERE event_region IS NULL OR assignment_method IS NULL OR cross_region_assistance IS NULL`);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_events_source_external_id ON events(source, external_id) WHERE external_id IS NOT NULL`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_events_reconcile_active ON events(source,is_closed,last_source_check_at) WHERE external_id IS NOT NULL`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_events_reconcile_recent ON events(source,first_seen_at DESC) WHERE external_id IS NOT NULL`);
+  await pool.query(`UPDATE events SET source_status=COALESCE(source_status,status_text), normalized_status=COALESCE(normalized_status,CASE WHEN is_closed THEN 'completed' ELSE 'unknown' END) WHERE source_status IS NULL OR normalized_status IS NULL`);
+  await pool.query(`UPDATE events SET manual_status_override=CASE WHEN is_closed THEN 'completed' ELSE 'active' END,manual_override_reason=COALESCE(manual_override_reason,'Převedeno z dřívější ruční úpravy'),manual_override_created_at=COALESCE(manual_override_created_at,last_seen_at,created_at,NOW()) WHERE status_source='manual' AND manual_status_override IS NULL`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS reconciliation_jobs (
+    id TEXT PRIMARY KEY, source TEXT NOT NULL DEFAULT 'all', scope TEXT NOT NULL, dry_run BOOLEAN NOT NULL DEFAULT FALSE,
+    status TEXT NOT NULL DEFAULT 'queued', priority INTEGER NOT NULL DEFAULT 0, cursor_source TEXT, cursor_external_id TEXT,
+    total_count INTEGER NOT NULL DEFAULT 0, checked_count INTEGER NOT NULL DEFAULT 0, updated_count INTEGER NOT NULL DEFAULT 0,
+    unchanged_count INTEGER NOT NULL DEFAULT 0, failed_count INTEGER NOT NULL DEFAULT 0, missing_count INTEGER NOT NULL DEFAULT 0,
+    status_change_count INTEGER NOT NULL DEFAULT 0, error_text TEXT, requested_by TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), started_at TIMESTAMPTZ, finished_at TIMESTAMPTZ, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_reconciliation_jobs_queue ON reconciliation_jobs(status,priority DESC,created_at)`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS event_reconciliation_audit (
+    id BIGSERIAL PRIMARY KEY, event_id TEXT NOT NULL, source TEXT NOT NULL, external_id TEXT,
+    previous_source_status TEXT, new_source_status TEXT, previous_normalized_status TEXT, new_normalized_status TEXT,
+    changed_fields JSONB NOT NULL DEFAULT '[]'::jsonb, checked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    reconciliation_job_id TEXT, actor TEXT NOT NULL DEFAULT 'automatic'
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_reconciliation_audit_checked ON event_reconciliation_audit(checked_at DESC)`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS reconciliation_health (
+    source TEXT NOT NULL, job_type TEXT NOT NULL, last_success_at TIMESTAMPTZ, summary JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY(source,job_type)
+  )`);
 
 
   
@@ -498,6 +528,10 @@ export async function getEventMetaBySourceExternal(source, externalId) {
 
 export async function touchEventLastSeen(id) {
   await pool.query(`UPDATE events SET last_seen_at=NOW() WHERE id=$1`, [id]);
+}
+
+export async function markEventSeenInSource(id, { sourceStatus = null, normalizedStatus = "unknown" } = {}) {
+  await pool.query(`UPDATE events SET source_status=COALESCE($2,source_status,status_text),normalized_status=$3,last_seen_in_feed_at=NOW(),last_source_check_at=NOW(),status_changed_at=CASE WHEN normalized_status IS DISTINCT FROM $3 THEN NOW() ELSE status_changed_at END,reconciliation_error=NULL,source_record_unavailable=FALSE WHERE id=$1`, [id,sourceStatus,normalizedStatus]);
 }
 
 export async function getSourceIdentityState(source, externalIds = []) {
@@ -1239,6 +1273,8 @@ export async function getEventsFiltered(filters, limit = 400) {
       description_raw,
       start_time_iso, end_time_iso, duration_min, duration_source, is_closed,
       alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
+      source_status, normalized_status, last_source_check_at, status_changed_at, ended_at, ended_at_accuracy,
+      reconciliation_error, source_record_unavailable, manual_status_override, manual_override_reason, manual_override_created_at,
       manual_detail_text, manual_detail_source, manual_detail_updated_at,
       (
         is_closed = FALSE
@@ -1893,6 +1929,8 @@ export async function getEventById(id) {
     `SELECT source, external_id, source_url, region, content_hash, is_jpo_event, reported_at, subtype, district_text, city_part, street, responding_units, status_observed_at, event_region, station_region, station_id, assignment_method, assignment_confidence, cross_region_assistance, source_kind, source_updated_at, start_time_source, end_time_source, first_seen_status, first_seen_was_open, duration_is_estimate, time_model_version, id, title, link, pub_date, place_text, city_text, status_text, event_type,
             description_raw, start_time_iso, end_time_iso, duration_min, duration_source, is_closed,
             alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
+            source_status, normalized_status, last_source_check_at, status_changed_at, ended_at, ended_at_accuracy,
+            reconciliation_error, source_record_unavailable, manual_status_override, manual_override_reason, manual_override_created_at,
             manual_detail_text, manual_detail_source, manual_detail_updated_at,
             lat, lon, first_seen_at, last_seen_at, created_at, geo_source, geo_note, geo_updated_at, geo_precision, geo_confidence, geo_query, geo_display_name, geo_verified, geo_failure_reason, geo_context_key
      FROM events
@@ -2034,6 +2072,9 @@ export async function updateEventManualMeta(id, patch = {}) {
       is_closed = $2,
       status_text = $3,
       status_source = 'manual',
+      manual_status_override = CASE WHEN $2::boolean THEN 'completed' ELSE 'active' END,
+      manual_override_reason = COALESCE(NULLIF($15::text,''),'Ruční změna v administraci'),
+      manual_override_created_at = NOW(),
       alarm_level = $4,
       alarm_level_text = $5,
       is_major_event = $6,
@@ -2095,7 +2136,8 @@ export async function updateEventManualMeta(id, patch = {}) {
       clearCoords,
       hasCoords,
       hasCoords ? Number(patch.lat) : null,
-      hasCoords ? Number(patch.lon) : null
+      hasCoords ? Number(patch.lon) : null,
+      String(patch.manualOverrideReason || "").slice(0, 500)
     ]
   );
 }
@@ -2110,6 +2152,8 @@ export async function getEventDetailById(id) {
       description_raw,
       start_time_iso, end_time_iso, duration_min, duration_source, is_closed,
       alarm_level, alarm_level_text, is_major_event, major_reason, status_source,
+      source_status, normalized_status, last_source_check_at, status_changed_at, ended_at, ended_at_accuracy,
+      reconciliation_error, source_record_unavailable, manual_status_override, manual_override_reason, manual_override_created_at,
       manual_detail_text, manual_detail_source, manual_detail_updated_at,
       lat, lon, geo_source, geo_precision, geo_confidence, geo_query, geo_display_name, geo_verified, geo_failure_reason, geo_context_key,
       first_seen_at, last_seen_at, created_at
@@ -2199,4 +2243,202 @@ export async function applyGeoProposal(id,proposal,{repair=false,expected=null,u
 
 export async function recordGeoFailure(id,proposal) {
   await pool.query(`UPDATE events SET geo_precision='failed',geo_failure_reason=$2,geo_query=$3,geo_context_key=$4,geo_updated_at=NOW() WHERE id=$1 AND lat IS NULL AND lon IS NULL AND geo_verified=FALSE AND COALESCE(geo_source,'') NOT ILIKE '%manual%' AND COALESCE(geo_source,'') NOT ILIKE '%admin%'`,[id,proposal.failure_reason,proposal.query || null,proposal.context_key || null]);
+}
+
+// ---------------- SOURCE RECONCILIATION ----------------
+const RECONCILIATION_LOCKS = Object.freeze({ active: 748329201, scheduled: 748329202, history: 748329203 });
+
+export async function acquireReconciliationLock(scope = "scheduled") {
+  const key = RECONCILIATION_LOCKS[scope] || RECONCILIATION_LOCKS.scheduled;
+  const client = await pool.connect();
+  try {
+    const result = await client.query("SELECT pg_try_advisory_lock($1) AS acquired", [key]);
+    if (!result.rows?.[0]?.acquired) { client.release(); return null; }
+    let released = false;
+    return async () => {
+      if (released) return;
+      released = true;
+      try { await client.query("SELECT pg_advisory_unlock($1)", [key]); }
+      finally { client.release(); }
+    };
+  } catch (error) { client.release(); throw error; }
+}
+
+function reconciliationScopeWhere(scope) {
+  if (scope === "active") return "is_closed=FALSE";
+  if (scope === "recent48") return "COALESCE(last_seen_at,first_seen_at,created_at) >= NOW()-INTERVAL '48 hours'";
+  if (scope === "last7") return "COALESCE(last_seen_at,first_seen_at,created_at) >= NOW()-INTERVAL '7 days'";
+  if (scope === "last30") return "COALESCE(last_seen_at,first_seen_at,created_at) >= NOW()-INTERVAL '30 days'";
+  return "TRUE";
+}
+
+export async function listReconciliationCandidates({ source = "all", scope = "active", limit = 50, cursorSource = null, cursorExternalId = null } = {}) {
+  const params = [];
+  const where = ["external_id IS NOT NULL", "source IN ('stredocesky','pardubicky','praha')", reconciliationScopeWhere(scope)];
+  if (source !== "all") { params.push(source); where.push(`source=$${params.length}`); }
+  if (cursorSource != null && cursorExternalId != null) {
+    params.push(cursorSource, cursorExternalId);
+    where.push(`(source,external_id)>($${params.length-1},$${params.length})`);
+  }
+  params.push(Math.max(1, Math.min(200, Number(limit) || 50)));
+  const result = await pool.query(`SELECT id,source,external_id,source_url,title,description_raw,event_type,subtype,region,district_text,city_text,city_part,street,responding_units,reported_at,pub_date,source_updated_at,source_status,normalized_status,status_text,status_source,is_closed,content_hash,first_seen_at,last_source_check_at,manual_status_override,manual_override_reason,lat,lon,geo_source,geo_verified FROM events WHERE ${where.join(" AND ")} ORDER BY source,external_id LIMIT $${params.length}`, params);
+  return result.rows || [];
+}
+
+export async function countReconciliationCandidates({ source = "all", scope = "active" } = {}) {
+  const params = [];
+  const where = ["external_id IS NOT NULL", "source IN ('stredocesky','pardubicky','praha')", reconciliationScopeWhere(scope)];
+  if (source !== "all") { params.push(source); where.push(`source=$${params.length}`); }
+  return Number((await pool.query(`SELECT COUNT(*)::int AS count FROM events WHERE ${where.join(" AND ")}`, params)).rows[0]?.count || 0);
+}
+
+const sourceFieldMap = Object.freeze({
+  title: "title", description: "description_raw", eventType: "event_type", subtype: "subtype", alarmLevel: "alarm_level",
+  region: "region", district: "district_text", city: "city_text", cityPart: "city_part", street: "street",
+  respondingUnits: "responding_units", sourceUrl: "source_url", sourceUpdatedAt: "source_updated_at", reportedAt: "reported_at"
+});
+
+function comparable(value) { return value == null ? null : typeof value === "object" ? JSON.stringify(value) : String(value); }
+
+export async function reconcileSourceObservation(observation, { dryRun = false, jobId = null, actor = "automatic" } = {}) {
+  const source = String(observation?.source || "");
+  const externalId = String(observation?.externalId || "");
+  if (!source || !externalId) throw new Error("invalid_reconciliation_identity");
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const current = (await client.query("SELECT * FROM events WHERE source=$1 AND external_id=$2 FOR UPDATE", [source, externalId])).rows[0];
+    if (!current) { await client.query("ROLLBACK"); return { found: false, updated: false, unchanged: false, changedFields: [] }; }
+    const changedFields = [];
+    for (const [input, column] of Object.entries(sourceFieldMap)) {
+      if (observation[input] !== undefined && observation[input] !== null && comparable(current[column]) !== comparable(observation[input])) changedFields.push(column);
+    }
+    for (const [input, column] of [["sourceStatus","source_status"],["normalizedStatus","normalized_status"],["contentHash","content_hash"],["endedAt","ended_at"],["endedAtAccuracy","ended_at_accuracy"]]) {
+      if (observation[input] !== undefined && comparable(current[column]) !== comparable(observation[input])) changedFields.push(column);
+    }
+    const hashUnchanged = Boolean(observation.contentHash && current.content_hash === observation.contentHash);
+    if (hashUnchanged && !changedFields.some(field => ["source_status","normalized_status","ended_at","ended_at_accuracy"].includes(field))) {
+      if (!dryRun) await client.query("UPDATE events SET last_source_check_at=NOW(),reconciliation_error=NULL,reconciliation_attempts=reconciliation_attempts+1,source_record_unavailable=FALSE WHERE id=$1", [current.id]);
+      await client.query(dryRun ? "ROLLBACK" : "COMMIT");
+      return { found: true, updated: false, unchanged: true, statusChanged: false, changedFields: [] };
+    }
+    const normalizedStatus = ["active","completed","unknown","informational"].includes(observation.normalizedStatus) ? observation.normalizedStatus : "unknown";
+    const statusChanged = current.normalized_status !== normalizedStatus;
+    if (dryRun) {
+      await client.query("ROLLBACK");
+      return { found: true, updated: changedFields.length > 0, unchanged: changedFields.length === 0, statusChanged, changedFields, previous: { sourceStatus: current.source_status, normalizedStatus: current.normalized_status }, next: { sourceStatus: observation.sourceStatus, normalizedStatus } };
+    }
+    const override = ["active","completed"].includes(current.manual_status_override) ? current.manual_status_override : null;
+    const effectiveStatus = override || normalizedStatus;
+    const effectiveClosed = effectiveStatus === "completed";
+    let durationMin = null;
+    let durationSource = null;
+    let durationEstimate = false;
+    if (effectiveClosed && observation.endedAt && observation.reportedAt) {
+      const diff = Math.round((new Date(observation.endedAt).getTime() - new Date(observation.reportedAt).getTime()) / 60000);
+      if (Number.isFinite(diff) && diff > 0 && diff <= MAX_DURATION_MINUTES) {
+        durationMin = diff;
+        durationSource = observation.endedAtAccuracy === "official" ? "source_reported_and_end" : "source_observed_end";
+        durationEstimate = observation.endedAtAccuracy !== "official";
+      }
+    }
+    await client.query(`UPDATE events SET
+      source_status=$2, normalized_status=$3, status_text=COALESCE($2,status_text),
+      status_source=CASE WHEN $4::text IS NULL THEN CASE WHEN $3='completed' THEN 'explicit_closed' WHEN $3='active' THEN 'explicit_open' ELSE status_source END ELSE status_source END,
+      is_closed=$5, status_changed_at=CASE WHEN normalized_status IS DISTINCT FROM $3 THEN NOW() ELSE status_changed_at END,
+      ended_at=CASE WHEN $3='completed' THEN $6::timestamptz ELSE NULL END,
+      ended_at_accuracy=CASE WHEN $3='completed' THEN COALESCE($7,'unknown') ELSE NULL END,
+      end_time_iso=CASE WHEN $3='completed' AND $6::text IS NOT NULL THEN $6::text ELSE CASE WHEN $3='active' AND end_time_source IS DISTINCT FROM 'manual' THEN NULL ELSE end_time_iso END END,
+      end_time_source=CASE WHEN $3='completed' AND $6::text IS NOT NULL THEN 'source_reconciliation' ELSE CASE WHEN $3='active' AND end_time_source IS DISTINCT FROM 'manual' THEN NULL ELSE end_time_source END END,
+      duration_min=CASE WHEN $4::text IS NOT NULL AND duration_source='manual' THEN duration_min ELSE $8 END,
+      duration_source=CASE WHEN $4::text IS NOT NULL AND duration_source='manual' THEN duration_source ELSE $9 END,
+      duration_is_estimate=CASE WHEN $4::text IS NOT NULL AND duration_source='manual' THEN duration_is_estimate ELSE $10 END,
+      title=COALESCE($11,title), description_raw=COALESCE($12,description_raw), event_type=COALESCE($13,event_type), subtype=COALESCE($14,subtype),
+      alarm_level=COALESCE($15,alarm_level), region=COALESCE($16,region), event_region=COALESCE($16,event_region), district_text=COALESCE($17,district_text),
+      city_text=COALESCE($18,city_text), city_part=COALESCE($19,city_part), street=COALESCE($20,street), responding_units=COALESCE($21::jsonb,responding_units),
+      source_url=COALESCE($22,source_url), link=COALESCE($22,link), source_updated_at=COALESCE($23,source_updated_at), reported_at=COALESCE($24,reported_at),
+      lat=CASE WHEN $25::float8 IS NOT NULL AND NOT COALESCE(geo_verified,FALSE) AND COALESCE(geo_source,'') NOT ILIKE '%manual%' THEN $25 ELSE lat END,
+      lon=CASE WHEN $26::float8 IS NOT NULL AND NOT COALESCE(geo_verified,FALSE) AND COALESCE(geo_source,'') NOT ILIKE '%manual%' THEN $26 ELSE lon END,
+      content_hash=COALESCE($27,content_hash), last_source_check_at=NOW(), reconciliation_error=NULL,
+      reconciliation_attempts=reconciliation_attempts+1, source_record_unavailable=FALSE
+      WHERE id=$1`, [current.id, observation.sourceStatus || null, normalizedStatus, override, effectiveClosed,
+        observation.endedAt || null, observation.endedAtAccuracy || null, durationMin, durationSource, durationEstimate,
+        observation.title ?? null, observation.description ?? null, observation.eventType ?? null, observation.subtype ?? null,
+        observation.alarmLevel ?? null, observation.region ?? null, observation.district ?? null, observation.city ?? null,
+        observation.cityPart ?? null, observation.street ?? null, observation.respondingUnits == null ? null : JSON.stringify(observation.respondingUnits),
+        observation.sourceUrl ?? null, observation.sourceUpdatedAt ?? null, observation.reportedAt ?? null,
+        observation.lat ?? null, observation.lon ?? null, observation.contentHash ?? null]);
+    if (changedFields.length) await client.query(`INSERT INTO event_reconciliation_audit(event_id,source,external_id,previous_source_status,new_source_status,previous_normalized_status,new_normalized_status,changed_fields,reconciliation_job_id,actor) VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10)`, [current.id,source,externalId,current.source_status,observation.sourceStatus || null,current.normalized_status,normalizedStatus,JSON.stringify([...new Set(changedFields)]),jobId,actor]);
+    await client.query("COMMIT");
+    return { found: true, updated: changedFields.length > 0, unchanged: changedFields.length === 0, statusChanged, changedFields: [...new Set(changedFields)] };
+  } catch (error) { try { await client.query("ROLLBACK"); } catch {} throw error; }
+  finally { client.release(); }
+}
+
+export async function recordReconciliationFailure({ source, externalId, category, permanent = false }) {
+  const result = await pool.query(`UPDATE events SET last_source_check_at=NOW(),reconciliation_attempts=reconciliation_attempts+1,reconciliation_error=$3,source_record_unavailable=$4 WHERE source=$1 AND external_id=$2 RETURNING id`, [source,externalId,String(category || "source_error").slice(0,120),permanent === true]);
+  return result.rowCount > 0;
+}
+
+export async function createReconciliationJob({ id, source = "all", scope = "active", dryRun = false, priority = 0, requestedBy = null }) {
+  const total = await countReconciliationCandidates({ source, scope });
+  const result = await pool.query(`INSERT INTO reconciliation_jobs(id,source,scope,dry_run,priority,total_count,requested_by) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`, [id,source,scope,!!dryRun,priority,total,requestedBy]);
+  return result.rows[0];
+}
+
+export async function claimReconciliationJob({ id = null, source = "all", scope = "active", dryRun = false, requestedBy = "scheduled" } = {}) {
+  if (id) {
+    const resumed = await pool.query(`UPDATE reconciliation_jobs SET status='running',started_at=COALESCE(started_at,NOW()),updated_at=NOW() WHERE id=$1 AND status IN ('queued','paused') RETURNING *`, [id]);
+    return resumed.rows[0] || null;
+  }
+  const queued = await pool.query(`UPDATE reconciliation_jobs SET status='running',started_at=COALESCE(started_at,NOW()),updated_at=NOW() WHERE id=(SELECT id FROM reconciliation_jobs WHERE status='queued' ORDER BY priority DESC,created_at LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING *`);
+  if (queued.rows[0]) return queued.rows[0];
+  return createReconciliationJob({ id: `scheduled-${Date.now()}-${Math.random().toString(16).slice(2)}`, source, scope, dryRun, requestedBy });
+}
+
+export async function updateReconciliationJob(id, patch = {}) {
+  const status = ["queued","running","paused","completed","failed"].includes(patch.status) ? patch.status : null;
+  const result = await pool.query(`UPDATE reconciliation_jobs SET
+    status=COALESCE($2,status), cursor_source=COALESCE($3,cursor_source), cursor_external_id=COALESCE($4,cursor_external_id),
+    checked_count=checked_count+$5,updated_count=updated_count+$6,unchanged_count=unchanged_count+$7,failed_count=failed_count+$8,
+    missing_count=missing_count+$9,status_change_count=status_change_count+$10,error_text=$11,updated_at=NOW(),
+    finished_at=CASE WHEN $2 IN ('completed','failed') THEN NOW() ELSE finished_at END
+    WHERE id=$1 RETURNING *`, [id,status,patch.cursorSource || null,patch.cursorExternalId || null,Number(patch.checked)||0,Number(patch.updated)||0,Number(patch.unchanged)||0,Number(patch.failed)||0,Number(patch.missing)||0,Number(patch.statusChanges)||0,patch.error || null]);
+  return result.rows[0] || null;
+}
+
+export async function setReconciliationJobStatus(id, status) {
+  if (!["queued","running","paused","completed","failed"].includes(status)) throw new Error("invalid_job_status");
+  const result = await pool.query(`UPDATE reconciliation_jobs SET status=$2,updated_at=NOW(),finished_at=CASE WHEN $2 IN ('completed','failed') THEN NOW() ELSE finished_at END WHERE id=$1 RETURNING *`, [id,status]);
+  return result.rows[0] || null;
+}
+
+export async function getReconciliationJob(id) {
+  return (await pool.query(`SELECT * FROM reconciliation_jobs WHERE id=$1`, [id])).rows[0] || null;
+}
+
+export async function getReconciliationOverview() {
+  const [jobs,audit,health] = await Promise.all([
+    pool.query(`SELECT * FROM reconciliation_jobs ORDER BY created_at DESC LIMIT 20`),
+    pool.query(`SELECT * FROM event_reconciliation_audit ORDER BY checked_at DESC LIMIT 30`),
+    pool.query(`SELECT * FROM reconciliation_health ORDER BY source,job_type`)
+  ]);
+  return { jobs: jobs.rows || [], transitions: audit.rows || [], health: health.rows || [] };
+}
+
+export async function recordReconciliationHealth(source, jobType, summary = {}) {
+  await pool.query(`INSERT INTO reconciliation_health(source,job_type,last_success_at,summary) VALUES($1,$2,NOW(),$3::jsonb) ON CONFLICT(source,job_type) DO UPDATE SET last_success_at=NOW(),summary=EXCLUDED.summary,updated_at=NOW()`, [source,jobType,JSON.stringify(summary)]);
+}
+
+export async function reconciliationDryRunAudit() {
+  const result = await pool.query(`SELECT id,source,external_id,title,is_closed,normalized_status,first_seen_at,last_seen_at,duration_min,region,event_region,
+    CASE WHEN external_id IS NULL THEN 'missing_external_id'
+      WHEN duration_min IS NOT NULL AND duration_min<=0 THEN 'invalid_duration'
+      WHEN region IS DISTINCT FROM event_region THEN 'region_mismatch'
+      WHEN is_closed=FALSE AND COALESCE(first_seen_at,created_at)<NOW()-INTERVAL '24 hours' THEN 'active_over_24h'
+    END AS issue
+    FROM events WHERE external_id IS NULL OR (duration_min IS NOT NULL AND duration_min<=0) OR region IS DISTINCT FROM event_region OR (is_closed=FALSE AND COALESCE(first_seen_at,created_at)<NOW()-INTERVAL '24 hours')
+    ORDER BY source,external_id LIMIT 1000`);
+  const duplicates = await pool.query(`SELECT source,external_id,COUNT(*)::int AS count FROM events WHERE external_id IS NOT NULL GROUP BY source,external_id HAVING COUNT(*)>1`);
+  return { issues: result.rows || [], duplicates: duplicates.rows || [] };
 }

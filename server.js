@@ -48,6 +48,7 @@ import {
   getEventMeta,
   getEventMetaBySourceExternal,
   touchEventLastSeen,
+  markEventSeenInSource,
   getSourceIdentityState,
   updateEventSourceDetails,
   auditCrossRegionStationAssignments,
@@ -101,7 +102,18 @@ import {
   listArchivedReportsPage,
   getArchivedReport,
   getEventsForPeriod,
-  acquireRssWorkerLock
+  acquireRssWorkerLock,
+  listReconciliationCandidates,
+  reconcileSourceObservation,
+  recordReconciliationFailure,
+  createReconciliationJob,
+  claimReconciliationJob,
+  updateReconciliationJob,
+  setReconciliationJobStatus,
+  getReconciliationJob,
+  getReconciliationOverview,
+  recordReconciliationHealth,
+  reconciliationDryRunAudit
 
 } from "./db.js";
 
@@ -2504,9 +2516,80 @@ function publicSafeManualSourceNote() {
 // ingest (data z ESP)
 app.post("/api/ingest/source-state", requireKey, safeRoute(async (req, res) => {
   const source = String(req.body?.source || "");
-  if (!['pardubicky'].includes(source) || !Array.isArray(req.body?.external_ids) || req.body.external_ids.length > 200) return res.status(400).json({ok:false,error:'bad_source_state_request'});
+  if (!['stredocesky','pardubicky','praha'].includes(source) || !Array.isArray(req.body?.external_ids) || req.body.external_ids.length > 200) return res.status(400).json({ok:false,error:'bad_source_state_request'});
   const state = await getSourceIdentityState(source, req.body.external_ids);
   res.json({ok:true,source,...state});
+}));
+
+const reconciliationSources = new Set(['all','stredocesky','pardubicky','praha']);
+const reconciliationScopes = new Set(['active','recent48','last7','last30','full']);
+function reconciliationRequest(body = {}) {
+  const source = String(body.source || 'all');
+  const scope = String(body.scope || 'active');
+  if (!reconciliationSources.has(source) || !reconciliationScopes.has(scope)) return null;
+  return { source, scope, dryRun: body.dry_run === true };
+}
+
+app.post('/api/reconciliation/jobs/claim', requireKey, safeRoute(async(req,res)=>{
+  const request = reconciliationRequest(req.body);
+  if(!request) return res.status(400).json({ok:false,error:'bad_reconciliation_request'});
+  const job=await claimReconciliationJob({id:req.body?.job_id || null,...request,requestedBy:'github_actions'});
+  if(!job) return res.status(409).json({ok:false,error:'job_not_claimable'});
+  if(job.status==='queued') await setReconciliationJobStatus(job.id,'running');
+  res.json({ok:true,job:await getReconciliationJob(job.id)});
+}));
+app.post('/api/reconciliation/candidates', requireKey, safeRoute(async(req,res)=>{
+  const job=await getReconciliationJob(String(req.body?.job_id || ''));
+  if(!job) return res.status(404).json({ok:false,error:'job_not_found'});
+  if(job.status==='paused') return res.status(409).json({ok:false,error:'job_paused',job});
+  if(job.status!=='running') return res.status(409).json({ok:false,error:'job_not_running',job});
+  const items=await listReconciliationCandidates({source:job.source,scope:job.scope,limit:req.body?.limit,cursorSource:job.cursor_source,cursorExternalId:job.cursor_external_id});
+  res.json({ok:true,job,items});
+}));
+app.post('/api/reconciliation/apply', requireKey, safeRoute(async(req,res)=>{
+  const job=await getReconciliationJob(String(req.body?.job_id || ''));
+  if(!job || job.status!=='running') return res.status(409).json({ok:false,error:'job_not_running'});
+  const result=await reconcileSourceObservation(req.body?.observation,{dryRun:job.dry_run,jobId:job.id,actor:job.requested_by==='github_actions'?'automatic':'administrator'});
+  const observation=req.body?.observation || {};
+  const updated=await updateReconciliationJob(job.id,{checked:1,updated:result.updated?1:0,unchanged:result.unchanged?1:0,statusChanges:result.statusChanged?1:0,cursorSource:observation.source,cursorExternalId:String(observation.externalId || '')});
+  res.json({ok:true,result,job:updated});
+}));
+app.post('/api/reconciliation/failure', requireKey, safeRoute(async(req,res)=>{
+  const job=await getReconciliationJob(String(req.body?.job_id || ''));
+  if(!job || job.status!=='running') return res.status(409).json({ok:false,error:'job_not_running'});
+  const source=String(req.body?.source || ''),externalId=String(req.body?.external_id || '');
+  if(!reconciliationSources.has(source) || source==='all' || !externalId) return res.status(400).json({ok:false,error:'bad_failure_record'});
+  await recordReconciliationFailure({source,externalId,category:req.body?.category,permanent:req.body?.permanent===true});
+  const updated=await updateReconciliationJob(job.id,{checked:1,failed:req.body?.permanent===true?0:1,missing:req.body?.permanent===true?1:0,cursorSource:source,cursorExternalId:externalId});
+  res.json({ok:true,job:updated});
+}));
+app.post('/api/reconciliation/jobs/:id/complete', requireKey, safeRoute(async(req,res)=>{
+  const job=await getReconciliationJob(req.params.id);
+  if(!job) return res.status(404).json({ok:false,error:'job_not_found'});
+  const completed=await setReconciliationJobStatus(job.id,'completed');
+  for(const source of job.source==='all'?['stredocesky','pardubicky','praha']:[job.source]) await recordReconciliationHealth(source,job.scope,{checked:completed.checked_count,updated:completed.updated_count,failed:completed.failed_count,missing:completed.missing_count});
+  res.json({ok:true,job:completed});
+}));
+
+app.get('/api/admin/reconciliation',requireAdmin,safeRoute(async(req,res)=>res.json({ok:true,...await getReconciliationOverview()})));
+app.get('/api/admin/reconciliation/audit',requireAdmin,safeRoute(async(req,res)=>res.json({ok:true,dry_run:true,...await reconciliationDryRunAudit()})));
+app.post('/api/admin/reconciliation/jobs',requireAdmin,safeRoute(async(req,res)=>{
+  const request=reconciliationRequest(req.body);
+  if(!request) return res.status(400).json({ok:false,error:'bad_reconciliation_request'});
+  const priority=request.scope==='active'?100:request.scope==='full'?1:10;
+  const job=await createReconciliationJob({id:crypto.randomUUID(),...request,priority,requestedBy:req.auth.user.username});
+  await insertAudit({userId:req.auth.user.id,username:req.auth.user.username,action:'reconciliation_job_created',details:JSON.stringify({job_id:job.id,source:job.source,scope:job.scope,dry_run:job.dry_run}),ip:getClientIp(req)});
+  res.json({ok:true,job});
+}));
+app.post('/api/admin/reconciliation/jobs/:id/pause',requireAdmin,safeRoute(async(req,res)=>{
+  const job=await setReconciliationJobStatus(req.params.id,'paused');
+  if(!job) return res.status(404).json({ok:false,error:'job_not_found'});
+  res.json({ok:true,job});
+}));
+app.post('/api/admin/reconciliation/jobs/:id/resume',requireAdmin,safeRoute(async(req,res)=>{
+  const job=await setReconciliationJobStatus(req.params.id,'queued');
+  if(!job) return res.status(404).json({ok:false,error:'job_not_found'});
+  res.json({ok:true,job});
 }));
 app.post('/api/admin/station-assignment-audit',requireAdmin,safeRoute(async(req,res)=>{
   const apply=req.body?.apply===true;
@@ -2714,12 +2797,14 @@ if (!isClosed) {
 
       if ((prahaSource || pardubickySource) && prev && prev.content_hash && prev.content_hash === it.contentHash) {
         await touchEventLastSeen(prev.id);
+        await markEventSeenInSource(prev.id,{sourceStatus:statusAnalysis.label,normalizedStatus:isClosed?'completed':statusAnalysis.source==='source_estimated_unknown'?'unknown':'active'});
         accepted++;
         unchanged++;
         continue;
       }
 
       await upsertEvent(ev);
+      await markEventSeenInSource(ev.id,{sourceStatus:statusAnalysis.label,normalizedStatus:isClosed?'completed':statusAnalysis.source==='source_estimated_unknown'||statusAnalysis.source==='unknown'?'unknown':'active'});
       if (pardubickySource) await updateEventSourceDetails(ev.id, {
         reportedAt: it.reportedAt || it.pubDate, subtype: it.subtype, district: it.district,
         cityPart: it.cityPart, street: it.street, respondingUnits: it.respondingUnits,
@@ -3311,6 +3396,7 @@ app.post("/api/admin/events/:id/manual", requireAdmin, safeRoute(async (req, res
       startTimeIso,
       endTimeIso,
       durationMin,
+      manualOverrideReason: String(req.body?.manualOverrideReason || req.body?.reason || '').slice(0,500),
       lat: manualLat,
       lon: manualLon,
       clearCoords
