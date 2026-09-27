@@ -94,6 +94,24 @@ export function stableSourceContentHash(value) {
   return crypto.createHash("sha256").update(JSON.stringify(ordered)).digest("hex");
 }
 
+export function normalizeCentralFeedEvent(item) {
+  const sourceStatus = clean(item?.statusText);
+  const normalizedStatus = normalizeSourceStatus(sourceStatus, { source: "stredocesky" });
+  const description = String(item?.descriptionRaw || item?.descriptionText || "");
+  const endLabel = description.match(/ukončen[ií]\s*:\s*([^<\n]+)/i)?.[1] || null;
+  const endedAt = normalizedStatus === "completed" ? parseCzechSourceTime(endLabel) : null;
+  const district = clean(description.match(/okres\s+([^<\n]+)/i)?.[1]) || null;
+  const normalized = {
+    source: "stredocesky", externalId: String(item?.id || ""), sourceUrl: canonicalCentralUrl(item?.id) || item?.link || null,
+    sourceStatus, normalizedStatus, title: clean(item?.title), description: item?.descriptionRaw || null,
+    eventType: item?.eventType || mapCentralType(item?.title), subtype: null, alarmLevel: null,
+    region: "Středočeský kraj", district, city: item?.cityText || item?.placeText || null,
+    cityPart: null, street: null, respondingUnits: [], sourceUpdatedAt: item?.pubDate || null, reportedAt: null,
+    endedAt, endedAtAccuracy: endedAt ? "official" : "unknown", lat: null, lon: null,
+  };
+  return { ...normalized, contentHash: stableSourceContentHash(normalized) };
+}
+
 export function parseCentralHistoricalDetail(html, { externalId } = {}) {
   const root = parseHtml(String(html || ""));
   const rows = root.querySelectorAll("#result_list tbody tr, table tbody tr");
@@ -150,7 +168,7 @@ export function buildSourceAdapters({ fetchText, now = () => new Date().toISOStr
       normalizeEvent: value => value,
       async fetchCurrentEvents(url = CENTRAL_FEED_URL) {
         const response = await fetchText(url);
-        return parseRssXml(response.body, { maxItems: 100 });
+        return parseRssXml(response.body, { maxItems: 100 }).map(normalizeCentralFeedEvent);
       },
       async fetchEventByExternalId(id) {
         const response = await fetchText(canonicalCentralUrl(id));

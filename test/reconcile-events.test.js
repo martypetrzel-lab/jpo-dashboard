@@ -29,6 +29,36 @@ test('worker fetches a historical detail, applies it once and logs no API key',a
   assert.ok(logs.some(line=>line.includes('status_changes=1')));assert.ok(logs.every(line=>!line.includes('top-secret-key')));
 });
 
+test('current Central feed reconciles an event without requesting its blocked historical detail',async()=>{
+  const rss=`<?xml version="1.0" encoding="UTF-8"?>
+    <rss version="2.0"><channel><title>Zásahy</title><item>
+      <title>technická pomoc - Ledce</title>
+      <link>https://pkr.kr-stredocesky.cz/pkr/zasahy-jpo/?id=203974</link>
+      <guid>RSS_FEED_203974</guid>
+      <pubDate>Sun, 27 Sep 2026 04:02:00 GMT</pubDate>
+      <description><![CDATA[Stav: ukončená<br>Ledce<br>okres Mladá Boleslav<br>ukončení: 27. září 2026, 06:02]]></description>
+    </item></channel></rss>`;
+  let candidatePages=0,historyRequests=0;const observations=[];
+  const fetchImpl=async(url,options={})=>{
+    const text=String(url);
+    if(text.endsWith('/feed.xml'))return new Response(rss,{status:200});
+    if(text.includes('/zasahy-jpo/?id=')){historyRequests++;throw new Error('blocked detail');}
+    const path=new URL(url).pathname;
+    if(path.endsWith('/jobs/claim'))return json({ok:true,job:{id:'job-feed',source:'stredocesky',scope:'active',dry_run:false}});
+    if(path.endsWith('/candidates'))return json({ok:true,items:candidatePages++===0?[{source:'stredocesky',external_id:'RSS_FEED_203974'}]:[]});
+    if(path.endsWith('/apply')){observations.push(JSON.parse(options.body).observation);return json({ok:true,result:{updated:true,statusChanged:true}});}
+    if(path.endsWith('/complete'))return json({ok:true,job:{id:'job-feed'}});
+    throw new Error('unexpected URL '+url);
+  };
+  const ok=await runReconciliation({env:{FIREWATCH_INGEST_URL:'https://firewatchcz.cz/api/ingest',FIREWATCH_API_KEY:'secret',RECONCILE_SCOPE:'active',RECONCILE_SOURCE:'stredocesky'},fetchImpl,agentFactory,delayImpl:async()=>{},logger:{info(){},error(){}}});
+  assert.equal(ok,true);
+  assert.equal(historyRequests,0);
+  assert.equal(observations.length,1);
+  assert.equal(observations[0].normalizedStatus,'completed');
+  assert.equal(observations[0].reportedAt,null);
+  assert.equal(observations[0].endedAt,'2026-09-27T04:02:00.000Z');
+});
+
 test('permanent source 404 is recorded without applying a completed state',async()=>{
   let candidatePages=0,failures=0,applies=0;
   const fetchImpl=async(url)=>{

@@ -4,7 +4,7 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   normalizeSourceStatus, canonicalCentralUrl, parseCentralHistoricalDetail,
-  stableSourceContentHash, buildSourceAdapters,
+  stableSourceContentHash, buildSourceAdapters, normalizeCentralFeedEvent,
 } from "../reconciliation.js";
 
 const fixture = fs.readFileSync(fileURLToPath(new URL("./fixtures/stredocesky-history-203416.html", import.meta.url)), "utf8");
@@ -26,6 +26,22 @@ test("Central Bohemian historical detail uses canonical stable ID and authoritat
   assert.equal(event.district, "Rakovník");
   assert.equal(event.alarmLevel, 3);
   assert.equal(event.sourceUpdatedAt, "2026-09-21T14:00:00.000Z");
+});
+
+test("Central current feed keeps pubDate separate and parses an official end", () => {
+  const event = normalizeCentralFeedEvent({
+    id: "RSS_FEED_203974",
+    title: "technická pomoc - Ledce",
+    pubDate: "2026-09-27T04:02:00.000Z",
+    statusText: "ukončená",
+    cityText: "Ledce",
+    descriptionRaw: "Stav: ukončená<br>okres Mladá Boleslav<br>ukončení: 27. září 2026, 06:02",
+  });
+  assert.equal(event.normalizedStatus, "completed");
+  assert.equal(event.sourceUpdatedAt, "2026-09-27T04:02:00.000Z");
+  assert.equal(event.reportedAt, null);
+  assert.equal(event.endedAt, "2026-09-27T04:02:00.000Z");
+  assert.equal(event.endedAtAccuracy, "official");
 });
 
 test("source content hashes are stable, field-sensitive and ignore unrelated values", () => {

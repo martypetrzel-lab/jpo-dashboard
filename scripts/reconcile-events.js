@@ -2,9 +2,9 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { fetch as undiciFetch } from "undici";
 import { fetchRssDetailed, sanitizeRssError } from "../rss-worker.js";
-import { buildSourceAdapters } from "../reconciliation.js";
+import { buildSourceAdapters, normalizeCentralFeedEvent } from "../reconciliation.js";
 import { PRAHA_ATOM_URL } from "../prague-atom.js";
-import { readPushConfig } from "./rss-push.js";
+import { readPushConfig, gatewayUrl, buildGatewayPayload } from "./rss-push.js";
 
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const validScopes = new Set(["active", "recent48", "last7", "last30", "full"]);
@@ -60,6 +60,7 @@ export async function runReconciliation({
     const fetchText = createSourceTextFetcher({ fetchImpl, sleepImpl, agentFactory });
     const adapters = buildSourceAdapters({ fetchText });
     let prahaById = null;
+    let centralById = null;
     while (true) {
       const page = await postApi(config, "/api/reconciliation/candidates", { job_id: job.id, limit: batchSize }, { fetchImpl, sleepImpl, agentFactory });
       if (page?.error === "job_paused") {
@@ -74,7 +75,27 @@ export async function runReconciliation({
         if (counters.checked > 0) await delayImpl(delayMs);
         try {
           let observation = null;
-          if (candidate.source === "praha") {
+          if (candidate.source === "stredocesky") {
+            if (!centralById) {
+              let current = [];
+              try {
+                current = await adapter.fetchCurrentEvents();
+              }
+              catch {
+                try {
+                  const gateway = await fetchText(gatewayUrl(Date.now(), config.rss2jsonApiKey));
+                  current = buildGatewayPayload(gateway.body).items.map(normalizeCentralFeedEvent);
+                } catch {
+                  current = [];
+                }
+              }
+              counters.fetched += current.length;
+              centralById = new Map(current.map(item => [String(item.externalId), item]));
+            }
+            observation = centralById.get(String(candidate.external_id))
+              || await adapter.fetchEventByExternalId(candidate.external_id, candidate);
+            if (!centralById.has(String(candidate.external_id))) counters.fetched++;
+          } else if (candidate.source === "praha") {
             if (!prahaById) {
               const current = await adapter.fetchCurrentEvents(PRAHA_ATOM_URL);
               counters.fetched += current.length;
