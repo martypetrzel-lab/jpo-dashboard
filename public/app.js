@@ -1068,6 +1068,8 @@ function majorReasonText(it) {
 }
 
 function statusLabelForEvent(it) {
+  if (it?.manual_status_override === "active") return "ručně nastaveno: probíhá zásah";
+  if (it?.manual_status_override === "completed") return "ručně nastaveno: ukončená";
   if (it?.status_source === "explicit_open" || it?.statusSource === "explicit_open") return "probíhá zásah";
   if (it?.status_source === "explicit_closed" || it?.statusSource === "explicit_closed") return "ukončená";
   if (it?.status_source === "source_estimated_open") return "pravděpodobně probíhá";
@@ -3583,6 +3585,8 @@ async function openEventDetailModal(id) {
         ${eventDetailLine("Typ", `${meta.emoji} ${meta.label || ev.event_type || ""}`)}
         ${eventDetailLine("Podtyp", ev.subtype || "—")}
         ${eventDetailLine("Stav", statusLabelForEvent(ev))}
+        ${ev.manual_status_override ? eventDetailLine("Stav zdroje", ev.source_status || "neznámý") : ""}
+        ${ev.source_record_unavailable ? eventDetailLine("Ověření zdroje", "Zdrojový záznam již není dostupný; poslední známý stav byl zachován.") : ev.reconciliation_error ? eventDetailLine("Ověření zdroje", "Dočasně se nepodařilo ověřit; poslední známý stav byl zachován.") : ""}
         ${eventDetailLine("Zdroj / oblast", `${sourceLabel(ev)}${ev.region ? ` · ${ev.region}` : ""}`)}
         ${eventDetailLine("Stanice", ev.station_id ? (ev.station_name || ev.station_id) : "Stanice není v databázi")}
         ${eventDetailLine("Jednotky uvedené zdrojem", Array.isArray(ev.responding_units) && ev.responding_units.length ? ev.responding_units.join(", ") : "—")}
@@ -5448,6 +5452,7 @@ function toggleTvMode() {
     openModal("admin");
     await adminLoadAll();
     await adminLoadVisitsStats();
+    await loadReconciliationAdmin();
   });
   document.getElementById("audioBtn")?.addEventListener("click", () => openModal("audio"));
   document.getElementById("briefingBtn")?.addEventListener("click", runBriefing);
@@ -5581,4 +5586,52 @@ document.getElementById('previewGeoRepairBtn')?.addEventListener('click',async()
 document.getElementById('applyGeoRepairBtn')?.addEventListener('click',async()=>{
   if(!geoRepairPreview?.can_apply)return;const preview=geoRepairPreview;
   try{const response=await apiFetch('/api/admin/geocode-repair/'+encodeURIComponent(preview.id),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dry_run:false,expected:preview.expected,proposal_fingerprint:preview.proposal_fingerprint})});const data=await response.json();if(!response.ok)throw new Error(data.error);msg('coordsMsg',data.applied?'Oprava uložena s auditním záznamem.':'Oprava nebyla provedena.',data.applied);geoRepairPreview=null;document.getElementById('applyGeoRepairBtn').disabled=true;await loadAll();await loadMissingCoords();}catch(error){msg('coordsMsg',error.message,false);}
+});
+
+async function loadReconciliationAdmin() {
+  const tbody=document.getElementById('reconciliationJobsTbody');
+  const status=document.getElementById('reconciliationStatus');
+  if(!tbody)return;
+  try{
+    const response=await fetch('/api/admin/reconciliation',{credentials:'include',cache:'no-store'});
+    const data=await response.json();if(!response.ok||!data.ok)throw new Error(data.error||'Načtení selhalo');
+    tbody.innerHTML=(data.jobs||[]).map(job=>`<tr>
+      <td>${escapeHtml(job.source)} · ${escapeHtml(job.scope)}${job.dry_run?' · náhled':''}</td>
+      <td>${escapeHtml(job.status)}</td>
+      <td>${Number(job.checked_count||0)} / ${Number(job.total_count||0)}</td>
+      <td>${Number(job.updated_count||0)} (${Number(job.status_change_count||0)} stavů)</td>
+      <td>${Number(job.unchanged_count||0)}</td><td>${Number(job.failed_count||0)} / ${Number(job.missing_count||0)}</td>
+      <td>${job.status==='running'?`<button class="btn miniBtn reconciliationPause" data-id="${escapeHtml(job.id)}">Pozastavit</button>`:job.status==='paused'?`<button class="btn miniBtn reconciliationResume" data-id="${escapeHtml(job.id)}">Pokračovat</button>`:'—'}</td>
+    </tr>`).join('')||'<tr><td colspan="7">Zatím nebyla spuštěna žádná kontrola.</td></tr>';
+    document.getElementById('reconciliationTransitions').innerHTML=(data.transitions||[]).map(item=>`<div><b>${escapeHtml(item.event_id)}</b>: ${escapeHtml(item.previous_normalized_status||'—')} → ${escapeHtml(item.new_normalized_status||'—')} · ${escapeHtml(new Date(item.checked_at).toLocaleString('cs-CZ'))}</div>`).join('')||'Bez zaznamenaných změn.';
+    if(status)status.textContent='Stav synchronizace byl obnoven.';
+  }catch(error){if(status)status.textContent=`Stav se nepodařilo načíst: ${String(error.message||error)}`;}
+}
+
+async function createReconciliationAdminJob({active=false}={}){
+  const status=document.getElementById('reconciliationStatus');
+  const body={source:active?'all':document.getElementById('reconciliationSource')?.value||'all',scope:active?'active':document.getElementById('reconciliationScope')?.value||'recent48',dry_run:active?false:document.getElementById('reconciliationDryRun')?.checked===true};
+  try{
+    if(status)status.textContent='Zařazuji kontrolu do fronty…';
+    const response=await fetch('/api/admin/reconciliation/jobs',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify(body)});
+    const data=await response.json();if(!response.ok||!data.ok)throw new Error(data.error||'Spuštění selhalo');
+    if(status)status.textContent=`Kontrola byla zařazena. Zpracuje ji nejbližší bezpečný běh (${data.job.id}).`;
+    await loadReconciliationAdmin();
+  }catch(error){if(status)status.textContent=`Kontrolu se nepodařilo zařadit: ${String(error.message||error)}`;}
+}
+
+document.getElementById('reconciliationStartBtn')?.addEventListener('click',()=>createReconciliationAdminJob());
+document.getElementById('reconciliationActiveBtn')?.addEventListener('click',()=>createReconciliationAdminJob({active:true}));
+document.getElementById('reconciliationRefreshBtn')?.addEventListener('click',loadReconciliationAdmin);
+document.getElementById('reconciliationAuditBtn')?.addEventListener('click',async()=>{
+  const status=document.getElementById('reconciliationStatus');
+  try{const response=await fetch('/api/admin/reconciliation/audit',{credentials:'include',cache:'no-store'});const data=await response.json();if(!response.ok||!data.ok)throw new Error(data.error||'Audit selhal');
+    status.textContent=`Audit pouze ke čtení: ${data.issues.length} podezřelých záznamů, ${data.duplicates.length} duplicitních dvojic zdroj + ID.`;
+  }catch(error){status.textContent=`Audit selhal: ${String(error.message||error)}`;}
+});
+document.getElementById('reconciliationJobsTbody')?.addEventListener('click',async event=>{
+  const button=event.target.closest('.reconciliationPause,.reconciliationResume');if(!button)return;
+  const action=button.classList.contains('reconciliationPause')?'pause':'resume';
+  const response=await fetch(`/api/admin/reconciliation/jobs/${encodeURIComponent(button.dataset.id)}/${action}`,{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:'{}'});
+  if(response.ok)await loadReconciliationAdmin();
 });

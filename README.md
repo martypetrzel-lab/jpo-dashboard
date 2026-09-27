@@ -197,3 +197,25 @@ RSS RFC datum s `+0000`, ISO se `Z` i RSS2JSON `YYYY-MM-DD HH:mm:ss` znamenají 
 Diagnostika bez zápisu: `node scripts/rss-time-audit.js` (veřejný vzorek maximálně 2000 záznamů) nebo přihlášený správce `GET /api/admin/time-diagnostics` (nejnovějších maximálně 5000; prvních 200 návrhů, bezpečné údaje o session timezone a `TZ`). Nejednoznačné historické ISO hodnoty nelze opravit přičtením dvou hodin. Při příštím skutečném importu stejných ID se datum opraví podle aktuálního RSS, původní časy/délka se jednou zachovají v `time_original_values`, včetně času zálohy. `time_model_version` a tato záloha umožňují opakování i individuální návrat po kontrole správcem. Migrace pouze přidává metadata, neposouvá historii hromadně. Staré archivní snapshoty se automaticky nepřepočítávají; nové souhrny a exporty vylučují neprokázané délky.
 
 U starší ručně upravované události, jejíž původ času už nelze doložit, se původní začátek uchová jako `legacy_manual_unverified` (případně obnoví z uložené zálohy při stejném RSS ID). Ve veřejném API a UI zůstává tento začátek neznámý a délka `—`; ruční ověření jej může výslovně potvrdit. Tím se neztrácí možná ruční oprava ani se nevydává neověřený údaj za přesný.
+
+## Synchronizace uložených událostí se zdroji
+
+Import není pouze přidávací. Po každém pětiminutovém importu workflow zkontroluje všechny události, které FireWatch stále vede jako aktivní. Samostatný workflow `.github/workflows/reconcile-events.yml` kontroluje každých 15 minut posledních 48 hodin, každou hodinu posledních 7 dní a v noci posledních 30 dní. Ruční běh nabízí zdroj, rozsah a bezpečný režim náhledu. Používá stejné GitHub Secrets `FIREWATCH_INGEST_URL=https://firewatchcz.cz/api/ingest` a `FIREWATCH_API_KEY=<stejná hodnota jako Railway API_KEY>`; žádná další tajná hodnota není potřeba.
+
+Stabilní identita je vždy `source + external_id`. Středočeský adaptér dohledává i starší položky přes oficiální `https://pkr.kr-stredocesky.cz/pkr/zasahy-jpo/?id=<ID>`, pardubický adaptér čte oficiální detail a Praha porovnává současný Atom feed. Praha neposkytuje historický detail, proto zmizení z feedu pouze označí ověření jako zastaralé a stav nemění. Totéž platí pro timeout, HTTP 5xx a chybu parsování. Potvrzené HTTP 404 zachová záznam i poslední stav a nastaví pouze příznak nedostupného zdrojového záznamu.
+
+Zdrojový stav se ukládá odděleně jako `source_status` a `normalized_status` (`active`, `completed`, `unknown`, `informational`). Ruční změna používá samostatné `manual_status_override`, důvod a čas; původní stav zdroje se neztrácí. Změny zdrojových polí mají stabilní hash a audit se seznamem skutečně změněných polí. Ruční poznámky, ověřené souřadnice, významnost a ruční přiřazení stanice se automaticky nepřepisují. Bez oficiálního konce se při synchronizaci uzavřené události nevytváří přesná délka.
+
+V administraci je panel **Synchronizace událostí se zdroji**. Nabízí kontrolu všech aktivních událostí s nejvyšší prioritou, náhled bez zápisu, kompletní historii, průběh, pozastavení a pokračování. Frontu zpracuje nejbližší GitHub Actions běh, takže rozsáhlá kontrola neblokuje webový proces. `GET /api/admin/reconciliation` vrací také bezpečné časy posledních úspěšných běhů pro jednotlivé zdroje a rozsahy. Akce **Audit databáze** pouze čte data a vypíše staré aktivní události, chybějící ID, neplatné délky, nesoulad krajů a případné duplicity.
+
+Lokální náhled lze spustit bez změny databáze:
+
+```powershell
+$env:FIREWATCH_INGEST_URL='https://firewatchcz.cz/api/ingest'
+$env:FIREWATCH_API_KEY='<stejná hodnota jako Railway API_KEY>'
+$env:RECONCILE_SCOPE='recent48'
+$env:RECONCILE_DRY_RUN='1'
+node scripts/reconcile-events.js
+```
+
+Skript provádí nejvýše dva síťové pokusy, používá omezené timeouty, prodlevu mezi zdrojovými detaily a vypíše jeden souhrn bez URL s přihlašovacími údaji, odpovědí serveru nebo API klíče. Kompletní testy používají uložené HTML/XML fixture a živé regionální servery nevolají.

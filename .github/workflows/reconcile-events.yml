@@ -1,0 +1,88 @@
+name: Reconcile source events
+
+on:
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: Rozsah kontroly
+        required: true
+        default: recent48
+        type: choice
+        options: [active, recent48, last7, last30, full]
+      source:
+        description: Zdroj
+        required: true
+        default: all
+        type: choice
+        options: [all, stredocesky, pardubicky, praha]
+      dry_run:
+        description: Pouze náhled změn
+        required: true
+        default: true
+        type: boolean
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+    - cron: '11 * * * *'
+    - cron: '23 2 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reconcile-source-events
+  cancel-in-progress: false
+
+jobs:
+  recent:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '7,22,37,52 * * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Reconcile source records
+        run: node scripts/reconcile-events.js
+        env:
+          FIREWATCH_INGEST_URL: ${{ secrets.FIREWATCH_INGEST_URL }}
+          FIREWATCH_API_KEY: ${{ secrets.FIREWATCH_API_KEY }}
+          RECONCILE_SCOPE: ${{ github.event_name == 'workflow_dispatch' && inputs.scope || 'recent48' }}
+          RECONCILE_SOURCE: ${{ github.event_name == 'workflow_dispatch' && inputs.source || 'all' }}
+          RECONCILE_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && '1' || '0' }}
+          RECONCILE_BATCH_SIZE: '40'
+          RECONCILE_DELAY_MS: '300'
+  weekly-window:
+    if: github.event_name == 'schedule' && github.event.schedule == '11 * * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: npm }
+      - run: npm ci
+      - run: node scripts/reconcile-events.js
+        env:
+          FIREWATCH_INGEST_URL: ${{ secrets.FIREWATCH_INGEST_URL }}
+          FIREWATCH_API_KEY: ${{ secrets.FIREWATCH_API_KEY }}
+          RECONCILE_SCOPE: last7
+          RECONCILE_BATCH_SIZE: '40'
+          RECONCILE_DELAY_MS: '350'
+  monthly-window:
+    if: github.event_name == 'schedule' && github.event.schedule == '23 2 * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: npm }
+      - run: npm ci
+      - run: node scripts/reconcile-events.js
+        env:
+          FIREWATCH_INGEST_URL: ${{ secrets.FIREWATCH_INGEST_URL }}
+          FIREWATCH_API_KEY: ${{ secrets.FIREWATCH_API_KEY }}
+          RECONCILE_SCOPE: last30
+          RECONCILE_BATCH_SIZE: '30'
+          RECONCILE_DELAY_MS: '500'

@@ -42,3 +42,10 @@ test("adapters expose historical capability without treating feed disappearance 
   const event = await adapters.stredocesky.fetchEventByExternalId("203416");
   assert.equal(event.normalizedStatus, "completed");
 });
+
+test("administrator UI exposes safe reconciliation controls and progress", () => {
+  const html=fs.readFileSync(fileURLToPath(new URL('../public/index.html',import.meta.url)),'utf8');
+  const js=fs.readFileSync(fileURLToPath(new URL('../public/app.js',import.meta.url)),'utf8');
+  for(const id of ['reconciliationSource','reconciliationScope','reconciliationDryRun','reconciliationStartBtn','reconciliationActiveBtn','reconciliationJobsTbody'])assert.match(html,new RegExp(`id=["']${id}["']`));
+  assert.match(js,/\/api\/admin\/reconciliation\/jobs/);assert.match(js,/Pozastavit/);assert.match(js,/Pokračovat/);
+});

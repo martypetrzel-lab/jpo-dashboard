@@ -1106,6 +1106,25 @@
           </div>
         </section>
 
+        <section class="adminSection reconciliationAdminBox">
+          <div class="sectionHead"><div>
+            <h3>Synchronizace událostí se zdroji</h3>
+            <p>Kontroluje uložené události podle jejich stabilního ID. Chybějící položka v RSS sama o sobě událost neukončí.</p>
+          </div></div>
+          <div class="majorEventsControls" style="flex-wrap:wrap">
+            <label>Zdroj <select id="reconciliationSource"><option value="all">Všechny zdroje</option><option value="stredocesky">Středočeský kraj</option><option value="pardubicky">Pardubický kraj</option><option value="praha">Praha</option></select></label>
+            <label>Rozsah <select id="reconciliationScope"><option value="recent48">Posledních 48 hodin</option><option value="last7">Posledních 7 dní</option><option value="last30">Posledních 30 dní</option><option value="full">Kompletní historie</option></select></label>
+            <label><input id="reconciliationDryRun" type="checkbox" checked> Pouze náhled změn</label>
+            <button id="reconciliationStartBtn" class="btn primary" type="button">Spustit kontrolu</button>
+            <button id="reconciliationActiveBtn" class="btn" type="button">Zkontrolovat všechny aktivní nyní</button>
+            <button id="reconciliationAuditBtn" class="btn" type="button">Audit databáze</button>
+            <button id="reconciliationRefreshBtn" class="btn" type="button">Obnovit stav</button>
+          </div>
+          <p id="reconciliationStatus" class="hint" aria-live="polite"></p>
+          <div class="tableWrap"><table><thead><tr><th>Zdroj / rozsah</th><th>Stav</th><th>Průběh</th><th>Změněno</th><th>Beze změny</th><th>Chyby / nenalezeno</th><th>Akce</th></tr></thead><tbody id="reconciliationJobsTbody"></tbody></table></div>
+          <details><summary>Poslední změny stavů</summary><div id="reconciliationTransitions" class="hint"></div></details>
+        </section>
+
 
 Události bez souřadnic</div>
           <div class="hint">Doplnění souřadnic ručně nebo kliknutím do mapy. Projeví se všude (mapa, simulace, export, statistiky).</div>

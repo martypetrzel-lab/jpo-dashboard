@@ -50,9 +50,19 @@ jobs:
           FIREWATCH_INGEST_URL: ${{ secrets.FIREWATCH_INGEST_URL }}
           FIREWATCH_API_KEY: ${{ secrets.FIREWATCH_API_KEY }}
           PARDUBICKY_DETAIL_DELAY_MS: '250'
+      - name: Reconcile every currently active event
+        id: reconcile
+        continue-on-error: true
+        run: node scripts/reconcile-events.js
+        env:
+          FIREWATCH_INGEST_URL: ${{ secrets.FIREWATCH_INGEST_URL }}
+          FIREWATCH_API_KEY: ${{ secrets.FIREWATCH_API_KEY }}
+          RECONCILE_SCOPE: active
+          RECONCILE_BATCH_SIZE: '40'
+          RECONCILE_DELAY_MS: '250'
       - name: Check independent source imports
         if: always()
         shell: bash
         run: |
-          echo "stredocesky=${{ steps.stredocesky.outcome }} praha=${{ steps.praha.outcome }} pardubicky=${{ steps.pardubicky.outcome }}"
-          test "${{ steps.stredocesky.outcome }}" = success -a "${{ steps.praha.outcome }}" = success -a "${{ steps.pardubicky.outcome }}" = success
+          echo "stredocesky=${{ steps.stredocesky.outcome }} praha=${{ steps.praha.outcome }} pardubicky=${{ steps.pardubicky.outcome }} reconciliation=${{ steps.reconcile.outcome }}"
+          test "${{ steps.stredocesky.outcome }}" = success -a "${{ steps.praha.outcome }}" = success -a "${{ steps.pardubicky.outcome }}" = success -a "${{ steps.reconcile.outcome }}" = success
