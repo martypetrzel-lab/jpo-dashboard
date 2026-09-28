@@ -100,3 +100,22 @@ test('permanent source 404 is recorded without applying a completed state',async
   const ok=await runReconciliation({env:{FIREWATCH_INGEST_URL:'https://firewatchcz.cz/api/ingest',FIREWATCH_API_KEY:'secret',RECONCILE_SCOPE:'active',RECONCILE_SOURCE:'stredocesky'},fetchImpl,agentFactory,delayImpl:async()=>{},logger:{info(){},error(){}}});
   assert.equal(ok,true);assert.equal(failures,1);assert.equal(applies,0);
 });
+
+test('repeated detail transport failures stop further source requests and mark older events unverified',async()=>{
+  let candidatePages=0,detailRequests=0;const categories=[];
+  const fetchImpl=async(url,options={})=>{
+    const text=String(url);
+    if(text.endsWith('/feed.xml'))return new Response('<?xml version="1.0"?><rss version="2.0"><channel><title>Zásahy</title></channel></rss>',{status:200});
+    if(text.includes('/zasahy-jpo/?id=')){detailRequests++;throw new Error('source network unavailable');}
+    const path=new URL(url).pathname;
+    if(path.endsWith('/jobs/claim'))return json({ok:true,job:{id:'job-blocked',source:'stredocesky',scope:'last7',dry_run:false}});
+    if(path.endsWith('/candidates'))return json({ok:true,items:candidatePages++===0?['1','2','3','4'].map(id=>({source:'stredocesky',external_id:id})):[]});
+    if(path.endsWith('/failure')){categories.push(JSON.parse(options.body).category);return json({ok:true});}
+    if(path.endsWith('/complete'))return json({ok:true,job:{id:'job-blocked'}});
+    throw new Error('unexpected URL '+url);
+  };
+  const ok=await runReconciliation({env:{FIREWATCH_INGEST_URL:'https://firewatchcz.cz/api/ingest',FIREWATCH_API_KEY:'secret',RECONCILE_SCOPE:'last7',RECONCILE_SOURCE:'stredocesky'},fetchImpl,agentFactory,sleepImpl:async()=>{},delayImpl:async()=>{},logger:{info(){},error(){}}});
+  assert.equal(ok,true);
+  assert.equal(detailRequests,4);
+  assert.deepEqual(categories,['network_error','network_error','source_unverified','source_unverified']);
+});

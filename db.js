@@ -267,6 +267,9 @@ export async function initDb() {
     source TEXT NOT NULL, job_type TEXT NOT NULL, last_success_at TIMESTAMPTZ, summary JSONB NOT NULL DEFAULT '{}'::jsonb,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY(source,job_type)
   )`);
+  // Older versions wrote last_success_at even when the same attempt failed.
+  await pool.query(`UPDATE reconciliation_health SET last_success_at=NULL
+    WHERE last_success_at=updated_at AND (summary->>'failed') ~ '^[0-9]+$' AND (summary->>'failed')::int>0`);
 
 
   
@@ -2455,7 +2458,12 @@ export async function getReconciliationOverview() {
 }
 
 export async function recordReconciliationHealth(source, jobType, summary = {}) {
-  await pool.query(`INSERT INTO reconciliation_health(source,job_type,last_success_at,summary) VALUES($1,$2,NOW(),$3::jsonb) ON CONFLICT(source,job_type) DO UPDATE SET last_success_at=NOW(),summary=EXCLUDED.summary,updated_at=NOW()`, [source,jobType,JSON.stringify(summary)]);
+  const succeeded = Number(summary.failed || 0) === 0;
+  await pool.query(`INSERT INTO reconciliation_health(source,job_type,last_success_at,summary)
+    VALUES($1,$2,CASE WHEN $4 THEN NOW() ELSE NULL END,$3::jsonb)
+    ON CONFLICT(source,job_type) DO UPDATE SET
+      last_success_at=CASE WHEN $4 THEN NOW() ELSE reconciliation_health.last_success_at END,
+      summary=EXCLUDED.summary,updated_at=NOW()`, [source,jobType,JSON.stringify(summary),succeeded]);
 }
 
 export async function reconciliationDryRunAudit() {

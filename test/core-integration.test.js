@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { once } from "node:events";
 import { createTestDatabase } from "../test-support/database.js";
-import { pool, getEventMeta, autoCloseStaleOpenEvents, setCachedGeocode, initDb, getStatsFiltered, setSetting, auditCrossRegionStationAssignments, reconcileSourceObservation, recordReconciliationFailure, createReconciliationJob, claimReconciliationJob, updateReconciliationJob, getReconciliationJob } from "../db.js";
+import { pool, getEventMeta, autoCloseStaleOpenEvents, setCachedGeocode, initDb, getStatsFiltered, setSetting, auditCrossRegionStationAssignments, reconcileSourceObservation, recordReconciliationFailure, recordReconciliationHealth, createReconciliationJob, claimReconciliationJob, updateReconciliationJob, getReconciliationJob } from "../db.js";
 import { stableSourceContentHash } from "../reconciliation.js";
 import { parsePrahaAtomXml } from "../prague-atom.js";
 import fs from "node:fs";
@@ -253,6 +253,24 @@ test("temporary source failure preserves state and permanent 404 only marks sour
   let row=(await pool.query("SELECT * FROM events WHERE id='reconcile:one'")).rows[0];assert.equal(row.is_closed,before.is_closed);assert.equal(row.normalized_status,before.normalized_status);assert.equal(row.source_record_unavailable,false);
   await recordReconciliationFailure({source:'stredocesky',externalId:'900001',category:'source_record_unavailable',permanent:true});
   row=(await pool.query("SELECT * FROM events WHERE id='reconcile:one'")).rows[0];assert.equal(row.is_closed,before.is_closed);assert.equal(row.source_record_unavailable,true);
+});
+
+test("reconciliation health records failed attempts without claiming a new success",async()=>{
+  await recordReconciliationHealth('stredocesky','last7',{checked:2,failed:0});
+  const successful=(await pool.query("SELECT last_success_at FROM reconciliation_health WHERE source='stredocesky' AND job_type='last7'")).rows[0].last_success_at;
+  await recordReconciliationHealth('stredocesky','last7',{checked:5,failed:3});
+  const failed=(await pool.query("SELECT last_success_at,summary FROM reconciliation_health WHERE source='stredocesky' AND job_type='last7'")).rows[0];
+  assert.equal(new Date(failed.last_success_at).toISOString(),new Date(successful).toISOString());
+  assert.equal(failed.summary.failed,3);
+  await createReconciliationJob({id:'dry-health',source:'stredocesky',scope:'last7',dryRun:true});
+  assert.equal((await jsonRequest('/api/reconciliation/jobs/claim',{job_id:'dry-health',source:'stredocesky',scope:'last7',dry_run:true})).status,200);
+  assert.equal((await jsonRequest('/api/reconciliation/jobs/dry-health/complete',{})).status,200);
+  const afterPreview=(await pool.query("SELECT last_success_at,summary FROM reconciliation_health WHERE source='stredocesky' AND job_type='last7'")).rows[0];
+  assert.equal(new Date(afterPreview.last_success_at).toISOString(),new Date(successful).toISOString());
+  assert.equal(afterPreview.summary.failed,3);
+  await pool.query("UPDATE reconciliation_health SET last_success_at=updated_at WHERE source='stredocesky' AND job_type='last7'");
+  await initDb();
+  assert.equal((await pool.query("SELECT last_success_at FROM reconciliation_health WHERE source='stredocesky' AND job_type='last7'")).rows[0].last_success_at,null);
 });
 
 test("same external ID remains separate across sources and queued job can be claimed only once",async()=>{

@@ -61,6 +61,8 @@ export async function runReconciliation({
     const adapters = buildSourceAdapters({ fetchText });
     let prahaById = null;
     let centralById = null;
+    let centralDetailFailures = 0;
+    let centralDetailBlocked = false;
     while (true) {
       const page = await postApi(config, "/api/reconciliation/candidates", { job_id: job.id, limit: batchSize }, { fetchImpl, sleepImpl, agentFactory });
       if (page?.error === "job_paused") {
@@ -72,7 +74,7 @@ export async function runReconciliation({
       for (const candidate of page.items) {
         const adapter = adapters[candidate.source];
         if (!adapter) { counters.skipped++; continue; }
-        if (counters.checked > 0) await delayImpl(delayMs);
+        if (counters.checked > 0 && !(candidate.source === "stredocesky" && centralDetailBlocked)) await delayImpl(delayMs);
         try {
           let observation = null;
           if (candidate.source === "stredocesky") {
@@ -92,9 +94,23 @@ export async function runReconciliation({
               counters.fetched += current.length;
               centralById = new Map(current.map(item => [String(item.externalId), item]));
             }
-            observation = centralById.get(String(candidate.external_id))
-              || await adapter.fetchEventByExternalId(candidate.external_id, candidate);
-            if (!centralById.has(String(candidate.external_id))) counters.fetched++;
+            observation = centralById.get(String(candidate.external_id)) || null;
+            if (!observation) {
+              if (centralDetailBlocked) throw Object.assign(new Error("source_detail_unverified"), { rssType: "source_unverified" });
+              try {
+                observation = await adapter.fetchEventByExternalId(candidate.external_id, candidate);
+                counters.fetched++;
+                centralDetailFailures = 0;
+              } catch (error) {
+                const safe = sanitizeRssError(error);
+                if (["network_error", "connect_timeout", "timeout"].includes(safe.type)
+                    || (safe.type === "http_status" && (safe.httpStatus === 429 || safe.httpStatus >= 500))) {
+                  centralDetailFailures++;
+                  if (centralDetailFailures >= 2) centralDetailBlocked = true;
+                } else centralDetailFailures = 0;
+                throw error;
+              }
+            }
           } else if (candidate.source === "praha") {
             if (!prahaById) {
               const current = await adapter.fetchCurrentEvents(PRAHA_ATOM_URL);

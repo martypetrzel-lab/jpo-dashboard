@@ -2567,7 +2567,7 @@ app.post('/api/reconciliation/jobs/:id/complete', requireKey, safeRoute(async(re
   const job=await getReconciliationJob(req.params.id);
   if(!job) return res.status(404).json({ok:false,error:'job_not_found'});
   const completed=await setReconciliationJobStatus(job.id,'completed');
-  for(const source of job.source==='all'?['stredocesky','pardubicky','praha']:[job.source]) await recordReconciliationHealth(source,job.scope,{checked:completed.checked_count,updated:completed.updated_count,failed:completed.failed_count,missing:completed.missing_count});
+  if(!job.dry_run) for(const source of job.source==='all'?['stredocesky','pardubicky','praha']:[job.source]) await recordReconciliationHealth(source,job.scope,{checked:completed.checked_count,updated:completed.updated_count,failed:completed.failed_count,missing:completed.missing_count});
   res.json({ok:true,job:completed});
 }));
 
