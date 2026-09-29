@@ -2720,7 +2720,7 @@ if (durationMin == null && isClosed && endIso) {
 
 // Bez doloženého začátku lze odhadovat pouze od neměnného prvního zachycení,
 // a jen pokud byl první pozorovaný stav výslovně otevřený.
-if (durationMin == null && firstSeenWasOpen === true) {
+if (durationMin == null && firstSeenWasOpen === true && (isClosed || !startIso)) {
   if (!isClosed) {
     durationSource = "first_seen_open_estimate";
     durationIsEstimate = true;

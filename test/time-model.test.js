@@ -4,6 +4,21 @@ import {pragueLocalToUtcIso,parseTimesFromDescription} from '../server.js';
 import {buildGatewayPayload,buildRssPayload} from '../scripts/rss-push.js';
 import {rssDateKeyInPrague} from '../rss-worker.js';import '../public/event-utils.js';
 const iso='2026-09-17T14:30:00.000Z';
+test('API and browser use the verified live start instead of first-seen estimates',()=>{
+ const now=Date.parse(iso)+90*60000;
+ const row={source_kind:'rss',is_closed:false,start_time_iso:iso,start_time_source:'rss_description',first_seen_at:new Date(now-5*60000).toISOString(),first_seen_was_open:true,duration_source:'first_seen_open_estimate',duration_is_estimate:true};
+ const result=annotateEventTime(row,now);
+ assert.equal(result.duration_min,90);assert.equal(result.duration_is_estimate,false);
+ assert.equal(FireWatchData.duration(result,now),90);
+ assert.equal(durationForEvent({...row,duration_source:null,duration_is_estimate:false},now),90);
+ assert.equal(durationForEvent({...row,start_time_iso:new Date(now+60000).toISOString()},now),null);
+});
+test('first-minute live estimate metadata survives API normalization',()=>{
+ const now=Date.parse(iso)+30000;
+ const result=annotateEventTime({source_kind:'rss',is_closed:false,first_seen_at:iso,first_seen_was_open:true,duration_source:'first_seen_open_estimate',duration_is_estimate:true},now);
+ assert.equal(result.duration_min,null);assert.equal(result.duration_source,'first_seen_open_estimate');
+ assert.equal(FireWatchData.duration(result,now+60000),1);
+});
 test('RFC UTC, gateway bare UTC and ISO converge without a second shift',()=>{
  for(const raw of ['Thu, 17 Sep 2026 14:30:00 +0000','2026-09-17 14:30:00',iso])assert.equal(normalizeFeedTimestamp(raw),iso);
  const parts=new Intl.DateTimeFormat('cs-CZ',{timeZone:'Europe/Prague',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(new Date(iso));assert.equal(parts,'16:30');

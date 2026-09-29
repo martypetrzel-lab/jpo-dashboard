@@ -2324,7 +2324,7 @@ export async function reconcileSourceObservation(observation, { dryRun = false, 
       const difference = Math.floor((Date.parse(end || "") - Date.parse(start || "")) / 60000);
       return Number.isFinite(difference) && difference > 0 && difference <= MAX_DURATION_MINUTES ? difference : null;
     };
-    const missingOpenEstimate = !current.is_closed && current.first_seen_was_open === true
+    const missingOpenEstimate = !current.is_closed && !hasTrustedStart(current) && current.first_seen_was_open === true
       && current.duration_source !== "first_seen_open_estimate" && current.duration_source !== "manual"
       && minutesBetween(current.first_seen_at, new Date().toISOString()) != null;
     const missingClosedDuration = current.is_closed && !current.duration_source && observation.endedAt
@@ -2371,7 +2371,7 @@ export async function reconcileSourceObservation(observation, { dryRun = false, 
         durationSource = current.duration_source;
         durationEstimate = current.duration_is_estimate === true;
       }
-    } else if (current.first_seen_was_open === true && minutesBetween(current.first_seen_at, new Date().toISOString()) != null) {
+    } else if (!hasTrustedStart(current) && current.first_seen_was_open === true && minutesBetween(current.first_seen_at, new Date().toISOString()) != null) {
       durationSource = "first_seen_open_estimate";
       durationEstimate = true;
     }
@@ -2379,8 +2379,8 @@ export async function reconcileSourceObservation(observation, { dryRun = false, 
       source_status=$2, normalized_status=$3, status_text=COALESCE($2,status_text),
       status_source=CASE WHEN $4::text IS NULL THEN CASE WHEN $3='completed' THEN 'explicit_closed' WHEN $3='active' THEN 'explicit_open' ELSE status_source END ELSE status_source END,
       is_closed=$5, status_changed_at=CASE WHEN normalized_status IS DISTINCT FROM $3 THEN NOW() ELSE status_changed_at END,
-      ended_at=CASE WHEN $3='completed' THEN $6::timestamptz ELSE NULL END,
-      ended_at_accuracy=CASE WHEN $3='completed' THEN COALESCE($7,'unknown') ELSE NULL END,
+      ended_at=CASE WHEN $3='completed' THEN COALESCE($6::timestamptz,ended_at) ELSE NULL END,
+      ended_at_accuracy=CASE WHEN $3='completed' THEN CASE WHEN $6::text IS NOT NULL THEN COALESCE($7,'unknown') ELSE COALESCE(ended_at_accuracy,'unknown') END ELSE NULL END,
       end_time_iso=CASE WHEN $3='completed' AND $6::text IS NOT NULL THEN $6::text ELSE CASE WHEN $3='active' AND end_time_source IS DISTINCT FROM 'manual' THEN NULL ELSE end_time_iso END END,
       end_time_source=CASE WHEN $3='completed' AND $6::text IS NOT NULL THEN 'source_reconciliation' ELSE CASE WHEN $3='active' AND end_time_source IS DISTINCT FROM 'manual' THEN NULL ELSE end_time_source END END,
       duration_min=$8, duration_source=$9, duration_is_estimate=$10,

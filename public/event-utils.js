@@ -28,6 +28,11 @@
   }
   function duration(event, now = Date.now()) {
     if (!event) return null;
+    const trustedStart = event.start_time_trusted === true || (event.start_time_trusted !== false && event.start_time_source !== 'legacy_manual_unverified' && ['rss_description','explicit','manual','esp'].includes(event.start_time_source));
+    if (!event.is_closed && trustedStart && event.duration_source !== 'manual') {
+      const start=Date.parse(event.start_time_iso||''),minutes=Math.floor((now-start)/60000);
+      return Number.isFinite(minutes)&&minutes>0&&minutes<=4320?minutes:null;
+    }
     const estimated=event.duration_is_estimate===true || event.duration_is_estimate==='true';
     if(estimated){
       if(event.first_seen_was_open!==true && event.first_seen_was_open!=='true')return null;

@@ -12,6 +12,24 @@ test('reconciliation URL stays on configured FireWatch origin',()=>{
   assert.equal(reconciliationApiUrl('https://firewatchcz.cz/api/ingest','/api/reconciliation/jobs/claim'),'https://firewatchcz.cz/api/reconciliation/jobs/claim');
 });
 
+test('unmatched history is reported as unverified and never sent to apply',async()=>{
+  let pages=0,applies=0;const failures=[];
+  const fetchImpl=async(url,options={})=>{
+    if(String(url).endsWith('/feed.xml'))return new Response('<rss><channel><title>Empty</title></channel></rss>');
+    if(String(url).includes('pkr.kr-stredocesky.cz'))return new Response(fixture);
+    const path=new URL(url).pathname;
+    if(path.endsWith('/jobs/claim'))return json({ok:true,job:{id:'unmatched',source:'stredocesky',scope:'active',dry_run:false}});
+    if(path.endsWith('/candidates'))return json({ok:true,items:pages++===0?[{source:'stredocesky',external_id:'RSS_FEED_999999'}]:[]});
+    if(path.endsWith('/failure')){failures.push(JSON.parse(options.body));return json({ok:true});}
+    if(path.endsWith('/apply')){applies++;return json({ok:true,result:{}});}
+    if(path.endsWith('/complete'))return json({ok:true});
+    throw new Error('Unexpected test route');
+  };
+  const ok=await runReconciliation({env:{FIREWATCH_INGEST_URL:'https://firewatchcz.cz/api/ingest',FIREWATCH_API_KEY:'test-key'},fetchImpl,agentFactory,delayImpl:async()=>{},logger:{info(){},error(){}}});
+  assert.equal(ok,true);assert.equal(applies,0);
+  assert.equal(failures.length,1);assert.equal(failures[0].category,'source_unverified');assert.equal(failures[0].permanent,false);
+});
+
 test('worker fetches a historical detail, applies it once and logs no API key',async()=>{
   let candidatePages=0;const calls=[];const logs=[];
   const fetchImpl=async(url,options={})=>{

@@ -30,7 +30,8 @@ function clean(value) {
 
 export function centralExternalId(value) {
   const raw = String(value || "");
-  const direct = raw.match(/(?:RSS_FEED_|[?&]id=)(\d+)/i)?.[1];
+  const direct = raw.match(/(?:RSS_FEED_|[?&]id=)(\d+)(?=$|[&#])/i)?.[1]
+    || raw.match(/\/zasahy-jpo\/(\d+)(?:\/|$|[?#])/i)?.[1];
   if (direct) return direct;
   return /^\d+$/.test(raw.trim()) ? raw.trim() : null;
 }
@@ -119,8 +120,10 @@ export function parseCentralHistoricalDetail(html, { externalId } = {}) {
   const expected = centralExternalId(externalId);
   for (const row of rows) {
     const link = row.querySelector("a")?.getAttribute("href") || "";
-    const rowId = centralExternalId(link) || expected;
-    if (expected && rowId && rowId !== expected) continue;
+    const rowId = centralExternalId(link);
+    // A response may contain an unfiltered history table. Never assign its
+    // first row to the requested incident without matching source identity.
+    if (!rowId || (expected && rowId !== expected)) continue;
     const cells = row.querySelectorAll("th, td");
     if (cells.length < 5) continue;
     const title = clean(cells[0].textContent);
