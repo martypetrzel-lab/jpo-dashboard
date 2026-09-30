@@ -13,11 +13,17 @@ export function hasTrustedStart(event={}) {
 }
 export const MAX_EVENT_DURATION_MINUTES=4320;
 const EXACT_DURATION_SOURCES=new Set(['rss_start_and_end','manual_start_rss_end','trusted_start_rss_end','rss_end_time','esp_duration','explicit','manual']);
-const ESTIMATED_DURATION_SOURCES=new Set(['first_seen_open_estimate','first_seen_to_rss_end_estimate']);
+const ESTIMATED_DURATION_SOURCES=new Set(['first_seen_open_estimate','first_seen_to_rss_end_estimate','first_seen_to_closed_observed_estimate']);
 function positiveMinutes(from,to) {
   const start=Date.parse(from || ''),end=Date.parse(to || '');
   if(!Number.isFinite(start)||!Number.isFinite(end))return null;
   const value=Math.floor((end-start)/60000);
+  return value>0&&value<=MAX_EVENT_DURATION_MINUTES?value:null;
+}
+function observedMinutes(from,to) {
+  const start=Date.parse(from || ''),end=Date.parse(to || '');
+  if(!Number.isFinite(start)||!Number.isFinite(end)||end<=start)return null;
+  const value=Math.ceil((end-start)/60000);
   return value>0&&value<=MAX_EVENT_DURATION_MINUTES?value:null;
 }
 export function durationForEvent(event={},now=Date.now()) {
@@ -25,12 +31,13 @@ export function durationForEvent(event={},now=Date.now()) {
   if (!event.is_closed && hasTrustedStart(event) && event.duration_source !== 'manual') {
     return positiveMinutes(event.start_time_iso, new Date(now).toISOString());
   }
-  const source=event.duration_source;
-  const estimated=event.duration_is_estimate===true || event.duration_is_estimate==='true';
+  const source=observedDurationSource(event);
+  const estimated=event.duration_is_estimate===true || event.duration_is_estimate==='true' || source!==event.duration_source;
   if(estimated && ESTIMATED_DURATION_SOURCES.has(source)) {
     if(event.first_seen_was_open!==true && event.first_seen_was_open!=='true')return null;
     if(source==='first_seen_open_estimate' && !event.is_closed)return positiveMinutes(event.first_seen_at,new Date(now).toISOString());
     if(source==='first_seen_to_rss_end_estimate' && event.is_closed)return positiveMinutes(event.first_seen_at,event.end_time_iso);
+    if(source==='first_seen_to_closed_observed_estimate' && event.is_closed)return observedMinutes(event.first_seen_at,event.status_changed_at);
     return null;
   }
   if(!EXACT_DURATION_SOURCES.has(source))return null;
@@ -38,16 +45,29 @@ export function durationForEvent(event={},now=Date.now()) {
   const value=Number(event.duration_min);
   return event.duration_min!=null&&Number.isFinite(value)&&value>0&&value<=MAX_EVENT_DURATION_MINUTES?value:null;
 }
+function observedDurationSource(event={}) {
+  if(event.duration_source && !(event.is_closed && event.duration_source==='first_seen_open_estimate'))return event.duration_source;
+  if(event.first_seen_was_open!==true)return null;
+  if(!event.is_closed)return hasTrustedStart(event)?null:'first_seen_open_estimate';
+  if(['rss_description','source_reconciliation','explicit','manual','esp'].includes(event.end_time_source)
+    && positiveMinutes(event.first_seen_at,event.end_time_iso)!=null)return 'first_seen_to_rss_end_estimate';
+  if(event.normalized_status==='completed' && observedMinutes(event.first_seen_at,event.status_changed_at)!=null)
+    return 'first_seen_to_closed_observed_estimate';
+  return null;
+}
 export function annotateEventTime(event={},now=Date.now()) {
   const trusted=hasTrustedStart(event);
   const source=event.source_kind==='rss' || event.source_updated_at;
   const normalized={...event,source_updated_at:event.source_updated_at || (source ? event.pub_date : null),start_time_iso:trusted ? event.start_time_iso : null,start_time_trusted:trusted,time_label:source ? 'Poslední aktualizace zdroje' : 'Čas události'};
+  const resolvedSource=observedDurationSource(normalized);
+  normalized.duration_source=resolvedSource;
+  normalized.duration_is_estimate=resolvedSource!==event.duration_source ? !!resolvedSource : !!event.duration_is_estimate;
   const duration=durationForEvent(normalized,now);
   const liveTrusted = !event.is_closed && trusted && event.duration_source !== 'manual';
   // Keep live estimate metadata even during its first minute so the browser
   // can advance its clock without needing another successful source import.
-  const liveEstimate = !event.is_closed && event.duration_source === 'first_seen_open_estimate' && event.first_seen_was_open === true && !liveTrusted;
-  return {...normalized,duration_min:duration,duration_source:liveTrusted?'trusted_start_live':duration!=null||liveEstimate?event.duration_source:null,duration_is_estimate:liveTrusted?false:(duration!=null||liveEstimate)&&!!event.duration_is_estimate};
+  const liveEstimate = !event.is_closed && resolvedSource === 'first_seen_open_estimate' && event.first_seen_was_open === true && !liveTrusted;
+  return {...normalized,duration_min:duration,duration_source:liveTrusted?'trusted_start_live':duration!=null||liveEstimate?resolvedSource:null,duration_is_estimate:liveTrusted?false:(duration!=null||liveEstimate)&&!!normalized.duration_is_estimate};
 }
 export function diagnoseTimes(event={},incoming=null) {
   const original=event.pub_date;const raw=String(original || '');

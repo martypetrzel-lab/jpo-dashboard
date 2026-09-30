@@ -246,6 +246,16 @@ export async function initDb() {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_events_reconcile_active ON events(source,is_closed,last_source_check_at) WHERE external_id IS NOT NULL`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_events_reconcile_recent ON events(source,first_seen_at DESC) WHERE external_id IS NOT NULL`);
   await pool.query(`UPDATE events SET source_status=COALESCE(source_status,status_text), normalized_status=COALESCE(normalized_status,CASE WHEN is_closed THEN 'completed' ELSE 'unknown' END) WHERE source_status IS NULL OR normalized_status IS NULL`);
+  // Preserve the observation clock for open events whose first reconciliation ran in the first minute.
+  await pool.query(`UPDATE events SET duration_min=NULL,duration_source='first_seen_open_estimate',duration_is_estimate=TRUE
+    WHERE is_closed=FALSE AND first_seen_was_open IS TRUE AND duration_source IS NULL
+      AND NOT (start_time_iso IS NOT NULL AND start_time_source IN ('rss_description','explicit','manual','esp'))`);
+  // An observed transition to completed is evidence of an end observation, not an RSS start/end timestamp.
+  await pool.query(`UPDATE events SET duration_min=CEIL(EXTRACT(EPOCH FROM (status_changed_at-first_seen_at))/60)::integer,
+      duration_source='first_seen_to_closed_observed_estimate',duration_is_estimate=TRUE
+    WHERE is_closed=TRUE AND normalized_status='completed' AND first_seen_was_open IS TRUE AND duration_source IS NULL
+      AND status_changed_at>first_seen_at AND status_changed_at<=NOW()
+      AND status_changed_at-first_seen_at<=($1::integer * INTERVAL '1 minute')`,[MAX_DURATION_MINUTES]);
   await pool.query(`UPDATE events SET manual_status_override=CASE WHEN is_closed THEN 'completed' ELSE 'active' END,manual_override_reason=COALESCE(manual_override_reason,'Převedeno z dřívější ruční úpravy'),manual_override_created_at=COALESCE(manual_override_created_at,last_seen_at,created_at,NOW()) WHERE status_source='manual' AND manual_status_override IS NULL`);
   await pool.query(`CREATE TABLE IF NOT EXISTS reconciliation_jobs (
     id TEXT PRIMARY KEY, source TEXT NOT NULL DEFAULT 'all', scope TEXT NOT NULL, dry_run BOOLEAN NOT NULL DEFAULT FALSE,
@@ -536,6 +546,12 @@ export async function touchEventLastSeen(id) {
 
 export async function markEventSeenInSource(id, { sourceStatus = null, normalizedStatus = "unknown" } = {}) {
   await pool.query(`UPDATE events SET source_status=COALESCE($2,source_status,status_text),normalized_status=$3,last_seen_in_feed_at=NOW(),last_source_check_at=NOW(),status_changed_at=CASE WHEN normalized_status IS DISTINCT FROM $3 THEN NOW() ELSE status_changed_at END,reconciliation_error=NULL,source_record_unavailable=FALSE WHERE id=$1`, [id,sourceStatus,normalizedStatus]);
+  await pool.query(`UPDATE events SET
+      duration_min=CEIL(EXTRACT(EPOCH FROM (status_changed_at-first_seen_at))/60)::integer,
+      duration_source='first_seen_to_closed_observed_estimate',duration_is_estimate=TRUE
+    WHERE id=$1 AND normalized_status='completed' AND is_closed=TRUE AND first_seen_was_open IS TRUE
+      AND duration_source IS NULL AND status_changed_at>first_seen_at AND status_changed_at<=NOW()
+      AND status_changed_at-first_seen_at<=($2::integer * INTERVAL '1 minute')`,[id,MAX_DURATION_MINUTES]);
 }
 
 export async function getSourceIdentityState(source, externalIds = []) {
@@ -2324,12 +2340,16 @@ export async function reconcileSourceObservation(observation, { dryRun = false, 
       const difference = Math.floor((Date.parse(end || "") - Date.parse(start || "")) / 60000);
       return Number.isFinite(difference) && difference > 0 && difference <= MAX_DURATION_MINUTES ? difference : null;
     };
+    const observedMinutesBetween = (start, end) => {
+      const difference = Math.ceil((Date.parse(end || "") - Date.parse(start || "")) / 60000);
+      return Number.isFinite(difference) && difference > 0 && difference <= MAX_DURATION_MINUTES ? difference : null;
+    };
     const missingOpenEstimate = !current.is_closed && !hasTrustedStart(current) && current.first_seen_was_open === true
-      && current.duration_source !== "first_seen_open_estimate" && current.duration_source !== "manual"
-      && minutesBetween(current.first_seen_at, new Date().toISOString()) != null;
-    const missingClosedDuration = current.is_closed && !current.duration_source && observation.endedAt
-      && (hasTrustedStart(current) ? minutesBetween(current.start_time_iso, observation.endedAt) != null
-        : current.first_seen_was_open === true && minutesBetween(current.first_seen_at, observation.endedAt) != null);
+      && current.duration_source !== "first_seen_open_estimate" && current.duration_source !== "manual";
+    const missingClosedDuration = current.is_closed && !current.duration_source
+      && ((observation.endedAt && hasTrustedStart(current) && minutesBetween(current.start_time_iso, observation.endedAt) != null)
+        || (current.first_seen_was_open === true && (minutesBetween(current.first_seen_at, observation.endedAt) != null
+          || observedMinutesBetween(current.first_seen_at, current.status_changed_at) != null)));
     const durationNeedsRepair = missingOpenEstimate || missingClosedDuration;
     if (durationNeedsRepair) changedFields.push("duration_source", "duration_is_estimate");
     const hashUnchanged = Boolean(observation.contentHash && current.content_hash === observation.contentHash);
@@ -2366,12 +2386,22 @@ export async function reconcileSourceObservation(observation, { dryRun = false, 
           durationEstimate = true;
         }
       }
+      if (durationMin == null && current.first_seen_was_open === true) {
+        const closedObservedAt = current.is_closed
+          ? (current.normalized_status === 'completed' ? current.status_changed_at : null)
+          : new Date().toISOString();
+        durationMin = observedMinutesBetween(current.first_seen_at, closedObservedAt);
+        if (durationMin != null) {
+          durationSource = 'first_seen_to_closed_observed_estimate';
+          durationEstimate = true;
+        }
+      }
       if (durationMin == null && current.is_closed && !observation.endedAt) {
         durationMin = current.duration_min;
         durationSource = current.duration_source;
         durationEstimate = current.duration_is_estimate === true;
       }
-    } else if (!hasTrustedStart(current) && current.first_seen_was_open === true && minutesBetween(current.first_seen_at, new Date().toISOString()) != null) {
+    } else if (!hasTrustedStart(current) && current.first_seen_was_open === true) {
       durationSource = "first_seen_open_estimate";
       durationEstimate = true;
     }
@@ -2399,6 +2429,10 @@ export async function reconcileSourceObservation(observation, { dryRun = false, 
         observation.cityPart ?? null, observation.street ?? null, observation.respondingUnits == null ? null : JSON.stringify(observation.respondingUnits),
         observation.sourceUrl ?? null, observation.sourceUpdatedAt ?? null, observation.reportedAt ?? null,
         observation.lat ?? null, observation.lon ?? null, observation.contentHash ?? null]);
+    if (durationSource === 'first_seen_to_closed_observed_estimate') {
+      await client.query(`UPDATE events SET duration_min=CEIL(EXTRACT(EPOCH FROM (status_changed_at-first_seen_at))/60)::integer
+        WHERE id=$1 AND status_changed_at>first_seen_at`, [current.id]);
+    }
     if (changedFields.length) await client.query(`INSERT INTO event_reconciliation_audit(event_id,source,external_id,previous_source_status,new_source_status,previous_normalized_status,new_normalized_status,changed_fields,reconciliation_job_id,actor) VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10)`, [current.id,source,externalId,current.source_status,observation.sourceStatus || null,current.normalized_status,normalizedStatus,JSON.stringify([...new Set(changedFields)]),jobId,actor]);
     await client.query("COMMIT");
     return { found: true, updated: changedFields.length > 0, unchanged: changedFields.length === 0, statusChanged, changedFields: [...new Set(changedFields)] };

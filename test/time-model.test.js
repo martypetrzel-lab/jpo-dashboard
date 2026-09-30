@@ -19,6 +19,16 @@ test('first-minute live estimate metadata survives API normalization',()=>{
  assert.equal(result.duration_min,null);assert.equal(result.duration_source,'first_seen_open_estimate');
  assert.equal(FireWatchData.duration(result,now+60000),1);
 });
+test('API repairs a missing open estimate and uses an observed closed transition when RSS has no end',()=>{
+ const first='2026-09-17T10:00:00Z';
+ const open=annotateEventTime({source_kind:'rss',is_closed:false,first_seen_at:first,first_seen_was_open:true,duration_source:null,duration_is_estimate:false,pub_date:'2026-09-17T08:00:00Z'},Date.parse(first)+70*60000);
+ assert.equal(open.duration_min,70);assert.equal(open.duration_source,'first_seen_open_estimate');assert.equal(open.duration_is_estimate,true);
+ const closed=annotateEventTime({...open,is_closed:true,duration_source:null,duration_is_estimate:false,normalized_status:'completed',status_changed_at:'2026-09-17T11:10:15Z',end_time_iso:null});
+ assert.equal(closed.duration_min,71);assert.equal(closed.duration_source,'first_seen_to_closed_observed_estimate');assert.equal(closed.duration_is_estimate,true);
+ const unverifiedEnd=annotateEventTime({...closed,duration_source:null,duration_is_estimate:false,end_time_iso:'2026-09-17T10:05:00Z',end_time_source:null});
+ assert.equal(unverifiedEnd.duration_source,'first_seen_to_closed_observed_estimate');
+ assert.equal(annotateEventTime({...closed,first_seen_was_open:null}).duration_min,null);
+});
 test('RFC UTC, gateway bare UTC and ISO converge without a second shift',()=>{
  for(const raw of ['Thu, 17 Sep 2026 14:30:00 +0000','2026-09-17 14:30:00',iso])assert.equal(normalizeFeedTimestamp(raw),iso);
  const parts=new Intl.DateTimeFormat('cs-CZ',{timeZone:'Europe/Prague',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(new Date(iso));assert.equal(parts,'16:30');

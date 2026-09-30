@@ -168,12 +168,21 @@ test("ingest preserves manual coordinates and rejects oversized batches", async 
 
 test("repeatable additive migration preserves rows and report unique constraint", async () => {
   await pool.query("UPDATE events SET source='unknown',event_region=NULL WHERE id='audit-stable'");
+  const seen=new Date(Date.now()-20*60000).toISOString(),closed=new Date(Date.now()-10*60000).toISOString();
+  await pool.query(`INSERT INTO events(id,title,link,source_kind,is_closed,normalized_status,first_seen_at,first_seen_was_open,status_changed_at)
+    VALUES('migration:open','Test','https://example.test/open','rss',FALSE,'active',$1,TRUE,NULL),
+      ('migration:closed','Test','https://example.test/closed','rss',TRUE,'completed',$1,TRUE,$2)`,[seen,closed]);
   const before = (await pool.query("SELECT COUNT(*)::int AS count FROM events")).rows[0].count;
+  await initDb();
   await initDb();
   assert.equal((await pool.query("SELECT COUNT(*)::int AS count FROM events")).rows[0].count, before);
   assert.ok((await pool.query("SELECT skipped_count, skipped_older_count, unchanged_count FROM ingest_log LIMIT 1")).rows.length);
   const migrated=await pool.query("SELECT source,external_id,source_url,region,event_region,is_jpo_event FROM events WHERE id='audit-stable'");
   assert.equal(migrated.rows[0].source,'stredocesky');assert.equal(migrated.rows[0].external_id,'audit-stable');assert.equal(migrated.rows[0].event_region,'Středočeský kraj');assert.equal(migrated.rows[0].is_jpo_event,true);
+  const repaired=await pool.query("SELECT id,duration_min,duration_source,duration_is_estimate FROM events WHERE id IN ('migration:open','migration:closed') ORDER BY id");
+  assert.equal(repaired.rows[0].duration_source,'first_seen_to_closed_observed_estimate');assert.equal(repaired.rows[0].duration_is_estimate,true);assert.ok(repaired.rows[0].duration_min>=10);
+  assert.equal(repaired.rows[1].duration_source,'first_seen_open_estimate');assert.equal(repaired.rows[1].duration_is_estimate,true);assert.equal(repaired.rows[1].duration_min,null);
+  await pool.query("DELETE FROM events WHERE id IN ('migration:open','migration:closed')");
 });
 
 test("reconciliation updates both status directions, preserves manual fields and never duplicates identity", async () => {
@@ -322,7 +331,7 @@ test("Pardubice detail stays deduplicated, preserves source fields and synchroni
  let detail=await fetch(base+`/api/events/${encodeURIComponent(open.id)}/detail`).then(r=>r.json());assert.equal(detail.event.subtype,'Otevření uzavřených prostor');assert.equal(detail.event.street,'Spořilov III');assert.deepEqual(detail.event.responding_units,['Letohrad']);assert.equal(detail.event.station_id,null);
  result=await ingestPardubicky([open]);assert.equal(result.data.unchanged,1);assert.equal((await pool.query('SELECT COUNT(*)::int AS count FROM events WHERE id=$1',[open.id])).rows[0].count,1);
  const closed={...open,statusText:'Ukončená',statusSource:'explicit_closed',isClosed:true,contentHash:'d'.repeat(64),rawPayload:{detail:{status:'Ukončená'}}};
- result=await ingestPardubicky([closed]);assert.equal(result.data.updated,1);assert.equal(result.data.status_changed,1);row=await getEventMeta(open.id);assert.equal(row.is_closed,true);assert.equal(row.duration_min,null);assert.equal(new Date(row.first_seen_at).toISOString(),firstSeen);
+ result=await ingestPardubicky([closed]);assert.equal(result.data.updated,1);assert.equal(result.data.status_changed,1);row=await getEventMeta(open.id);assert.equal(row.is_closed,true);assert.equal(row.duration_min,1);assert.equal(row.duration_source,'first_seen_to_closed_observed_estimate');assert.equal(row.duration_is_estimate,true);assert.equal(new Date(row.first_seen_at).toISOString(),firstSeen);
  const state=await jsonRequest('/api/ingest/source-state',{source:'pardubicky',external_ids:[externalId]});assert.equal(state.data.known.length,1);assert.equal(state.data.open.length,0);
 });
 test("station audit dry-run preserves data and apply clears only automatic cross-region mistakes",async()=>{
@@ -382,6 +391,54 @@ test('first explicitly open observation drives live and closed estimates without
  const closed={...open,pubDate:new Date().toISOString(),statusText:'ukončená',endTimeIso:end.toISOString(),descriptionRaw:'stav: ukončená<br>Kladno'};
  assert.equal((await ingest([closed])).data.updated,1);row=await getEventMeta(id);assert.equal(row.duration_min,70);assert.equal(row.duration_source,'first_seen_to_rss_end_estimate');assert.equal(row.duration_is_estimate,true);assert.equal(new Date(row.first_seen_at).toISOString(),originalFirst);
  assert.equal((await ingest([closed])).data.inserted,0);assert.equal((await pool.query('SELECT COUNT(*)::int AS count FROM events WHERE id=$1',[id])).rows[0].count,1);
+});
+test('first-minute reconciliation cannot erase the live observation clock',async()=>{
+ const id='duration-first-minute';const open=event(id,new Date().toISOString());
+ await ingest([open]);
+ await pool.query("UPDATE events SET duration_source=NULL,duration_is_estimate=FALSE,content_hash='first-minute' WHERE id=$1",[id]);
+ const result=await reconcileSourceObservation({source:'stredocesky',externalId:id,sourceStatus:'probíhá zásah',normalizedStatus:'active',contentHash:'first-minute'});
+ assert.equal(result.updated,true);
+ const row=await getEventMeta(id);
+ assert.equal(row.duration_source,'first_seen_open_estimate');assert.equal(row.duration_is_estimate,true);
+ const response=await fetch(base+'/api/events/'+id+'/detail').then(r=>r.json());
+ assert.equal(response.event.duration_source,'first_seen_open_estimate');assert.equal(response.event.duration_is_estimate,true);
+});
+test('first open observation to first observed closed status is an immutable estimate without an RSS end',async()=>{
+ const id='duration-observed-close';const open=event(id,new Date().toISOString());
+ await ingest([open]);
+ const firstSeen=new Date(Date.now()-70*60000).toISOString();
+ await pool.query('UPDATE events SET first_seen_at=$2 WHERE id=$1',[id,firstSeen]);
+ const closed={...open,statusText:'ukončená',descriptionRaw:'stav: ukončená<br>Kladno',pubDate:new Date().toISOString()};
+ await ingest([closed]);
+ let row=(await pool.query('SELECT * FROM events WHERE id=$1',[id])).rows[0];
+ assert.equal(row.end_time_iso,null);assert.equal(row.duration_source,'first_seen_to_closed_observed_estimate');assert.equal(row.duration_is_estimate,true);
+ assert.ok(row.duration_min>=70&&row.duration_min<=71);
+ const observedAt=new Date(row.status_changed_at).toISOString();
+ const detail=await fetch(base+'/api/events/'+id+'/detail').then(r=>r.json());
+ assert.equal(detail.event.duration_source,'first_seen_to_closed_observed_estimate');assert.equal(detail.event.duration_is_estimate,true);
+ await ingest([closed]);
+ row=(await pool.query('SELECT * FROM events WHERE id=$1',[id])).rows[0];
+ assert.equal(new Date(row.first_seen_at).toISOString(),firstSeen);
+ assert.equal(new Date(row.status_changed_at).toISOString(),observedAt);
+ assert.equal(row.duration_source,'first_seen_to_closed_observed_estimate');
+ assert.equal((await pool.query('SELECT COUNT(*)::integer AS count FROM events WHERE id=$1',[id])).rows[0].count,1);
+});
+test('source reconciliation records the first observed closure when no official end exists',async()=>{
+ const id='reconcile:observed-close',externalId='900010',firstSeen=new Date(Date.now()-65*60000).toISOString();
+ await pool.query(`INSERT INTO events(id,title,link,source,external_id,source_kind,is_closed,normalized_status,first_seen_at,first_seen_was_open,duration_source,duration_is_estimate)
+   VALUES($1,'Test','https://example.test/observed','stredocesky',$2,'rss',FALSE,'active',$3,TRUE,'first_seen_open_estimate',TRUE)`,[id,externalId,firstSeen]);
+ const observation={source:'stredocesky',externalId,sourceStatus:'ukončená',normalizedStatus:'completed',endedAt:null};
+ const result=await reconcileSourceObservation(observation);
+ assert.equal(result.statusChanged,true);
+ let row=(await pool.query('SELECT * FROM events WHERE id=$1',[id])).rows[0];
+ assert.equal(row.end_time_iso,null);assert.equal(row.duration_source,'first_seen_to_closed_observed_estimate');assert.equal(row.duration_is_estimate,true);
+ assert.ok(row.duration_min>=65&&row.duration_min<=66);
+ const observedAt=new Date(row.status_changed_at).toISOString();
+ await reconcileSourceObservation(observation);
+ row=(await pool.query('SELECT * FROM events WHERE id=$1',[id])).rows[0];
+ assert.equal(new Date(row.status_changed_at).toISOString(),observedAt);
+ assert.equal(new Date(row.first_seen_at).toISOString(),firstSeen);
+ assert.equal(row.duration_source,'first_seen_to_closed_observed_estimate');
 });
 test('an event first seen closed and an invalid first-seen interval never receive estimates',async()=>{
  const direct={...event('duration-first-closed',new Date().toISOString()),statusText:'ukončená',endTimeIso:new Date().toISOString(),descriptionRaw:'stav: ukončená<br>Kladno'};

@@ -3577,6 +3577,8 @@ async function openEventDetailModal(id) {
         ${ev.reported_at ? eventDetailLine("Ohlášeno zdrojem", detailDateText(ev.reported_at)) : ""}
         ${eventDetailLine("Začátek", detailDateText(ev.start_time_iso))}
         ${eventDetailLine("Konec", ev.is_closed && (ev.end_time_source || ["rss_end_time","esp_duration","explicit","manual"].includes(ev.duration_source)) ? detailDateText(ev.end_time_iso) : "—")}
+        ${ev.duration_is_estimate && ev.first_seen_at ? eventDetailLine("První zachycení FireWatch", detailDateText(ev.first_seen_at)) : ""}
+        ${ev.duration_source === "first_seen_to_closed_observed_estimate" && ev.status_changed_at ? eventDetailLine("Ukončení zaznamenáno FireWatch", detailDateText(ev.status_changed_at)) : ""}
         ${eventDetailLine("Obec", ev.geo_municipality || ev.city_text || "")}
         ${eventDetailLine("Část obce / ulice", [ev.city_part, ev.street].filter(Boolean).join(" · ") || "—")}
         ${eventDetailLine("Místo / upřesnění", ev.geo_detail || ev.place_text || "—")}

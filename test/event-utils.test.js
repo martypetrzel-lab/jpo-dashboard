@@ -16,8 +16,12 @@ test('estimated durations use immutable first observation and always display the
  const now=Date.parse('2026-09-17T12:00:00Z');
  const open={is_closed:false,first_seen_at:'2026-09-17T10:45:00Z',first_seen_was_open:true,duration_source:'first_seen_open_estimate',duration_is_estimate:true};
  assert.equal(data.duration(open,now),75);assert.equal(data.durationText(open,now),'≈ 1 h 15 min');assert.match(data.durationInfo(open,now).tooltip,/Orientační doba/);
+ assert.equal(data.durationText(open,Date.parse(open.first_seen_at)+30000),'≈ < 1 min');
  const closed={...open,is_closed:true,end_time_iso:'2026-09-17T11:55:00Z',duration_source:'first_seen_to_rss_end_estimate'};
  assert.equal(data.duration(closed,now),70);assert.equal(data.durationText(closed,now),'≈ 1 h 10 min');
+ const observed={...closed,end_time_iso:null,status_changed_at:'2026-09-17T11:55:01Z',duration_source:'first_seen_to_closed_observed_estimate'};
+ assert.equal(data.duration(observed,now),71);assert.equal(data.durationText(observed,now),'≈ 1 h 11 min');
+ assert.match(data.durationInfo(observed,now).tooltip,/stav ukončená/);
  assert.equal(data.duration({...closed,first_seen_was_open:null},now),null);assert.equal(data.durationText({...closed,first_seen_at:'2026-09-17T12:30:00Z'},now),'—');
 });
 test('RSS source links allow only HTTP(S), including in map popups',()=>{assert.equal(data.safeLink('javascript:alert(1)'), '');assert.equal(data.safeLink('data:text/html,hello'),'');assert.equal(data.safeLink('https://example.test/'), 'https://example.test/');});

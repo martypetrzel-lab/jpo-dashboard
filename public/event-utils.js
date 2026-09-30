@@ -38,6 +38,7 @@
       if(event.first_seen_was_open!==true && event.first_seen_was_open!=='true')return null;
       if(event.duration_source==='first_seen_open_estimate'&&!event.is_closed){const start=Date.parse(event.first_seen_at||'');if(!Number.isFinite(start)||start>=now)return null;const minutes=Math.floor((now-start)/60000);return minutes>0&&minutes<=4320?minutes:null;}
       if(event.duration_source==='first_seen_to_rss_end_estimate'&&event.is_closed){const start=Date.parse(event.first_seen_at||''),end=Date.parse(event.end_time_iso||'');if(!Number.isFinite(start)||!Number.isFinite(end)||start>=end)return null;const minutes=Math.floor((end-start)/60000);return minutes>0&&minutes<=4320?minutes:null;}
+      if(event.duration_source==='first_seen_to_closed_observed_estimate'&&event.is_closed){const start=Date.parse(event.first_seen_at||''),end=Date.parse(event.status_changed_at||'');if(!Number.isFinite(start)||!Number.isFinite(end)||start>=end)return null;const minutes=Math.ceil((end-start)/60000);return minutes>0&&minutes<=4320?minutes:null;}
       return null;
     }
     if(event.start_time_trusted===false && !["esp_duration","explicit","manual"].includes(event.duration_source))return null;
@@ -52,11 +53,18 @@
     const minutes=Math.floor((now-start)/60000);return minutes>0 && minutes<=4320 ? minutes : null;
   }
   function durationInfo(event,now=Date.now()){
-    const minutes=duration(event,now),estimate=minutes!=null&&(event?.duration_is_estimate===true||event?.duration_is_estimate==='true');
-    return {minutes,estimate,tooltip:minutes==null?'Délku nelze určit – zdroj neposkytuje čas zahájení.':estimate?'Orientační doba od prvního zachycení události FireWatch. Skutečný začátek zásahu zdroj neposkytuje.':'Délka ze skutečného nebo ručně ověřeného začátku a konce zásahu.'};
+    let minutes=duration(event,now);
+    const firstSeen=Date.parse(event?.first_seen_at||'');
+    const firstMinute=minutes==null && event?.duration_source==='first_seen_open_estimate' && !event.is_closed
+      && (event.first_seen_was_open===true||event.first_seen_was_open==='true')
+      && Number.isFinite(firstSeen) && now>=firstSeen && now-firstSeen<60000;
+    if(firstMinute)minutes=0;
+    const estimate=(minutes!=null)&&(event?.duration_is_estimate===true||event?.duration_is_estimate==='true');
+    return {minutes,estimate,tooltip:minutes==null?'Délku nelze určit – zdroj neposkytuje čas zahájení.':event?.duration_source==='first_seen_to_closed_observed_estimate'?'Orientační doba od prvního zachycení do okamžiku, kdy FireWatch poprvé zaznamenal stav ukončená. Skutečný začátek ani konec zdroj neposkytuje.':estimate?'Orientační doba od prvního zachycení události FireWatch. Skutečný začátek zásahu zdroj neposkytuje.':'Délka ze skutečného nebo ručně ověřeného začátku a konce zásahu.'};
   }
   function durationText(event,now=Date.now()){
     const info=durationInfo(event,now);if(info.minutes==null)return '—';
+    if(info.minutes===0&&info.estimate)return '≈ < 1 min';
     const h=Math.floor(info.minutes/60),m=Math.round(info.minutes%60),value=h>0?h+' h '+m+' min':m+' min';
     return (info.estimate?'≈ ':'')+value;
   }
