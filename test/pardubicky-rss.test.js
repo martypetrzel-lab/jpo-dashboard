@@ -35,6 +35,13 @@ test("Pardubice parser tolerates missing optional fields and invalid HTML",()=>{
   assert.equal(detail.city,"Letohrad");assert.equal(detail.street,null);assert.deepEqual(detail.respondingUnits,[]);assert.equal(detail.isOpen,true);
   assert.deepEqual(parsePardubickyDetail("not html").respondingUnits,[]);
 });
+test("Pardubice SaP na místě is an explicitly open detail status",()=>{
+  const detail=parsePardubickyDetail('<p><strong>Stav:</strong> SaP na místě</p>');
+  assert.equal(detail.isOpen,true);assert.equal(detail.isClosed,false);
+  const item=parsePardubickyRss(fixture('pardubicky-rss.xml'))[0];
+  const event=buildPardubickyEvent(item,detail);
+  assert.equal(event.statusSource,'explicit_open');assert.equal(event.isClosed,false);
+});
 
 test("Pardubice age policy uses Europe/Prague calendar across UTC midnight",()=>{
   const now=new Date("2026-09-22T00:30:00+02:00");

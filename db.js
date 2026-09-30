@@ -246,6 +246,13 @@ export async function initDb() {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_events_reconcile_active ON events(source,is_closed,last_source_check_at) WHERE external_id IS NOT NULL`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_events_reconcile_recent ON events(source,first_seen_at DESC) WHERE external_id IS NOT NULL`);
   await pool.query(`UPDATE events SET source_status=COALESCE(source_status,status_text), normalized_status=COALESCE(normalized_status,CASE WHEN is_closed THEN 'completed' ELSE 'unknown' END) WHERE source_status IS NULL OR normalized_status IS NULL`);
+  // For untouched Pardubice rows, the initial source status is still provable from all three creation clocks.
+  // Older rows with a later observation or a changed status stay unknown.
+  await pool.query(`UPDATE events SET first_seen_was_open=TRUE,first_seen_status=source_status,
+      normalized_status='active',duration_min=NULL,duration_source='first_seen_open_estimate',duration_is_estimate=TRUE
+    WHERE source='pardubicky' AND is_closed=FALSE AND first_seen_was_open=FALSE AND first_seen_status IS NULL
+      AND LOWER(source_status)='sap na místě' AND last_seen_at=first_seen_at AND created_at=first_seen_at
+      AND status_changed_at>=first_seen_at AND status_changed_at<first_seen_at+INTERVAL '1 minute'`);
   // Preserve the observation clock for open events whose first reconciliation ran in the first minute.
   await pool.query(`UPDATE events SET duration_min=NULL,duration_source='first_seen_open_estimate',duration_is_estimate=TRUE
     WHERE is_closed=FALSE AND first_seen_was_open IS TRUE AND duration_source IS NULL

@@ -172,6 +172,10 @@ test("repeatable additive migration preserves rows and report unique constraint"
   await pool.query(`INSERT INTO events(id,title,link,source_kind,is_closed,normalized_status,first_seen_at,first_seen_was_open,status_changed_at)
     VALUES('migration:open','Test','https://example.test/open','rss',FALSE,'active',$1,TRUE,NULL),
       ('migration:closed','Test','https://example.test/closed','rss',TRUE,'completed',$1,TRUE,$2)`,[seen,closed]);
+  await pool.query(`INSERT INTO events(id,title,link,source,source_kind,is_closed,source_status,normalized_status,first_seen_at,last_seen_at,created_at,first_seen_was_open,status_changed_at)
+    VALUES('migration:pardubice','Test','https://example.test/pardubice','pardubicky','rss',FALSE,'SaP na místě','unknown',$1,$1,$1,FALSE,$2)`,[seen,new Date(Date.parse(seen)+1000).toISOString()]);
+  await pool.query(`INSERT INTO events(id,title,link,source,source_kind,is_closed,source_status,normalized_status,first_seen_at,last_seen_at,created_at,first_seen_was_open,status_changed_at)
+    VALUES('migration:pardubice-later','Test','https://example.test/later','pardubicky','rss',FALSE,'SaP na místě','unknown',$1,$2,$1,FALSE,$2)`,[seen,closed]);
   const before = (await pool.query("SELECT COUNT(*)::int AS count FROM events")).rows[0].count;
   await initDb();
   await initDb();
@@ -182,7 +186,10 @@ test("repeatable additive migration preserves rows and report unique constraint"
   const repaired=await pool.query("SELECT id,duration_min,duration_source,duration_is_estimate FROM events WHERE id IN ('migration:open','migration:closed') ORDER BY id");
   assert.equal(repaired.rows[0].duration_source,'first_seen_to_closed_observed_estimate');assert.equal(repaired.rows[0].duration_is_estimate,true);assert.ok(repaired.rows[0].duration_min>=10);
   assert.equal(repaired.rows[1].duration_source,'first_seen_open_estimate');assert.equal(repaired.rows[1].duration_is_estimate,true);assert.equal(repaired.rows[1].duration_min,null);
-  await pool.query("DELETE FROM events WHERE id IN ('migration:open','migration:closed')");
+  const pardubice=(await pool.query("SELECT first_seen_was_open,first_seen_status,duration_source FROM events WHERE id='migration:pardubice'")).rows[0];
+  assert.equal(pardubice.first_seen_was_open,true);assert.equal(pardubice.first_seen_status,'SaP na místě');assert.equal(pardubice.duration_source,'first_seen_open_estimate');
+  assert.equal((await pool.query("SELECT first_seen_was_open FROM events WHERE id='migration:pardubice-later'")).rows[0].first_seen_was_open,false);
+  await pool.query("DELETE FROM events WHERE id IN ('migration:open','migration:closed','migration:pardubice','migration:pardubice-later')");
 });
 
 test("reconciliation updates both status directions, preserves manual fields and never duplicates identity", async () => {

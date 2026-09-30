@@ -90,7 +90,7 @@ export function parsePardubickyDetail(html) {
     respondingUnits: fields.jednotky ? fields.jednotky.split(/[,;]+/).map(clean).filter(Boolean) : [],
     status: statusRaw,
     isClosed: /ukoncen/.test(statusNorm),
-    isOpen: /probihajic|probiha|aktivni/.test(statusNorm),
+    isOpen: /probihajic|probiha|aktivni|\bsap na miste\b/.test(statusNorm),
   };
 }
 
