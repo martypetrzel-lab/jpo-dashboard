@@ -124,6 +124,7 @@ export async function runReconciliation({
             counters.fetched++;
             if (!observation) throw Object.assign(new Error("source_record_not_parsed"), { rssType: "invalid_xml" });
           }
+          if (!observation) throw Object.assign(new Error("source_record_not_matched"), { rssType: "source_unverified" });
           const applied = await postApi(config, "/api/reconciliation/apply", { job_id: job.id, observation }, { fetchImpl, sleepImpl, agentFactory });
           if (applied?.ok !== true) throw Object.assign(new Error("apply_failed"), { rssType: "invalid_ingest_response" });
           counters.checked++;

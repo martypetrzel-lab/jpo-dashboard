@@ -21,6 +21,10 @@ function positiveMinutes(from,to) {
   return value>0&&value<=MAX_EVENT_DURATION_MINUTES?value:null;
 }
 export function durationForEvent(event={},now=Date.now()) {
+  // A verified start takes precedence over old first-seen estimate metadata.
+  if (!event.is_closed && hasTrustedStart(event) && event.duration_source !== 'manual') {
+    return positiveMinutes(event.start_time_iso, new Date(now).toISOString());
+  }
   const source=event.duration_source;
   const estimated=event.duration_is_estimate===true || event.duration_is_estimate==='true';
   if(estimated && ESTIMATED_DURATION_SOURCES.has(source)) {
@@ -39,7 +43,11 @@ export function annotateEventTime(event={},now=Date.now()) {
   const source=event.source_kind==='rss' || event.source_updated_at;
   const normalized={...event,source_updated_at:event.source_updated_at || (source ? event.pub_date : null),start_time_iso:trusted ? event.start_time_iso : null,start_time_trusted:trusted,time_label:source ? 'Poslední aktualizace zdroje' : 'Čas události'};
   const duration=durationForEvent(normalized,now);
-  return {...normalized,duration_min:duration,duration_source:duration==null?null:event.duration_source,duration_is_estimate:duration==null?false:!!event.duration_is_estimate};
+  const liveTrusted = !event.is_closed && trusted && event.duration_source !== 'manual';
+  // Keep live estimate metadata even during its first minute so the browser
+  // can advance its clock without needing another successful source import.
+  const liveEstimate = !event.is_closed && event.duration_source === 'first_seen_open_estimate' && event.first_seen_was_open === true && !liveTrusted;
+  return {...normalized,duration_min:duration,duration_source:liveTrusted?'trusted_start_live':duration!=null||liveEstimate?event.duration_source:null,duration_is_estimate:liveTrusted?false:(duration!=null||liveEstimate)&&!!event.duration_is_estimate};
 }
 export function diagnoseTimes(event={},incoming=null) {
   const original=event.pub_date;const raw=String(original || '');

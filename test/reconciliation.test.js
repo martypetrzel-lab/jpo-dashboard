@@ -5,9 +5,20 @@ import { fileURLToPath } from "node:url";
 import {
   normalizeSourceStatus, canonicalCentralUrl, parseCentralHistoricalDetail,
   stableSourceContentHash, buildSourceAdapters, normalizeCentralFeedEvent,
+  centralExternalId,
 } from "../reconciliation.js";
 
 const fixture = fs.readFileSync(fileURLToPath(new URL("./fixtures/stredocesky-history-203416.html", import.meta.url)), "utf8");
+
+test('historical rows must match an explicit query or path identity', () => {
+  assert.equal(centralExternalId('https://pkr.kr-stredocesky.cz/pkr/zasahy-jpo/203416/'), '203416');
+  assert.equal(centralExternalId('?id=203416oops'), null);
+  assert.equal(parseCentralHistoricalDetail(fixture, {externalId:'RSS_FEED_999999'}), null);
+  assert.equal(parseCentralHistoricalDetail(fixture.replace('?id=203416', '/unknown/'), {externalId:'RSS_FEED_203416'}), null);
+  const unrelated=fixture.replace('?id=203416', '/pkr/zasahy-jpo/999999/');
+  assert.equal(parseCentralHistoricalDetail(unrelated, {externalId:'RSS_FEED_203416'}), null);
+  assert.equal(parseCentralHistoricalDetail(fixture.replace('?id=203416', '/pkr/zasahy-jpo/203416/'), {externalId:'RSS_FEED_203416'}).city, 'Rynholec');
+});
 
 test("regional status mappings tolerate case, whitespace and Czech Unicode", () => {
   for (const value of [" probíhá zásah ", "AKTIVNÍ", "Probíhající", "SaP na místě", "nová", "neupřesněno"])

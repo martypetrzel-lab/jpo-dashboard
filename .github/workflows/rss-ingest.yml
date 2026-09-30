@@ -58,6 +58,7 @@ jobs:
           FIREWATCH_INGEST_URL: ${{ secrets.FIREWATCH_INGEST_URL }}
           FIREWATCH_API_KEY: ${{ secrets.FIREWATCH_API_KEY }}
           RECONCILE_SCOPE: active
+          RSS2JSON_API_KEY: ${{ secrets.RSS2JSON_API_KEY }}
           RECONCILE_BATCH_SIZE: '40'
           RECONCILE_DELAY_MS: '250'
       - name: Check independent source imports

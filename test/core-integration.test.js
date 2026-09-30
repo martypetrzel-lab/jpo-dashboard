@@ -113,6 +113,25 @@ test("RSS carry-over stays open and receives exact closing time/duration across 
   assert.equal(stored.duration_min, 25);
 });
 
+test('verified live duration survives ingest, reconciliation and closing without duplicate rows',async()=>{
+ const start=new Date(Date.now()-90*60000).toISOString();
+ const item={...event('duration-live-verified',new Date().toISOString()),startTimeIso:start};
+ await ingest([item]);
+ let detail=await fetch(base+'/api/events/'+item.id+'/detail').then(r=>r.json());
+ assert.ok(detail.event.duration_min>=90);assert.equal(detail.event.duration_is_estimate,false);
+ const observation={source:'stredocesky',externalId:item.id,sourceStatus:'probíhá zásah',normalizedStatus:'active'};
+ await reconcileSourceObservation(observation);
+ detail=await fetch(base+'/api/events/'+item.id+'/detail').then(r=>r.json());
+ assert.ok(detail.event.duration_min>=90);assert.equal(detail.event.duration_is_estimate,false);
+ const end=new Date(Date.parse(start)+60*60000).toISOString();
+ await reconcileSourceObservation({...observation,sourceStatus:'ukončená',normalizedStatus:'completed',endedAt:end,endedAtAccuracy:'official'});
+ await reconcileSourceObservation({...observation,sourceStatus:'ukončená',normalizedStatus:'completed',endedAt:null,endedAtAccuracy:'unknown'});
+ const row=(await pool.query('SELECT * FROM events WHERE id=$1',[item.id])).rows[0];
+ assert.equal(row.duration_min,60);assert.equal(row.duration_is_estimate,false);
+ assert.equal(new Date(row.ended_at).toISOString(),end);assert.equal(row.ended_at_accuracy,'official');
+ assert.equal(row.is_closed,true);
+});
+
 test("unknown old closed RSS item is skipped and diagnosed without insertion", async () => {
   const item = { ...event("audit-old", "2026-01-15 10:00:00"), statusText: "ukončená", descriptionRaw: "stav: ukončená<br>Kladno" };
   const result = await ingest([item]);
